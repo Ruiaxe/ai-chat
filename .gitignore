@@ -1,0 +1,22 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# SQLite Database & Runtime Files
+data/*.db
+data/*.db-shm
+data/*.db-wal
+.server_info.json
+
+# Transcripts and Room Logs
+logs/*.log
+logs/*.jsonl
+
+# Environment & Editor
+.venv/
+env/
+venv/
+.idea/
+.vscode/
+*.swp
