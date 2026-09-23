@@ -94,6 +94,52 @@ class ChatStorage:
                 ON members(room_name);
             """)
 
+            # Reactions table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS reactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id INTEGER NOT NULL,
+                    room_name TEXT NOT NULL COLLATE NOCASE,
+                    sender TEXT NOT NULL,
+                    emoji TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(message_id, sender, emoji)
+                );
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_reactions_msg 
+                ON reactions(message_id);
+            """)
+
+            # Polls table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS polls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    room_name TEXT NOT NULL COLLATE NOCASE,
+                    creator TEXT NOT NULL,
+                    question TEXT NOT NULL,
+                    options TEXT NOT NULL,
+                    is_closed INTEGER DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    closed_at TEXT DEFAULT ''
+                );
+            """)
+            # Poll votes table
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS poll_votes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    poll_id INTEGER NOT NULL,
+                    voter TEXT NOT NULL,
+                    option_index INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(poll_id, voter)
+                );
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_poll_votes_poll 
+                ON poll_votes(poll_id);
+            """)
+
             # Auto-migrations for new features
             try:
                 conn.execute("ALTER TABLE messages ADD COLUMN is_verified INTEGER DEFAULT 0;")
@@ -101,6 +147,18 @@ class ChatStorage:
                 pass
             try:
                 conn.execute("ALTER TABLE members ADD COLUMN token TEXT DEFAULT '';")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE rooms ADD COLUMN is_archived INTEGER DEFAULT 0;")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE messages ADD COLUMN message_type TEXT DEFAULT 'text';")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE messages ADD COLUMN metadata TEXT DEFAULT '{}';")
             except sqlite3.OperationalError:
                 pass
 
@@ -141,6 +199,7 @@ class ChatStorage:
             "name": name,
             "topic": topic,
             "is_protected": is_protected,
+            "is_archived": False,
             "created_at": now,
         }
 
@@ -149,32 +208,57 @@ class ChatStorage:
         conn = self._get_connection()
         cursor = conn.execute(
             """
-            SELECT id, name, topic, password_hash, salt, is_protected, created_at
-            FROM rooms WHERE name = ?
+            SELECT id, name, topic, password_hash, salt, is_protected, COALESCE(is_archived, 0) as is_archived, created_at
+            FROM rooms WHERE name = ? COLLATE NOCASE
             """,
             (name,),
         )
         row = cursor.fetchone()
         if not row:
             return None
-        return dict(row)
+        res = dict(row)
+        res["is_archived"] = bool(res.get("is_archived", 0))
+        return res
 
-    def list_rooms(self) -> list[dict[str, Any]]:
-        """Lists all rooms with member count and message count."""
+    def list_rooms(self, include_archived: bool = True) -> list[dict[str, Any]]:
+        """Lists all rooms with member count, message count, and archived status."""
         conn = self._get_connection()
-        cursor = conn.execute("""
+        query = """
             SELECT 
                 r.id,
                 r.name,
                 r.topic,
                 r.is_protected,
+                COALESCE(r.is_archived, 0) as is_archived,
                 r.created_at,
                 (SELECT COUNT(*) FROM messages m WHERE m.room_name = r.name) as message_count,
                 (SELECT COUNT(*) FROM members mb WHERE mb.room_name = r.name) as member_count
             FROM rooms r
-            ORDER BY r.id ASC
-        """)
-        return [dict(row) for row in cursor.fetchall()]
+        """
+        if not include_archived:
+            query += " WHERE COALESCE(r.is_archived, 0) = 0"
+        query += " ORDER BY r.id ASC"
+        cursor = conn.execute(query)
+        result = []
+        for row in cursor.fetchall():
+            d = dict(row)
+            d["is_archived"] = bool(d.get("is_archived", 0))
+            result.append(d)
+        return result
+
+    def archive_room(self, name: str) -> bool:
+        """Marks a room as archived (read-only)."""
+        conn = self._get_connection()
+        with conn:
+            cursor = conn.execute("UPDATE rooms SET is_archived = 1 WHERE name = ? COLLATE NOCASE", (name.strip(),))
+            return cursor.rowcount > 0
+
+    def unarchive_room(self, name: str) -> bool:
+        """Restores an archived room to active state."""
+        conn = self._get_connection()
+        with conn:
+            cursor = conn.execute("UPDATE rooms SET is_archived = 0 WHERE name = ? COLLATE NOCASE", (name.strip(),))
+            return cursor.rowcount > 0
 
     def add_or_update_member(
         self,
@@ -270,6 +354,16 @@ class ChatStorage:
                 (room_name, member_name),
             )
 
+    def get_member(self, room_name: str, member_name: str) -> dict[str, Any] | None:
+        """Retrieves member info (token, role, etc.) by room and name."""
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT room_name, member_name, role, token, last_seen_at FROM members WHERE room_name = ? COLLATE NOCASE AND member_name = ? COLLATE NOCASE",
+            (room_name.strip(), member_name.strip()),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
     def list_members(self, room_name: str) -> list[dict[str, Any]]:
         """Returns all members in a given room."""
         conn = self._get_connection()
@@ -290,18 +384,22 @@ class ChatStorage:
         role: str,
         content: str,
         is_verified: bool = False,
+        message_type: str = "text",
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Saves a message to SQLite and appends to .log and .jsonl files."""
         now = datetime.now().isoformat()
         conn = self._get_connection()
         clean_room = room_name.strip()
+        meta_dict = metadata or {}
+        meta_json = json.dumps(meta_dict)
         with conn:
             cursor = conn.execute(
                 """
-                INSERT INTO messages (room_name, sender, role, content, is_verified, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO messages (room_name, sender, role, content, is_verified, message_type, metadata, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (clean_room, sender, role, content, 1 if is_verified else 0, now),
+                (clean_room, sender, role, content, 1 if is_verified else 0, message_type, meta_json, now),
             )
             msg_id = cursor.lastrowid
 
@@ -312,6 +410,9 @@ class ChatStorage:
             "role": role,
             "content": content,
             "is_verified": bool(is_verified),
+            "message_type": message_type,
+            "metadata": meta_dict,
+            "reactions": [],
             "created_at": now,
         }
 
@@ -336,6 +437,210 @@ class ChatStorage:
         row = cursor.fetchone()
         return row[0] if row else 0
 
+    def _get_reactions_map(self, message_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+        if not message_ids:
+            return {}
+        conn = self._get_connection()
+        placeholders = ",".join("?" for _ in message_ids)
+        cursor = conn.execute(
+            f"SELECT message_id, emoji, sender FROM reactions WHERE message_id IN ({placeholders}) ORDER BY id ASC",
+            message_ids,
+        )
+        msg_tally: dict[int, dict[str, list[str]]] = {}
+        for row in cursor.fetchall():
+            mid = row["message_id"]
+            em = row["emoji"]
+            snd = row["sender"]
+            if mid not in msg_tally:
+                msg_tally[mid] = {}
+            if em not in msg_tally[mid]:
+                msg_tally[mid][em] = []
+            msg_tally[mid][em].append(snd)
+
+        result: dict[int, list[dict[str, Any]]] = {}
+        for mid, tallies in msg_tally.items():
+            result[mid] = [
+                {"emoji": em, "count": len(users), "users": users}
+                for em, users in tallies.items()
+            ]
+        return result
+
+    def get_message_reactions(self, message_id: int) -> list[dict[str, Any]]:
+        """Returns aggregated reactions for a single message."""
+        res_map = self._get_reactions_map([message_id])
+        return res_map.get(message_id, [])
+
+    def toggle_reaction(
+        self,
+        message_id: int,
+        room_name: str,
+        sender: str,
+        emoji: str,
+    ) -> dict[str, Any]:
+        """Toggles an emoji reaction from a sender on a message."""
+        conn = self._get_connection()
+        clean_sender = sender.strip()
+        clean_emoji = emoji.strip()
+        with conn:
+            cursor = conn.execute(
+                "SELECT id FROM reactions WHERE message_id = ? AND sender = ? AND emoji = ?",
+                (message_id, clean_sender, clean_emoji),
+            )
+            row = cursor.fetchone()
+            if row:
+                conn.execute("DELETE FROM reactions WHERE id = ?", (row["id"],))
+                action = "removed"
+            else:
+                now = datetime.now().isoformat()
+                conn.execute(
+                    "INSERT INTO reactions (message_id, room_name, sender, emoji, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (message_id, room_name.strip(), clean_sender, clean_emoji, now),
+                )
+                action = "added"
+        reactions = self.get_message_reactions(message_id)
+        return {"action": action, "message_id": message_id, "emoji": clean_emoji, "reactions": reactions}
+
+    def resolve_decision(
+        self,
+        message_id: int,
+        decision: str,
+        decider: str = "Rui",
+    ) -> dict[str, Any] | None:
+        """Resolves a pending human decision request."""
+        conn = self._get_connection()
+        cursor = conn.execute("SELECT metadata FROM messages WHERE id = ?", (message_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        meta = json.loads(row["metadata"] or "{}")
+        meta["status"] = "resolved"
+        meta["decision"] = decision
+        meta["decided_by"] = decider
+        meta["decided_at"] = datetime.now().isoformat()
+        with conn:
+            conn.execute(
+                "UPDATE messages SET metadata = ? WHERE id = ?",
+                (json.dumps(meta), message_id),
+            )
+        return meta
+
+    def create_poll(
+        self,
+        room_name: str,
+        creator: str,
+        question: str,
+        options: list[str],
+    ) -> dict[str, Any]:
+        """Creates a new poll in a room."""
+        now = datetime.now().isoformat()
+        conn = self._get_connection()
+        clean_options = [opt.strip() for opt in options if opt.strip()]
+        if len(clean_options) < 2:
+            raise ValueError("Uma votação necessita de pelo menos 2 opções.")
+        with conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO polls (room_name, creator, question, options, is_closed, created_at)
+                VALUES (?, ?, ?, ?, 0, ?)
+                """,
+                (room_name.strip(), creator.strip(), question.strip(), json.dumps(clean_options), now),
+            )
+            poll_id = cursor.lastrowid
+        return self.get_poll(poll_id)
+
+    def cast_vote(
+        self,
+        poll_id: int,
+        voter: str,
+        option_index: int,
+    ) -> dict[str, Any]:
+        """Casts or updates a vote on an active poll."""
+        conn = self._get_connection()
+        cursor = conn.execute("SELECT is_closed, options FROM polls WHERE id = ?", (poll_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise ValueError(f"Poll #{poll_id} não existe.")
+        if row["is_closed"]:
+            raise ValueError(f"Poll #{poll_id} já se encontra encerrada.")
+        opts = json.loads(row["options"])
+        if option_index < 0 or option_index >= len(opts):
+            raise ValueError(f"Opção inválida ({option_index}). As opções vão de 0 a {len(opts)-1}.")
+        now = datetime.now().isoformat()
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO poll_votes (poll_id, voter, option_index, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(poll_id, voter) DO UPDATE SET
+                    option_index = excluded.option_index,
+                    created_at = excluded.created_at
+                """,
+                (poll_id, voter.strip(), option_index, now),
+            )
+        return self.get_poll(poll_id)
+
+    def close_poll(self, poll_id: int) -> dict[str, Any]:
+        """Closes a poll to prevent further votes."""
+        conn = self._get_connection()
+        now = datetime.now().isoformat()
+        with conn:
+            conn.execute(
+                "UPDATE polls SET is_closed = 1, closed_at = ? WHERE id = ?",
+                (now, poll_id),
+            )
+        return self.get_poll(poll_id)
+
+    def get_poll(self, poll_id: int) -> dict[str, Any] | None:
+        """Retrieves poll details with vote tallies and percentages."""
+        conn = self._get_connection()
+        cursor = conn.execute(
+            """
+            SELECT id, room_name, creator, question, options, is_closed, created_at, closed_at
+            FROM polls WHERE id = ?
+            """,
+            (poll_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        options = json.loads(row["options"])
+        votes_cursor = conn.execute(
+            "SELECT voter, option_index FROM poll_votes WHERE poll_id = ? ORDER BY id ASC",
+            (poll_id,),
+        )
+        all_votes = votes_cursor.fetchall()
+        total_votes = len(all_votes)
+
+        tally = {i: [] for i in range(len(options))}
+        for v in all_votes:
+            idx = v["option_index"]
+            if idx in tally:
+                tally[idx].append(v["voter"])
+
+        options_data = []
+        for i, opt_text in enumerate(options):
+            voters = tally[i]
+            pct = round((len(voters) / total_votes * 100), 1) if total_votes > 0 else 0.0
+            options_data.append({
+                "index": i,
+                "text": opt_text,
+                "votes": len(voters),
+                "percentage": pct,
+                "voters": voters,
+            })
+
+        return {
+            "id": row["id"],
+            "room_name": row["room_name"],
+            "creator": row["creator"],
+            "question": row["question"],
+            "options": options_data,
+            "total_votes": total_votes,
+            "is_closed": bool(row["is_closed"]),
+            "created_at": row["created_at"],
+            "closed_at": row["closed_at"],
+        }
+
     def get_messages(
         self,
         room_name: str,
@@ -352,7 +657,9 @@ class ChatStorage:
         if since_id > 0:
             cursor = conn.execute(
                 """
-                SELECT id, room_name, sender, role, content, is_verified, created_at
+                SELECT id, room_name, sender, role, content, is_verified, 
+                       COALESCE(message_type, 'text') as message_type, 
+                       COALESCE(metadata, '{}') as metadata, created_at
                 FROM messages
                 WHERE room_name = ? COLLATE NOCASE AND id > ?
                 ORDER BY id ASC
@@ -364,9 +671,11 @@ class ChatStorage:
             # Fetch the most recent `limit` messages, ordered chronologically
             cursor = conn.execute(
                 """
-                SELECT id, room_name, sender, role, content, is_verified, created_at
+                SELECT id, room_name, sender, role, content, is_verified, 
+                       COALESCE(message_type, 'text') as message_type, 
+                       COALESCE(metadata, '{}') as metadata, created_at
                 FROM (
-                    SELECT id, room_name, sender, role, content, is_verified, created_at
+                    SELECT id, room_name, sender, role, content, is_verified, message_type, metadata, created_at
                     FROM messages
                     WHERE room_name = ? COLLATE NOCASE
                     ORDER BY id DESC
@@ -376,7 +685,28 @@ class ChatStorage:
                 """,
                 (clean_room, limit),
             )
-        return [dict(row) for row in cursor.fetchall()]
+        rows = [dict(row) for row in cursor.fetchall()]
+        if not rows:
+            return []
+
+        # Batch load reactions
+        msg_ids = [r["id"] for r in rows]
+        reactions_map = self._get_reactions_map(msg_ids)
+
+        for r in rows:
+            r["is_verified"] = bool(r.get("is_verified", False))
+            r["message_type"] = r.get("message_type") or "text"
+            meta = r.get("metadata")
+            if isinstance(meta, str) and meta:
+                try:
+                    r["metadata"] = json.loads(meta)
+                except Exception:
+                    r["metadata"] = {}
+            elif not isinstance(meta, dict):
+                r["metadata"] = {}
+            r["reactions"] = reactions_map.get(r["id"], [])
+
+        return rows
 
     def get_room_log_file(self, room_name: str) -> Path:
         """Returns path to the text log file for the room."""

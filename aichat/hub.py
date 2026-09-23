@@ -74,9 +74,9 @@ class ChatHub:
             return False
         return self._verify_password(password, room["password_hash"], room["salt"])
 
-    def list_rooms(self) -> list[dict[str, Any]]:
+    def list_rooms(self, include_archived: bool = True) -> list[dict[str, Any]]:
         """Lists all existing rooms with metadata."""
-        return self.storage.list_rooms()
+        return self.storage.list_rooms(include_archived=include_archived)
 
     def get_room_info(self, room_name: str, password: str = "") -> dict[str, Any]:
         """Gets room information, verifying password if protected."""
@@ -164,10 +164,13 @@ class ChatHub:
         role: str = "agent",
         password: str = "",
         member_token: str = "",
+        message_type: str = "text",
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         Sends a message to the room.
         Validates member token for sender authentication.
+        Blocks sending if room is archived.
         Persists to SQLite, logs to file, broadcasts to WebSockets, and notifies waiting agents.
         """
         clean_sender = sender.strip()
@@ -181,6 +184,9 @@ class ChatHub:
         if not room:
             raise ValueError(f"Room '{room_name}' does not exist.")
         canonical_name = room["name"]
+
+        if room.get("is_archived", False):
+            raise ValueError(f"A sala '{canonical_name}' foi arquivada pelo utilizador humano e está em modo apenas de leitura.")
 
         if not self.verify_room_access(canonical_name, password):
             raise PermissionError(f"Access denied to room '{canonical_name}': Invalid or missing password.")
@@ -202,6 +208,8 @@ class ChatHub:
             role=role,
             content=clean_content,
             is_verified=is_verified,
+            message_type=message_type,
+            metadata=metadata,
         )
 
         # Print to console with clear timestamp, badge, and verification tag
@@ -220,6 +228,190 @@ class ChatHub:
         self._notify_listeners(canonical_name)
 
         return msg
+
+    def archive_room(self, room_name: str, requester_role: str = "human") -> dict[str, Any]:
+        """Archives a room. Restricted strictly to human users."""
+        if requester_role != "human":
+            raise PermissionError("Apenas o utilizador humano tem permissão para arquivar salas.")
+        room = self.storage.get_room(room_name)
+        if not room:
+            raise ValueError(f"Room '{room_name}' does not exist.")
+        self.storage.archive_room(room["name"])
+        return {"status": "archived", "room_name": room["name"]}
+
+    def unarchive_room(self, room_name: str, requester_role: str = "human") -> dict[str, Any]:
+        """Restores an archived room. Restricted strictly to human users."""
+        if requester_role != "human":
+            raise PermissionError("Apenas o utilizador humano tem permissão para desarquivar salas.")
+        room = self.storage.get_room(room_name)
+        if not room:
+            raise ValueError(f"Room '{room_name}' does not exist.")
+        self.storage.unarchive_room(room["name"])
+        return {"status": "unarchived", "room_name": room["name"]}
+
+    async def toggle_reaction(
+        self,
+        message_id: int,
+        room_name: str,
+        sender: str,
+        emoji: str,
+    ) -> dict[str, Any]:
+        """Toggles an emoji reaction on a message and broadcasts update."""
+        room = self.storage.get_room(room_name)
+        canonical_name = room["name"] if room else room_name
+        res = self.storage.toggle_reaction(message_id, canonical_name, sender, emoji)
+        await self._broadcast_to_websockets(canonical_name, {
+            "type": "reaction_updated",
+            "data": res,
+        })
+        return res
+
+    async def call_human(
+        self,
+        room_name: str,
+        sender: str,
+        question: str,
+        options: list[str] | None = None,
+        member_token: str = "",
+    ) -> dict[str, Any]:
+        """Calls the human user for a decision with optional predefined choices."""
+        opts = options or []
+        metadata = {
+            "status": "pending",
+            "question": question.strip(),
+            "options": opts,
+            "decision": None,
+            "decided_by": None,
+            "decided_at": None,
+        }
+        formatted_opts = ""
+        if opts:
+            formatted_opts = "\n\n**Opções propostas:**\n" + "\n".join(f"- **{i+1}.** {opt}" for i, opt in enumerate(opts))
+
+        content = f"🚨 **[DECISÃO HUMANA SOLICITADA]**\n\n{question.strip()}{formatted_opts}"
+        msg = await self.send_message(
+            room_name=room_name,
+            sender=sender,
+            content=content,
+            role="agent",
+            member_token=member_token,
+            message_type="decision_request",
+            metadata=metadata,
+        )
+        return msg
+
+    async def resolve_human_decision(
+        self,
+        message_id: int,
+        room_name: str,
+        decision: str,
+        decider: str = "Rui",
+    ) -> dict[str, Any]:
+        """Human submits their decision, resolving the request and posting a confirmation."""
+        meta = self.storage.resolve_decision(message_id, decision, decider=decider)
+        if not meta:
+            raise ValueError(f"Mensagem #{message_id} não encontrada.")
+        room = self.storage.get_room(room_name)
+        canonical_name = room["name"] if room else room_name
+        await self._broadcast_to_websockets(canonical_name, {
+            "type": "decision_resolved",
+            "message_id": message_id,
+            "metadata": meta,
+        })
+        resp_msg = await self.send_message(
+            room_name=canonical_name,
+            sender=decider,
+            content=f"👤 **[DECISÃO DO HUMANO]**:\n\nOpção escolhida: **{decision}**",
+            role="human",
+        )
+        return {"metadata": meta, "message": resp_msg}
+
+    async def create_poll(
+        self,
+        room_name: str,
+        creator: str,
+        question: str,
+        options: list[str],
+        member_token: str = "",
+    ) -> dict[str, Any]:
+        """Creates a poll and posts it to the room."""
+        room = self.storage.get_room(room_name)
+        if not room:
+            raise ValueError(f"Room '{room_name}' does not exist.")
+        if room.get("is_archived", False):
+            raise ValueError(f"A sala '{room['name']}' está arquivada.")
+
+        poll = self.storage.create_poll(room["name"], creator, question, options)
+        opts_str = "\n".join(f"- **{i+1}.** {opt}" for i, opt in enumerate(options))
+        content = f"📊 **[VOTAÇÃO ABERTA #{poll['id']}]**\n\n**{question.strip()}**\n\n{opts_str}\n\n*Usa cast_vote(poll_id={poll['id']}, option_index=...) ou vota na Web UI.*"
+        msg = await self.send_message(
+            room_name=room["name"],
+            sender=creator,
+            content=content,
+            role="agent",
+            member_token=member_token,
+            message_type="poll",
+            metadata={"poll_id": poll["id"]},
+        )
+        await self._broadcast_to_websockets(room["name"], {
+            "type": "poll_created",
+            "poll": poll,
+            "message_id": msg["id"],
+        })
+        return poll
+
+    async def cast_vote(
+        self,
+        poll_id: int,
+        voter: str,
+        option_index: int,
+    ) -> dict[str, Any]:
+        """Casts or updates a vote on an active poll."""
+        poll = self.storage.cast_vote(poll_id, voter, option_index)
+        await self._broadcast_to_websockets(poll["room_name"], {
+            "type": "poll_updated",
+            "poll": poll,
+        })
+        return poll
+
+    async def close_poll(
+        self,
+        poll_id: int,
+        closer: str,
+        is_human: bool = False,
+        member_token: str = "",
+    ) -> dict[str, Any]:
+        """Closes an active poll."""
+        p_current = self.storage.get_poll(poll_id)
+        if not p_current:
+            raise ValueError(f"Poll #{poll_id} não existe.")
+        if not is_human and p_current["creator"].strip().lower() != closer.strip().lower():
+            raise PermissionError("Apenas o criador da votação ou o humano podem encerrá-la.")
+        poll = self.storage.close_poll(poll_id)
+        results_str = "\n".join(f"- {opt['text']}: **{opt['votes']} votos ({opt['percentage']}%)**" for opt in poll["options"])
+
+        token_to_use = member_token
+        if not token_to_use and not is_human:
+            mem = self.storage.get_member(poll["room_name"], closer)
+            if mem and mem.get("token"):
+                token_to_use = mem["token"]
+
+        await self.send_message(
+            room_name=poll["room_name"],
+            sender=closer,
+            content=f"🏁 **[VOTAÇÃO ENCERRADA #{poll['id']}]**\n\n**{poll['question']}**\n\n**Resultado Final:**\n{results_str}\nTotal de votos: {poll['total_votes']}",
+            role="human" if is_human else "agent",
+            member_token=token_to_use,
+        )
+        await self._broadcast_to_websockets(poll["room_name"], {
+            "type": "poll_closed",
+            "poll": poll,
+        })
+        return poll
+
+    def get_poll(self, poll_id: int) -> dict[str, Any] | None:
+        """Retrieves poll state."""
+        return self.storage.get_poll(poll_id)
 
     def read_messages(
         self,

@@ -244,6 +244,169 @@ def get_room_transcript(room_name: str, password: str = "") -> str:
         return json.dumps({"status": "error", "error": str(e)})
 
 
+@mcp.tool()
+async def react_to_message(
+    message_id: int,
+    room_name: str,
+    emoji: str,
+    sender_name: str = "",
+    agent_name: str = "",
+    member_token: str = "",
+) -> str:
+    """
+    Adds or removes an emoji reaction on a message (e.g. '👍', '🚀', '❤️', '👀', '🎉', '👎').
+    Calling again with the same emoji toggles (removes) it.
+    """
+    try:
+        sender = (sender_name or agent_name or "Agent").strip()
+        res = await hub.toggle_reaction(
+            message_id=message_id,
+            room_name=room_name,
+            sender=sender,
+            emoji=emoji,
+        )
+        return json.dumps({"status": "success", "data": res}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+async def call_human(
+    room_name: str,
+    question: str,
+    sender_name: str = "",
+    agent_name: str = "",
+    options: list[str] = [],
+    member_token: str = "",
+) -> str:
+    """
+    Calls the human user for an important decision, impasse resolution, or architectural choice.
+    Renders high-visibility alert cards, desktop notifications, and quick-action choice buttons in the human's Web UI.
+    - options: Optional list of proposed choices (e.g. ['Option A: Vector DB', 'Option B: SQLite']).
+    """
+    try:
+        sender = (sender_name or agent_name or "Agent").strip()
+        msg = await hub.call_human(
+            room_name=room_name,
+            sender=sender,
+            question=question,
+            options=options,
+            member_token=member_token,
+        )
+        return json.dumps({
+            "status": "success",
+            "message_id": msg["id"],
+            "room": room_name,
+            "sender": sender,
+            "question": question,
+            "options": options,
+            "created_at": msg["created_at"],
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+async def create_poll(
+    room_name: str,
+    question: str,
+    options: list[str],
+    creator_name: str = "",
+    agent_name: str = "",
+    member_token: str = "",
+) -> str:
+    """
+    Creates a voting poll in the chat room for team decisions.
+    - options: List of at least 2 choices to vote on.
+    """
+    try:
+        creator = (creator_name or agent_name or "Agent").strip()
+        poll = await hub.create_poll(
+            room_name=room_name,
+            creator=creator,
+            question=question,
+            options=options,
+            member_token=member_token,
+        )
+        return json.dumps({"status": "success", "poll": poll}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+async def cast_vote(
+    poll_id: int,
+    option_index: int,
+    voter_name: str = "",
+    agent_name: str = "",
+    member_token: str = "",
+) -> str:
+    """
+    Casts a vote on an active poll.
+    - option_index: 0-indexed choice position.
+    """
+    try:
+        voter = (voter_name or agent_name or "Agent").strip()
+        poll = await hub.cast_vote(
+            poll_id=poll_id,
+            voter=voter,
+            option_index=option_index,
+        )
+        return json.dumps({"status": "success", "poll": poll}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def get_poll(poll_id: int) -> str:
+    """
+    Gets live poll status, vote counts per option, and percentages.
+    """
+    try:
+        poll = hub.get_poll(poll_id)
+        if not poll:
+            return json.dumps({"status": "error", "error": f"Poll #{poll_id} not found."})
+        return json.dumps({"status": "success", "poll": poll}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+async def close_poll(
+    poll_id: int,
+    closer_name: str = "",
+    agent_name: str = "",
+    member_token: str = "",
+) -> str:
+    """
+    Closes an active poll (can only be closed by its creator or the human user).
+    """
+    try:
+        closer = (closer_name or agent_name or "Agent").strip()
+        poll = await hub.close_poll(
+            poll_id=poll_id,
+            closer=closer,
+            is_human=False,
+            member_token=member_token,
+        )
+        return json.dumps({"status": "success", "poll": poll}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def archive_room(room_name: str, requester_name: str = "", requester_role: str = "agent") -> str:
+    """
+    Archives a chat room to read-only mode.
+    WARNING: THIS TOOL IS STRICTLY RESTRICTED TO THE HUMAN USER. AGENTS CANNOT ARCHIVE ROOMS.
+    """
+    try:
+        res = hub.archive_room(room_name=room_name, requester_role=requester_role)
+        return json.dumps({"status": "success", "details": res}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
 @mcp.resource("chat://rooms")
 def resource_rooms() -> str:
     """Resource listing all chat rooms."""

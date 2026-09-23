@@ -16,6 +16,13 @@ from aichat.mcp_server import (
     read_messages as tool_read_messages,
     send_message as tool_send_message,
     wait_for_new_messages as tool_wait_for_new_messages,
+    react_to_message as tool_react_to_message,
+    call_human as tool_call_human,
+    create_poll as tool_create_poll,
+    cast_vote as tool_cast_vote,
+    get_poll as tool_get_poll,
+    close_poll as tool_close_poll,
+    archive_room as tool_archive_room,
 )
 from aichat.storage import ChatStorage
 from aichat.web_app import create_app
@@ -128,6 +135,73 @@ class TestChatStorage(unittest.TestCase):
         self.assertTrue(msgs[0]["is_verified"])
         self.assertFalse(msgs[1]["is_verified"])
 
+    def test_storage_reactions_and_decisions(self):
+        self.storage.create_room("reaction-room")
+        msg = self.storage.add_message("reaction-room", "AgentA", "agent", "Test message")
+        
+        # Toggle reaction (add)
+        res1 = self.storage.toggle_reaction(msg["id"], "reaction-room", "User1", "👍")
+        self.assertEqual(res1["action"], "added")
+        self.assertEqual(len(res1["reactions"]), 1)
+        self.assertEqual(res1["reactions"][0]["count"], 1)
+
+        # Another user reacts with same emoji
+        res2 = self.storage.toggle_reaction(msg["id"], "reaction-room", "User2", "👍")
+        self.assertEqual(res2["action"], "added")
+        self.assertEqual(res2["reactions"][0]["count"], 2)
+
+        # User1 removes reaction
+        res3 = self.storage.toggle_reaction(msg["id"], "reaction-room", "User1", "👍")
+        self.assertEqual(res3["action"], "removed")
+        self.assertEqual(res3["reactions"][0]["count"], 1)
+
+        # Add decision request
+        dmsg = self.storage.add_message(
+            "reaction-room", "AgentA", "agent", "Need decision",
+            message_type="decision_request",
+            metadata={"status": "pending", "options": ["Yes", "No"]},
+        )
+        self.assertEqual(dmsg["message_type"], "decision_request")
+        resolved = self.storage.resolve_decision(dmsg["id"], "Yes", decider="Admin")
+        self.assertEqual(resolved["status"], "resolved")
+        self.assertEqual(resolved["decision"], "Yes")
+        self.assertEqual(resolved["decided_by"], "Admin")
+
+    def test_storage_polls(self):
+        self.storage.create_room("poll-room")
+        poll = self.storage.create_poll("poll-room", "AgentCreator", "Deploy to prod?", ["Yes", "No"])
+        self.assertEqual(poll["question"], "Deploy to prod?")
+        self.assertEqual(len(poll["options"]), 2)
+        self.assertFalse(poll["is_closed"])
+
+        # Vote
+        poll = self.storage.cast_vote(poll["id"], "Voter1", 0)
+        self.assertEqual(poll["total_votes"], 1)
+        self.assertEqual(poll["options"][0]["votes"], 1)
+        self.assertEqual(poll["options"][0]["percentage"], 100.0)
+
+        # Second vote
+        poll = self.storage.cast_vote(poll["id"], "Voter2", 1)
+        self.assertEqual(poll["total_votes"], 2)
+        self.assertEqual(poll["options"][0]["percentage"], 50.0)
+        self.assertEqual(poll["options"][1]["percentage"], 50.0)
+
+        # Close poll
+        closed = self.storage.close_poll(poll["id"])
+        self.assertTrue(closed["is_closed"])
+
+    def test_storage_archive_room(self):
+        self.storage.create_room("arch-room")
+        self.storage.archive_room("arch-room")
+        room = self.storage.get_room("arch-room")
+        self.assertTrue(room["is_archived"])
+
+        rooms_active = self.storage.list_rooms(include_archived=False)
+        self.assertFalse(any(r["name"] == "arch-room" for r in rooms_active))
+
+        self.storage.unarchive_room("arch-room")
+        room_un = self.storage.get_room("arch-room")
+        self.assertFalse(room_un["is_archived"])
 
 
 class TestChatHubAndAuth(unittest.IsolatedAsyncioTestCase):
@@ -369,6 +443,66 @@ class TestChatHubAndAuth(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["messages"]), 1)
         self.assertEqual(result["messages"][0]["content"], "API deployed!")
 
+    async def test_hub_call_human_and_decision_resolve(self):
+        self.hub.create_room("decision-room")
+        msg = await self.hub.call_human(
+            "decision-room",
+            sender="CodeAgent",
+            question="Which database to use?",
+            options=["PostgreSQL", "SQLite"],
+        )
+        self.assertEqual(msg["message_type"], "decision_request")
+        self.assertEqual(msg["metadata"]["status"], "pending")
+
+        res = await self.hub.resolve_human_decision(msg["id"], "decision-room", "PostgreSQL", decider="HumanRui")
+        self.assertEqual(res["metadata"]["status"], "resolved")
+        self.assertEqual(res["metadata"]["decision"], "PostgreSQL")
+        # Check confirmation message was posted
+        msgs = self.hub.read_messages("decision-room")
+        self.assertTrue(any("Opção escolhida: **PostgreSQL**" in m["content"] for m in msgs))
+
+    async def test_hub_polls_and_archive_restrictions(self):
+        self.hub.create_room("poll-archive-room")
+        poll = await self.hub.create_poll(
+            "poll-archive-room",
+            creator="PollAgent",
+            question="Merge PR?",
+            options=["Yes", "No"],
+        )
+        self.assertEqual(poll["question"], "Merge PR?")
+
+        # Vote
+        poll = await self.hub.cast_vote(poll["id"], "Reviewer1", 0)
+        self.assertEqual(poll["options"][0]["votes"], 1)
+
+        # Non-creator agent trying to close poll raises PermissionError
+        with self.assertRaises(PermissionError):
+            await self.hub.close_poll(poll["id"], closer="IntruderAgent", is_human=False)
+
+        # Human can close poll
+        closed = await self.hub.close_poll(poll["id"], closer="HumanRui", is_human=True)
+        self.assertTrue(closed["is_closed"])
+
+        # Agent cannot archive room
+        with self.assertRaises(PermissionError):
+            self.hub.archive_room("poll-archive-room", requester_role="agent")
+
+        # Human can archive room
+        arch = self.hub.archive_room("poll-archive-room", requester_role="human")
+        self.assertEqual(arch["status"], "archived")
+
+        # Sending message to archived room fails
+        with self.assertRaises(ValueError):
+            await self.hub.send_message("poll-archive-room", "Agent1", "Hello?", role="agent")
+
+        # Human can unarchive
+        unarch = self.hub.unarchive_room("poll-archive-room", requester_role="human")
+        self.assertEqual(unarch["status"], "unarchived")
+
+        # Can send message now
+        msg_ok = await self.hub.send_message("poll-archive-room", "Agent1", "Hello again!", role="agent")
+        self.assertEqual(msg_ok["content"], "Hello again!")
+
 
 
 class TestWebAppAndApi(unittest.TestCase):
@@ -416,6 +550,55 @@ class TestWebAppAndApi(unittest.TestCase):
         self.assertTrue(isinstance(voices, list))
         self.assertTrue(any(v["id"] == "pt-PT-DuarteNeural" for v in voices))
 
+    def test_api_new_features_endpoints(self):
+        import uuid
+        room_name = f"api-feat-{uuid.uuid4().hex[:6]}"
+        self.client.post("/api/rooms", json={"name": room_name, "topic": "Features API Testing"})
+
+        # Send a message
+        msg_res = self.client.post(
+            f"/api/rooms/{room_name}/messages",
+            json={"sender": "Tester", "content": "Let's react to this", "role": "human"},
+        )
+        msg_id = msg_res.json()["id"]
+
+        # Reaction endpoint
+        react_res = self.client.post(
+            f"/api/messages/{msg_id}/reactions",
+            json={"room_name": room_name, "sender": "Tester", "emoji": "🚀"},
+        )
+        self.assertEqual(react_res.status_code, 200)
+        self.assertEqual(react_res.json()["action"], "added")
+
+        # Poll endpoint
+        poll_res = self.client.post(
+            "/api/polls",
+            json={
+                "room_name": room_name,
+                "creator": "Tester",
+                "question": "Feature ready?",
+                "options": ["Yes", "Not yet"],
+            },
+        )
+        self.assertEqual(poll_res.status_code, 201)
+        poll_id = poll_res.json()["id"]
+
+        # Vote endpoint
+        vote_res = self.client.post(
+            f"/api/polls/{poll_id}/vote",
+            json={"voter": "Tester", "option_index": 0},
+        )
+        self.assertEqual(vote_res.status_code, 200)
+        self.assertEqual(vote_res.json()["options"][0]["votes"], 1)
+
+        # Archive room endpoint
+        arch_res = self.client.post(f"/api/rooms/{room_name}/archive")
+        self.assertEqual(arch_res.status_code, 200)
+
+        # Unarchive room endpoint
+        unarch_res = self.client.post(f"/api/rooms/{room_name}/unarchive")
+        self.assertEqual(unarch_res.status_code, 200)
+
 
 class TestMCPTools(unittest.IsolatedAsyncioTestCase):
     """Tests for FastMCP tool functions directly."""
@@ -452,6 +635,48 @@ class TestMCPTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(read_res["status"], "success")
         self.assertEqual(len(read_res["messages"]), 1)
         self.assertTrue(read_res["messages"][0]["is_verified"])
+
+    async def test_mcp_new_tools_flow(self):
+        import uuid
+        room_name = f"mcp-feat-{uuid.uuid4().hex[:6]}"
+        tool_create_room(room_name, topic="MCP Features")
+        join_res = json.loads(tool_join_room(room_name, agent_name="FeatureAgent"))
+        token = join_res["member_token"]
+
+        # Send message
+        s_res = json.loads(await tool_send_message(room_name, sender_name="FeatureAgent", content="Need help", member_token=token))
+        msg_id = s_res["message_id"]
+
+        # React tool
+        r_res = json.loads(await tool_react_to_message(message_id=msg_id, room_name=room_name, agent_name="FeatureAgent", emoji="👍"))
+        self.assertEqual(r_res["status"], "success")
+
+        # Call human tool
+        call_res = json.loads(await tool_call_human(room_name, agent_name="FeatureAgent", question="Deploy now?", options=["Yes", "Wait"], member_token=token))
+        self.assertEqual(call_res["status"], "success")
+
+        # Create poll tool
+        p_res = json.loads(await tool_create_poll(room_name, agent_name="FeatureAgent", question="Is this great?", options=["Yes", "Definitely"], member_token=token))
+        self.assertEqual(p_res["status"], "success")
+        poll_id = p_res["poll"]["id"]
+
+        # Vote tool
+        v_res = json.loads(await tool_cast_vote(poll_id, voter_name="FeatureAgent", option_index=0))
+        self.assertEqual(v_res["status"], "success")
+
+        # Get poll tool
+        gp_res = json.loads(tool_get_poll(poll_id))
+        self.assertEqual(gp_res["status"], "success")
+        self.assertEqual(gp_res["poll"]["options"][0]["votes"], 1)
+
+        # Close poll tool
+        cp_res = json.loads(await tool_close_poll(poll_id, closer_name="FeatureAgent"))
+        self.assertEqual(cp_res["status"], "success")
+
+        # Archive room tool as agent -> blocked
+        ar_res = json.loads(tool_archive_room(room_name, requester_name="FeatureAgent", requester_role="agent"))
+        self.assertEqual(ar_res["status"], "error")
+        self.assertIn("utilizador humano", ar_res["error"])
 
 
 if __name__ == "__main__":

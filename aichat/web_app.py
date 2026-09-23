@@ -29,7 +29,8 @@ async def endpoint_index(request: Request) -> Response:
 
 async def endpoint_get_rooms(request: Request) -> Response:
     """Lists all rooms with metadata."""
-    rooms = hub.list_rooms()
+    include_archived = request.query_params.get("include_archived", "true").lower() in ("true", "1")
+    rooms = hub.list_rooms(include_archived=include_archived)
     return JSONResponse(rooms)
 
 
@@ -190,6 +191,125 @@ async def endpoint_room_sse_stream(request: Request) -> Response:
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+async def endpoint_toggle_reaction(request: Request) -> Response:
+    """Toggles an emoji reaction on a message."""
+    message_id = int(request.path_params["message_id"])
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    room_name = data.get("room_name", "").strip()
+    sender = data.get("sender", "Human").strip()
+    emoji = data.get("emoji", "").strip()
+    if not emoji:
+        return JSONResponse({"error": "Emoji is required"}, status_code=400)
+    try:
+        res = await hub.toggle_reaction(message_id, room_name, sender, emoji)
+        return JSONResponse(res)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_resolve_decision(request: Request) -> Response:
+    """Resolves a pending human decision request."""
+    message_id = int(request.path_params["message_id"])
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    room_name = data.get("room_name", "").strip()
+    decision = data.get("decision", "").strip()
+    decider = data.get("decider", "Rui").strip()
+    if not decision:
+        return JSONResponse({"error": "Decision is required"}, status_code=400)
+    try:
+        res = await hub.resolve_human_decision(message_id, room_name, decision, decider)
+        return JSONResponse(res)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_create_poll(request: Request) -> Response:
+    """Creates a poll in a room."""
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    room_name = data.get("room_name", "").strip()
+    creator = data.get("creator", "Human").strip()
+    question = data.get("question", "").strip()
+    options = data.get("options", [])
+    if not question or len(options) < 2:
+        return JSONResponse({"error": "Question and at least 2 options are required"}, status_code=400)
+    try:
+        poll = await hub.create_poll(room_name, creator, question, options)
+        return JSONResponse(poll, status_code=201)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_cast_vote(request: Request) -> Response:
+    """Casts a vote on a poll."""
+    poll_id = int(request.path_params["poll_id"])
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    voter = data.get("voter", "Human").strip()
+    option_index = int(data.get("option_index", 0))
+    try:
+        poll = await hub.cast_vote(poll_id, voter, option_index)
+        return JSONResponse(poll)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_get_poll(request: Request) -> Response:
+    """Gets poll details."""
+    poll_id = int(request.path_params["poll_id"])
+    poll = hub.get_poll(poll_id)
+    if not poll:
+        return JSONResponse({"error": "Poll not found"}, status_code=404)
+    return JSONResponse(poll)
+
+
+async def endpoint_close_poll(request: Request) -> Response:
+    """Closes an active poll."""
+    poll_id = int(request.path_params["poll_id"])
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    closer = data.get("closer", "Human").strip()
+    try:
+        poll = await hub.close_poll(poll_id, closer, is_human=True)
+        return JSONResponse(poll)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_archive_room(request: Request) -> Response:
+    """Archives a room. Restricted strictly to human users."""
+    room_name = request.path_params["room_name"]
+    try:
+        res = hub.archive_room(room_name, requester_role="human")
+        await hub._broadcast_to_websockets(room_name, {"type": "room_archived", "room_name": room_name})
+        return JSONResponse(res)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=403)
+
+
+async def endpoint_unarchive_room(request: Request) -> Response:
+    """Unarchives a room. Restricted strictly to human users."""
+    room_name = request.path_params["room_name"]
+    try:
+        res = hub.unarchive_room(room_name, requester_role="human")
+        await hub._broadcast_to_websockets(room_name, {"type": "room_unarchived", "room_name": room_name})
+        return JSONResponse(res)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=403)
+
+
 async def endpoint_status(request: Request) -> Response:
     """Returns server health status."""
     return JSONResponse({
@@ -310,6 +430,14 @@ def create_app() -> Starlette:
         Route("/api/rooms", endpoint=endpoint_create_room, methods=["POST"]),
         Route("/api/rooms/{room_name}/messages", endpoint=endpoint_get_messages, methods=["GET"]),
         Route("/api/rooms/{room_name}/messages", endpoint=endpoint_post_message, methods=["POST"]),
+        Route("/api/messages/{message_id:int}/reactions", endpoint=endpoint_toggle_reaction, methods=["POST"]),
+        Route("/api/decisions/{message_id:int}/resolve", endpoint=endpoint_resolve_decision, methods=["POST"]),
+        Route("/api/polls", endpoint=endpoint_create_poll, methods=["POST"]),
+        Route("/api/polls/{poll_id:int}", endpoint=endpoint_get_poll, methods=["GET"]),
+        Route("/api/polls/{poll_id:int}/vote", endpoint=endpoint_cast_vote, methods=["POST"]),
+        Route("/api/polls/{poll_id:int}/close", endpoint=endpoint_close_poll, methods=["POST"]),
+        Route("/api/rooms/{room_name}/archive", endpoint=endpoint_archive_room, methods=["POST"]),
+        Route("/api/rooms/{room_name}/unarchive", endpoint=endpoint_unarchive_room, methods=["POST"]),
         Route("/api/rooms/{room_name}/log", endpoint=endpoint_download_log, methods=["GET"]),
         Route("/api/rooms/{room_name}/jsonl", endpoint=endpoint_download_jsonl, methods=["GET"]),
         Route("/api/rooms/{room_name}/stream", endpoint=endpoint_room_sse_stream, methods=["GET"]),
