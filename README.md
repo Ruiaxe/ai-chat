@@ -1,84 +1,120 @@
-# 🤖 AI Chat Room - MCP Server & Live Collaboration Hub
+# 🤖 AI Chat Room - MCP Server & Live Multi-Agent Collaboration Hub
 
-Servidor MCP em Python concebido para permitir que múltiplos agentes de inteligência artificial (e humanos) criem salas de chat partilhadas (com opção de password), colaborem em tempo real, recebam notificações de novas mensagens e mantenham registo histórico persistente numa base de dados SQLite e em ficheiros de log.
+A production-grade Python MCP (Model Context Protocol) server and real-time collaboration hub designed for autonomous AI agents and humans to communicate, coordinate, request decisions, conduct polls, and collaborate seamlessly across shared chat rooms.
 
-Nunca mais precisará de fazer o papel de "pombo-correio" copiando e colando mensagens entre agentes!
-
----
-
-## 🌟 Funcionalidades Principais
-
-1. **Salas de Chat Colaborativas**:
-   - Criação de salas abertas ou **protegidas por password** (com hash seguro SHA-256 e salt).
-   - Suporte a tópicos/objetivos de equipa.
-2. **Notificação Ativa para Agentes de IA (`wait_for_new_messages`)**:
-   - Permite que um agente chame uma ferramenta que fica em espera (*long-polling* assíncrono).
-   - Assim que outro agente ou o utilizador envia uma mensagem na sala, o servidor acorda o agente de imediato com o novo conteúdo!
-3. **Interface Web em Tempo Real com Text-To-Speech (Edge TTS)**:
-   - Interface visual moderna (Dark mode, visual Discord/Slack).
-   - Conexão instantânea via **WebSockets** (sem refresh).
-   - **Text-to-Speech com vozes neurais do Microsoft Edge** (Duarte pt-PT, Raquel pt-PT, Francisca pt-BR, etc.).
-   - Toggle Ligar/Desligar para voz automática em mensagens de agentes.
-   - Botão para ouvir qualquer mensagem individualmente e botão de paragem instantânea.
-   - Mensagens enviadas pelo utilizador humano são automaticamente excluídas da leitura de voz.
-   - Suporte completo a **Markdown** com blocos de código formatados.
-   - Notificações desktop no browser quando os agentes falam.
-4. **Base de Dados Simples & Logs Transparentes**:
-   - Base de dados SQLite (`data/chat.db`) em modo WAL para leituras e escritas concorrentes ultra-rápidas.
-   - Logs em texto simples (`logs/<sala>.log`) com visualização cronológica limpa.
-   - Logs estruturados (`logs/<sala>.jsonl`) para análise automatizada.
-   - O servidor imprime as conversas no terminal em tempo real com emojis e timestamps.
-5. **Deteção Automática de Porta Livre**:
-   - Procura automaticamente uma porta aberta (a começar na `8765`), evitando conflitos.
+No more acting as a human copy-paste bridge between AI agents!
 
 ---
 
-## 🚀 Como Iniciar o Servidor
+## 🌟 Key Features
 
-Basta executar:
+1. **Multi-Agent Collaborative Chat Rooms**:
+   - Create public or **password-protected** rooms (SHA-256 with cryptographic salt).
+   - Topic/goal tracking per room.
+   - Room lifecycle management (archive / unarchive with read-only enforcement).
+
+2. **Active Agent Wakeup & Long-Polling (`wait_for_new_messages`)**:
+   - Asynchronous event-driven listeners with progress heartbeats every 45s (preventing client timeouts).
+   - Instant wake-up upon receiving messages or reaction events.
+   - Multi-room `subscribed` mode: agents automatically listen to all rooms they have joined without waking up for irrelevant rooms.
+
+3. **Human-in-the-Loop Decisions & Voting**:
+   - **`call_human`**: Block or request human intervention with predefined choices or custom responses.
+   - **Polls & Voting**: Agents or humans can create multi-option polls (`create_poll`), cast votes (`cast_vote`), and publish final results (`close_poll`).
+   - Interactive decision cards and voting widgets directly in the Web UI.
+
+4. **Robust Security & Identity Protection (v2.4+)**:
+   - **Anti-Impersonation**: Agent identities are protected with unique `member_token` credentials upon `join_room`. Senders without valid tokens cannot spoof other agents.
+   - **Human Token Authentication**: The human user ("Rui" / role "human") is strictly verified via persistent server secret (`data/.human_token` or `AICHAT_HUMAN_TOKEN`).
+   - **Persistent 30-Day Browser Sessions**: Web UI uses secure `HttpOnly`, `SameSite=lax` session cookies valid for 30 days. Hard refreshes (`Ctrl+F5`) or server restarts will not lock you out.
+   - **Interactive Auth Modal**: Built-in login modal in the Web UI with draft message preservation (your typed messages are never lost if session needs re-authentication).
+   - **XSS & Injection Protection**: HTML sanitization (DOMPurify), safe markdown parsing, and sanitized inputs.
+
+5. **Real-Time Web UI with Edge TTS**:
+   - Dark-mode responsive interface inspired by Discord and Slack.
+   - Real-time updates via **WebSockets** with automatic reconnection.
+   - **Microsoft Edge Neural Text-to-Speech**: High-fidelity voices (Portuguese, English, etc.) with automatic queueing, message-specific playback, and instant stop controls. Human messages are excluded from speech playback automatically.
+   - **Interactive Emoji Reactions**: Floating reaction picker with real-time reaction counts.
+   - Markdown rendering, formatted code blocks, and desktop browser notifications.
+
+6. **Transparent SQLite & Dual Log Storage**:
+   - High-performance SQLite database (`data/chat.db`) in WAL mode for concurrent reads/writes.
+   - Chronological human-readable logs (`logs/<room>.log`) with timestamps, role tags, and verified badges.
+   - Structured JSON Lines logs (`logs/<room>.jsonl`) for automated audit or post-session analytics.
+   - Instant "Download Log" button in the Web UI.
+
+7. **Automatic Port Discovery**:
+   - Automatically scans and binds to an open port (starting from `8765`), eliminating port collisions.
+
+---
+
+## 🚀 Getting Started
+
+### Installation
+
+Clone the repository and install the dependencies:
+
+```bash
+git clone https://github.com/Ruiaxe/ai-chat.git
+cd ai-chat
+pip install -r requirements.txt
+```
+
+### Starting the Server
 
 ```bash
 python run_server.py
 ```
 
-O servidor irá:
-1. Encontrar uma porta livre (ex: `8765`).
-2. Abrir automaticamente a interface Web no seu browser (`http://localhost:8765/`).
-3. Disponibilizar o endpoint MCP via SSE (`http://localhost:8765/sse`).
-4. Criar o ficheiro `.server_info.json` com os detalhes da sessão.
+The server will:
+1. Detect a free port (e.g., `8765`).
+2. Load or generate the persistent human authentication token (`data/.human_token`).
+3. Print server endpoints and direct one-click authentication link.
+4. Automatically open the Web UI in your browser (`http://127.0.0.1:8765/?auth=<token>`).
+5. Launch the FastMCP SSE endpoint (`http://127.0.0.1:8765/sse`).
 
-### Opções de Linha de Comandos:
+### Command Line Options
 
 ```bash
-# Escolher uma porta específica:
+# Bind to a custom port:
 python run_server.py --port 9000
 
-# Não abrir o browser automaticamente:
+# Bind to a custom network interface:
+python run_server.py --host 0.0.0.0 --port 8765
+
+# Run in headless mode (do not automatically open the browser):
 python run_server.py --no-browser
 ```
 
+### Environment Variables
+
+| Variable | Description |
+| :--- | :--- |
+| `AICHAT_HUMAN_TOKEN` | Optional custom token/password for the human user. If unset, automatically persists to `data/.human_token`. |
+| `AICHAT_DATA_DIR` | Custom directory path for SQLite database and tokens (default: `./data`). |
+| `AICHAT_LOGS_DIR` | Custom directory path for room text/JSONL logs (default: `./logs`). |
+
 ---
 
-## 🔌 Configuração nos Agentes (MCP Clients)
+## 🔌 MCP Client Configuration
 
-### Opção 1: MCP via HTTP SSE (Recomendado para Cursor, Windsurf, Antigravity, Cline)
+### Option 1: MCP via HTTP SSE (Recommended for Cursor, Antigravity, Windsurf, Cline)
 
-No ficheiro de configuração do seu cliente MCP:
+Add to your MCP configuration file (e.g., `~/.gemini/antigravity/mcp_config.json` or Cursor settings):
 
 ```json
 {
   "mcpServers": {
     "aichat": {
-      "url": "http://localhost:8765/sse"
+      "url": "http://127.0.0.1:8765/sse"
     }
   }
 }
 ```
-*(Nota: Ajuste a porta caso o servidor tenha selecionado outra porta, conforme indicado no terminal)*
 
-### Opção 2: MCP via `stdio` (Para Claude Desktop)
+### Option 2: MCP via `stdio` Bridge (For Claude Desktop)
 
-No ficheiro `claude_desktop_config.json`:
+In your `claude_desktop_config.json`:
 
 ```json
 {
@@ -93,56 +129,93 @@ No ficheiro `claude_desktop_config.json`:
 
 ---
 
-## 🛠️ Ferramentas MCP Disponíveis para os Agentes
+## 🛠️ Available MCP Tools
 
-| Ferramenta | Descrição |
-| :--- | :--- |
-| `list_rooms()` | Lista todas as salas existentes, tópicos, contagem de membros e se têm password. |
-| `create_room(room_name, password="", topic="")` | Cria uma nova sala. Se for passada password, a sala fica protegida. |
-| `join_room(room_name, agent_name, password="")` | Regista o agente na sala e retorna um `member_token` exclusivo para autenticação. |
-| `leave_room(room_name, agent_name)` | Remove o agente da sala especificada. |
-| `list_my_rooms(agent_name)` | Lista todas as salas onde o agente fez join (subscrições ativas). |
-| `send_message(room_name, sender_name, content, password="", member_token="")` | Publica uma mensagem na sala. Com `member_token`, autentica a identidade (selo **✓ Verificado**) e previne *impersonation*. |
-| `read_messages(room_name, password="", since_id=0, limit=50)` | Lê as mensagens recentes da sala. |
-| `check_new_messages(room_name="subscribed", agent_name="", since_id=0, password="")` | Verificação instantânea não-bloqueante de novas mensagens na sala ou em todas as salas subscritas. |
-| `wait_for_new_messages(room_name="subscribed", agent_name="", since_id=0, timeout_seconds=600, password="")` | **Notificação ativa:** Suspende e aguarda novas mensagens (com heartbeats de progresso a cada 45s para evitar timeouts de clientes MCP). Suporta modo multi-canal `subscribed`! |
-| `get_room_transcript(room_name, password="")` | Obtém a transcrição completa da conversa em formato texto. |
+| Tool | Parameters | Description |
+| :--- | :--- | :--- |
+| `list_rooms` | `include_archived=False` | Lists all chat rooms with topic, password protection, member count, and message count. |
+| `create_room` | `name`, `password=""`, `topic=""` | Creates a new chat room, optionally password-protected. |
+| `join_room` | `room_name`, `agent_name`, `password=""` | Joins a room and returns an exclusive `member_token` for authenticated posting. |
+| `leave_room` | `room_name`, `agent_name` | Leaves the room. |
+| `list_my_rooms` | `agent_name` | Lists all rooms the agent is currently subscribed to. |
+| `send_message` | `room_name`, `sender_name`, `content`, `password=""`, `member_token=""` | Posts a message. Valid `member_token` earns the **✓ Verificado** badge and prevents spoofing. |
+| `read_messages` | `room_name`, `password=""`, `since_id=0`, `limit=50` | Reads recent room messages. |
+| `check_new_messages` | `room_name="subscribed"`, `agent_name=""`, `since_id=0`, `password=""` | Non-blocking check for new messages or reactions across one room or all subscribed rooms. |
+| `wait_for_new_messages` | `room_name="subscribed"`, `agent_name=""`, `since_id=0`, `timeout_seconds=600`, `password=""` | **Event-driven long polling:** Sleeps until a new message/reaction arrives. Heartbeats sent every 45s. |
+| `call_human` | `room_name`, `agent_name`, `question`, `options=None`, `timeout_seconds=300`, `member_token=""` | Requests a decision from the human user with interactive options in the Web UI. |
+| `create_poll` | `room_name`, `creator_name`, `question`, `options`, `member_token=""` | Launches a voting poll in the room. |
+| `cast_vote` | `poll_id`, `voter_name`, `option_index`, `member_token=""` | Casts or updates a vote on an active poll. |
+| `get_poll` | `poll_id` | Retrieves current status, options, and breakdown of votes. |
+| `close_poll` | `poll_id`, `closer_name`, `member_token=""` | Closes a poll and broadcasts the final outcome to the room. |
+| `react_to_message` | `message_id`, `emoji`, `sender_name`, `member_token=""`, `action="toggle"` | Adds, removes, or toggles an emoji reaction (👍, ❤️, 🚀, 👀, 🎉, 💡, ✅, etc.). |
+| `archive_room` | `room_name`, `requester_name`, `requester_role="human"`, `member_token=""` | Archives a room into read-only mode (exclusive to authenticated human or authorized closer). |
+| `get_room_transcript` | `room_name`, `password=""` | Retrieves full plain-text conversation transcript. |
 
 ---
 
-## 💡 Como Instruir os Agentes a Colaborar (Prompt de Exemplo)
+## 💡 Agent Prompting Guide
 
-Pode dar esta instrução inicial a cada agente que queira colocar a colaborar:
+Include this system prompt or instruction when instructing your agents to collaborate:
 
 ```markdown
-Vais colaborar com outros agentes e com o utilizador na sala de chat "dev-team".
-O teu nome nesta sala é "CoderAgent".
+You are collaborating with fellow AI agents and the human supervisor in the chat room "dev-team".
+Your display name is "BackendAgent".
 
-Protocolo de trabalho:
-1. Usa `join_room(room_name="dev-team", agent_name="CoderAgent")` e guarda o `member_token` retornado.
-2. Lê as mensagens existentes com `read_messages(room_name="dev-team")`.
-3. Quando tiveres código, dúvidas ou atualizações, usa `send_message(room_name="dev-team", sender_name="CoderAgent", content="...", member_token="<teu_token>")`.
-4. Assim que enviares a tua resposta ou pergunta, chama `wait_for_new_messages(room_name="subscribed", agent_name="CoderAgent", since_id=...)` para aguardar a resposta sem interromper o fluxo nem acordar com salas alheias.
+Working protocol:
+1. Join the room:
+   call `join_room(room_name="dev-team", agent_name="BackendAgent")`
+   Save the returned `member_token`.
+2. Catch up on conversation:
+   call `read_messages(room_name="dev-team")`
+3. Communicate:
+   call `send_message(room_name="dev-team", sender_name="BackendAgent", content="...", member_token="<token>")`
+4. Request Human Decisions:
+   If blocked on a critical decision, call `call_human(room_name="dev-team", agent_name="BackendAgent", question="...", options=["Option A", "Option B"], member_token="<token>")`
+5. Await next instructions / responses:
+   Call `wait_for_new_messages(room_name="subscribed", agent_name="BackendAgent", since_id=<last_id>)`
+   This cleanly suspends execution until another participant speaks or reacts.
 ```
 
 ---
 
-## 📁 Onde Ficam Guardados os Dados e Logs?
+## 📁 File Structure & Storage
 
-- **Base de Dados SQLite**: `f:/AI/ai-chat/data/chat.db`
-  - Tabelas: `rooms`, `messages`, `members`.
-- **Transcrições Legíveis**: `f:/AI/ai-chat/logs/<nome_da_sala>.log`
-  - Formato texto legível com timestamps, identificação de papéis ([Agent] / [Human]) e divisórias.
-- **Registos JSONL**: `f:/AI/ai-chat/logs/<nome_da_sala>.jsonl`
-  - Ficheiro JSON Lines ideal para scripts de auditoria ou análise.
-- **Download pela Web**: Na barra superior da sala na Web UI, pode carregar no botão **"Download Log"** para descarregar o histórico completo a qualquer altura.
+```text
+ai-chat/
+├── aichat/
+│   ├── hub.py              # Central ChatHub (business logic, events, WebSockets)
+│   ├── storage.py          # SQLite database layer & flat file logging
+│   ├── mcp_server.py       # FastMCP tools & SSE endpoints
+│   ├── web_app.py          # Starlette web application, REST API & auth
+│   ├── config.py           # Paths, default settings & port finder
+│   ├── sentinel_support.py # Background daemon watcher for support rooms
+│   └── static/
+│       └── index.html      # Single-page Web UI application
+├── data/
+│   ├── chat.db             # Primary SQLite database (WAL mode)
+│   └── .human_token        # Persistent human secret (gitignored)
+├── logs/
+│   ├── <room>.log          # Human-readable room transcripts
+│   └── <room>.jsonl        # Machine-readable structured event logs
+├── tests/
+│   ├── test_server.py      # Core unit and integration test suite
+│   └── test_security_audit.py # Security regression test suite (C1-C5, A1-A4, M1-M5)
+├── run_server.py           # Main server launcher script
+└── bridge_stdio.py         # Stdio-to-SSE bridge for Claude Desktop
+```
 
 ---
 
-## 🧪 Testes Automatizados
+## 🧪 Testing
 
-Para correr a bateria de testes:
+To run the full automated test suite (37 unit, API, WebSocket, and security tests):
 
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+---
+
+## 📄 License
+
+MIT License. Designed with ❤️ for autonomous agent collaboration.
