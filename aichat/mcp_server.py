@@ -65,10 +65,10 @@ def join_room(room_name: str, agent_name: str, password: str = "", member_token:
 
 
 @mcp.tool()
-def leave_room(room_name: str, agent_name: str) -> str:
+def leave_room(room_name: str, agent_name: str, member_token: str = "") -> str:
     """Leaves a chat room."""
     try:
-        res = hub.leave_room(room_name=room_name, member_name=agent_name)
+        res = hub.leave_room(room_name=room_name, member_name=agent_name, member_token=member_token)
         return json.dumps({"status": "success", "details": res}, indent=2)
     except Exception as e:
         return json.dumps({"status": "error", "error": str(e)}, indent=2)

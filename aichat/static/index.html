@@ -8,6 +8,8 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Marked for Markdown rendering -->
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- DOMPurify for HTML sanitization (XSS protection) -->
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@latest"></script>
   <style>
@@ -670,7 +672,7 @@
     function renderRoomItem(room, isArchived = false) {
       const isSelected = currentRoom && currentRoom.name === room.name;
       return `
-        <div onclick="selectRoom('${room.name}')" class="px-3 py-2.5 rounded-xl cursor-pointer transition flex items-center justify-between group ${
+        <div data-room-name="${escapeHtml(room.name)}" onclick="selectRoom(this.dataset.roomName)" class="px-3 py-2.5 rounded-xl cursor-pointer transition flex items-center justify-between group ${
           isSelected 
             ? 'bg-indigo-600/20 border border-indigo-500/40 text-white' 
             : (isArchived ? 'hover:bg-slate-800/40 text-slate-400 opacity-75 border border-transparent' : 'hover:bg-slate-800/60 text-slate-300 border border-transparent')
@@ -837,7 +839,8 @@
           ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 flex-shrink-0" title="Identidade verificada via token"><i data-lucide="shield-check" class="w-3 h-3"></i>Verificado</span>`
           : '';
 
-        const parsedContent = marked.parse(msg.content);
+        const rawHtml = marked.parse(msg.content);
+        const parsedContent = (typeof DOMPurify !== 'undefined') ? DOMPurify.sanitize(rawHtml) : rawHtml;
 
         // Decision Request Card
         let decisionHtml = '';
@@ -861,12 +864,12 @@
               ${!isResolved ? `
                 <div class="flex flex-wrap gap-2 mt-2">
                   ${opts.map(opt => `
-                    <button onclick="resolveDecisionPrompt(${msg.id}, '${escapeHtml(opt)}')" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 hover:border-amber-300 transition flex items-center gap-1.5 shadow-sm active:scale-95">
+                    <button data-msg-id="${msg.id}" data-opt="${escapeHtml(opt)}" onclick="resolveDecisionPrompt(parseInt(this.dataset.msgId), this.dataset.opt)" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 hover:border-amber-300 transition flex items-center gap-1.5 shadow-sm active:scale-95">
                       <i data-lucide="check" class="w-3.5 h-3.5 text-amber-400"></i>
                       <span>${escapeHtml(opt)}</span>
                     </button>
                   `).join('')}
-                  <button onclick="resolveCustomDecision(${msg.id})" class="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition flex items-center gap-1">
+                  <button data-msg-id="${msg.id}" onclick="resolveCustomDecision(parseInt(this.dataset.msgId))" class="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition flex items-center gap-1">
                     <i data-lucide="edit-3" class="w-3 h-3"></i> Outra Decisão...
                   </button>
                 </div>
@@ -936,13 +939,13 @@
           const hasMine = (r.users || []).some(u => u.toLowerCase() === myName);
           const tooltip = (r.users || []).join(', ');
           return `
-            <button onclick="toggleReactionAction(${msg.id}, '${r.emoji}')" title="Reagiram: ${escapeHtml(tooltip)}"
+            <button data-msg-id="${msg.id}" data-emoji="${escapeHtml(r.emoji)}" onclick="toggleReactionAction(parseInt(this.dataset.msgId), this.dataset.emoji)" title="Reagiram: ${escapeHtml(tooltip)}"
               class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs border transition ${
                 hasMine 
                   ? 'bg-indigo-600/30 border-indigo-500/60 text-indigo-200 font-semibold' 
                   : 'bg-slate-950/60 hover:bg-slate-800 border-slate-800 text-slate-300'
               }">
-              <span>${r.emoji}</span>
+              <span>${escapeHtml(r.emoji)}</span>
               <span class="font-mono text-[11px]">${r.count}</span>
             </button>
           `;
@@ -1078,14 +1081,12 @@
         const res = await fetch(`/api/decisions/${messageId}/resolve`, {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
-            'X-Human-Token': window.__HUMAN_AUTH_TOKEN__ || ''
+            'Content-Type': 'application/json'
           },
           body: JSON.stringify({
             room_name: currentRoom.name,
             decision: decision,
-            decider: getMyUsername(),
-            human_token: window.__HUMAN_AUTH_TOKEN__ || ''
+            decider: getMyUsername()
           })
         });
         if (res.ok) {
@@ -1233,13 +1234,11 @@
         const res = await fetch(endpoint, {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
-            'X-Human-Token': window.__HUMAN_AUTH_TOKEN__ || ''
+            'Content-Type': 'application/json'
           },
           body: JSON.stringify({
             requester_role: 'human',
-            requester_name: getMyUsername(),
-            human_token: window.__HUMAN_AUTH_TOKEN__ || ''
+            requester_name: getMyUsername()
           })
         });
         if (res.ok) {
@@ -1267,7 +1266,9 @@
       clearTimeout(reconnectTimer);
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/ws/${encodeURIComponent(roomName)}`;
+      const pwd = getSavedPassword(roomName);
+      const query = pwd ? `?password=${encodeURIComponent(pwd)}` : '';
+      const wsUrl = `${protocol}//${window.location.host}/ws/${encodeURIComponent(roomName)}${query}`;
 
       ws = new WebSocket(wsUrl);
 
@@ -1432,15 +1433,13 @@
         const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/messages`, {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
-            'X-Human-Token': window.__HUMAN_AUTH_TOKEN__ || ''
+            'Content-Type': 'application/json'
           },
           body: JSON.stringify({
             sender: sender,
             content: content,
             role: 'human',
-            password: password,
-            human_token: window.__HUMAN_AUTH_TOKEN__ || ''
+            password: password
           })
         });
 

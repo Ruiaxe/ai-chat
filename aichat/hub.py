@@ -23,20 +23,16 @@ class ChatHub:
         self._reaction_seq: int = 0
         self._lock = asyncio.Lock()
 
-        # Human authentication token (persisted in .human_token next to db)
+        # Human authentication token (kept in memory only; never persisted to disk)
         if human_token:
             self.human_token = human_token
         else:
+            self.human_token = secrets.token_hex(24)
+            # Remove any legacy plaintext .human_token file from disk
             token_file = self.storage.db_path.parent / ".human_token"
             if token_file.exists():
                 try:
-                    self.human_token = token_file.read_text(encoding="utf-8").strip()
-                except Exception:
-                    self.human_token = secrets.token_hex(24)
-            else:
-                self.human_token = secrets.token_hex(24)
-                try:
-                    token_file.write_text(self.human_token, encoding="utf-8")
+                    token_file.unlink()
                 except Exception:
                     pass
 
@@ -152,15 +148,22 @@ class ChatHub:
             "member_token": token,
         }
 
-    def leave_room(self, room_name: str, member_name: str) -> dict[str, Any]:
-        """Removes a member from a room."""
+    def leave_room(self, room_name: str, member_name: str, member_token: str = "") -> dict[str, Any]:
+        """Removes a member from a room, requiring member_token if member is registered."""
+        import secrets
         room = self.storage.get_room(room_name)
         canonical_name = room["name"] if room else room_name
-        self.storage.remove_member(canonical_name, member_name)
+        clean_member = member_name.strip()
+        mem = self.storage.get_member(canonical_name, clean_member)
+        if mem and mem.get("token"):
+            clean_token = (member_token or "").strip()
+            if not clean_token or not secrets.compare_digest(clean_token, mem["token"]):
+                raise PermissionError(f"Acesso negado: Para sair da sala com a identidade '{clean_member}', forneça o member_token correto.")
+        self.storage.remove_member(canonical_name, clean_member)
         return {
             "status": "left",
             "room_name": canonical_name,
-            "member_name": member_name,
+            "member_name": clean_member,
         }
 
     def list_my_rooms(self, agent_name: str) -> list[dict[str, Any]]:
@@ -220,25 +223,29 @@ class ChatHub:
 
         # Sender Authentication: verify token or human authorization
         is_verified = False
-        is_reserved = clean_sender.lower() in self.RESERVED_HUMAN_NAMES
+        clean_role = (role or "agent").strip().lower()
+        if clean_role not in ("agent", "human", "system"):
+            clean_role = "agent"
 
-        if role == "human" or is_reserved:
+        sender_norm = "".join(c for c in clean_sender.lower() if c.isalnum())
+        is_reserved = sender_norm in self.RESERVED_HUMAN_NAMES or clean_sender.lower() in self.RESERVED_HUMAN_NAMES
+
+        if clean_role == "human" or is_reserved:
             clean_ht = (human_token or "").strip()
             if not clean_ht or not secrets.compare_digest(clean_ht, self.human_token):
                 raise PermissionError(
-                    f"Acesso negado: Remetente '{clean_sender}' ou papel '{role}' reservado exclusivamente ao utilizador humano com autenticação válida."
+                    f"Acesso negado: Remetente '{clean_sender}' ou papel '{clean_role}' reservado exclusivamente ao utilizador humano com autenticação válida."
                 )
             role = "human"
             is_verified = True
-        elif role == "system":
+        elif clean_role == "system":
             clean_ht = (human_token or "").strip()
             if not clean_ht or not secrets.compare_digest(clean_ht, self.human_token):
                 raise PermissionError("Acesso negado: Papel 'system' requer autenticação de administração.")
+            role = "system"
             is_verified = True
         else:
-            # Agent role: cannot use reserved human names
-            if is_reserved:
-                raise PermissionError(f"O nome '{clean_sender}' está reservado para o utilizador humano. Agentes não podem usar esta identidade.")
+            role = "agent"
             valid, err = self.storage.verify_member_token(canonical_name, clean_sender, member_token)
             if not valid:
                 raise PermissionError(err)
@@ -303,6 +310,12 @@ class ChatHub:
         """Toggles an emoji reaction on a message, logs reaction event, and broadcasts update."""
         room = self.storage.get_room(room_name)
         canonical_name = room["name"] if room else room_name
+        msg = self.storage.get_message_by_id(message_id)
+        if not msg:
+            raise ValueError(f"Mensagem #{message_id} não encontrada.")
+        if msg["room_name"].strip().lower() != canonical_name.strip().lower():
+            raise PermissionError(f"Acesso negado: A mensagem #{message_id} pertence à sala '{msg['room_name']}', não à sala '{canonical_name}'.")
+
         res = self.storage.toggle_reaction(message_id, canonical_name, sender, emoji)
         await self._broadcast_to_websockets(canonical_name, {
             "type": "reaction_updated",
@@ -370,11 +383,20 @@ class ChatHub:
         room_name: str,
         decision: str,
         decider: str = "Rui",
+        human_token: str = "",
     ) -> dict[str, Any]:
         """Human submits their decision, resolving the request and posting a confirmation."""
+        import secrets
+        clean_ht = (human_token or "").strip()
+        if clean_ht and not secrets.compare_digest(clean_ht, self.human_token):
+            raise PermissionError("Acesso negado: Apenas o utilizador humano com autenticação válida pode tomar decisões.")
         meta = self.storage.resolve_decision(message_id, decision, decider=decider)
         if not meta:
             raise ValueError(f"Mensagem #{message_id} não encontrada.")
+        if not room_name:
+            msg_obj = self.storage.get_message_by_id(message_id)
+            if msg_obj:
+                room_name = msg_obj["room_name"]
         room = self.storage.get_room(room_name)
         canonical_name = room["name"] if room else room_name
         await self._broadcast_to_websockets(canonical_name, {
@@ -398,13 +420,32 @@ class ChatHub:
         question: str,
         options: list[str],
         member_token: str = "",
+        human_token: str = "",
+        role: str = "agent",
     ) -> dict[str, Any]:
         """Creates a poll and posts it to the room."""
+        import secrets
         room = self.storage.get_room(room_name)
         if not room:
             raise ValueError(f"Room '{room_name}' does not exist.")
         if room.get("is_archived", False):
             raise ValueError(f"A sala '{room['name']}' está arquivada.")
+
+        clean_ht = (human_token or "").strip()
+        is_auth_human = bool(clean_ht and secrets.compare_digest(clean_ht, self.human_token))
+        sender_norm = "".join(c for c in creator.lower() if c.isalnum())
+        is_reserved = sender_norm in self.RESERVED_HUMAN_NAMES or creator.strip().lower() in self.RESERVED_HUMAN_NAMES
+
+        if is_reserved or role.strip().lower() == "human":
+            if not is_auth_human:
+                raise PermissionError(f"Acesso negado: Criador '{creator}' requer autenticação válida do utilizador humano.")
+            effective_role = "human"
+            effective_ht = self.human_token
+            effective_tok = ""
+        else:
+            effective_role = "agent"
+            effective_ht = ""
+            effective_tok = member_token
 
         poll = self.storage.create_poll(room["name"], creator, question, options)
         opts_str = "\n".join(f"- **{i+1}.** {opt}" for i, opt in enumerate(options))
@@ -413,8 +454,9 @@ class ChatHub:
             room_name=room["name"],
             sender=creator,
             content=content,
-            role="agent",
-            member_token=member_token,
+            role=effective_role,
+            member_token=effective_tok,
+            human_token=effective_ht,
             message_type="poll",
             metadata={"poll_id": poll["id"]},
         )
@@ -445,29 +487,43 @@ class ChatHub:
         closer: str,
         is_human: bool = False,
         member_token: str = "",
+        human_token: str = "",
     ) -> dict[str, Any]:
         """Closes an active poll."""
+        import secrets
         p_current = self.storage.get_poll(poll_id)
         if not p_current:
             raise ValueError(f"Poll #{poll_id} não existe.")
-        if not is_human and p_current["creator"].strip().lower() != closer.strip().lower():
-            raise PermissionError("Apenas o criador da votação ou o humano podem encerrá-la.")
+        if p_current.get("is_closed"):
+            raise ValueError(f"A votação #{poll_id} já se encontra encerrada.")
+
+        clean_ht = (human_token or "").strip()
+        if is_human:
+            if clean_ht and not secrets.compare_digest(clean_ht, self.human_token):
+                raise PermissionError("Acesso negado: encerramento como humano requer autenticação válida.")
+            role_to_use = "human"
+            tok_to_use = ""
+            ht_to_use = self.human_token
+        else:
+            if p_current["creator"].strip().lower() != closer.strip().lower():
+                raise PermissionError("Apenas o criador da votação ou o humano podem encerrá-la.")
+            valid, err = self.storage.verify_member_token(p_current["room_name"], closer, member_token)
+            if not valid or not member_token:
+                raise PermissionError(f"Acesso negado: É obrigatório fornecer o member_token do criador para encerrar a votação.")
+            role_to_use = "agent"
+            tok_to_use = member_token
+            ht_to_use = ""
+
         poll = self.storage.close_poll(poll_id)
         results_str = "\n".join(f"- {opt['text']}: **{opt['votes']} votos ({opt['percentage']}%)**" for opt in poll["options"])
-
-        token_to_use = member_token
-        if not token_to_use and not is_human:
-            mem = self.storage.get_member(poll["room_name"], closer)
-            if mem and mem.get("token"):
-                token_to_use = mem["token"]
 
         await self.send_message(
             room_name=poll["room_name"],
             sender=closer,
             content=f"🏁 **[VOTAÇÃO ENCERRADA #{poll['id']}]**\n\n**{poll['question']}**\n\n**Resultado Final:**\n{results_str}\nTotal de votos: {poll['total_votes']}",
-            role="human" if is_human else "agent",
-            member_token=token_to_use,
-            human_token=self.human_token if is_human else "",
+            role=role_to_use,
+            member_token=tok_to_use,
+            human_token=ht_to_use,
         )
         await self._broadcast_to_websockets(poll["room_name"], {
             "type": "poll_closed",
@@ -621,7 +677,9 @@ class ChatHub:
                             pass
                     continue
 
-                # Event fired! First check all target_rooms for new messages
+                # Event fired! Collect all new messages from ALL target_rooms
+                all_found_messages = []
+                last_room_found = ""
                 for r in target_rooms:
                     effective_since = room_since_ids[r]
                     new_msgs = self.storage.get_messages(r, since_id=effective_since, limit=50)
@@ -630,15 +688,21 @@ class ChatHub:
                         if not clean_agent or m["sender"].strip().lower() != clean_agent
                     ]
                     if external_new:
-                        return {
-                            "status": "new_messages",
-                            "room": r,
-                            "count": len(external_new),
-                            "messages": external_new,
-                            "last_id": max(m["id"] for m in new_msgs),
-                        }
+                        all_found_messages.extend(external_new)
+                        last_room_found = r
                     if new_msgs:
                         room_since_ids[r] = max(m["id"] for m in new_msgs)
+
+                if all_found_messages:
+                    all_found_messages.sort(key=lambda m: m["id"])
+                    distinct_rooms = {m["room_name"].lower() for m in all_found_messages}
+                    return {
+                        "status": "new_messages",
+                        "room": all_found_messages[0]["room_name"] if len(distinct_rooms) == 1 else "subscribed",
+                        "count": len(all_found_messages),
+                        "messages": all_found_messages,
+                        "last_id": all_found_messages[-1]["id"],
+                    }
 
                 # If no new messages, check for new reaction events in target rooms
                 target_room_set = {r.strip().lower() for r in target_rooms}
@@ -695,13 +759,9 @@ class ChatHub:
         for r in target_rooms:
             max_id = self.storage.get_max_message_id(r)
             last_id = max(last_id, max_id)
-            if len(target_rooms) == 1 and since_id > 0:
-                chk_since = since_id
-            else:
-                chk_since = since_id if (since_id > 0 and len(target_rooms) == 1) else 0
-
-            if chk_since > 0:
-                msgs = self.storage.get_messages(r, since_id=chk_since, limit=50)
+            effective_since = since_id if since_id > 0 else 0
+            if effective_since > 0:
+                msgs = self.storage.get_messages(r, since_id=effective_since, limit=50)
                 external = [
                     m for m in msgs
                     if not clean_agent or m["sender"].strip().lower() != clean_agent
@@ -713,7 +773,8 @@ class ChatHub:
             ev for ev in self._reaction_events
             if ev["room"].strip().lower() in target_room_set
             and (not clean_agent or ev["sender"].strip().lower() != clean_agent)
-        ][-10:]
+            and (since_id == 0 or ev.get("message_id", 0) > since_id or ev.get("seq", 0) > since_id)
+        ]
 
         if since_id > 0 and len(target_rooms) == 1:
             return {

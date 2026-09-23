@@ -80,6 +80,7 @@ class ChatStorage:
                     room_name TEXT NOT NULL COLLATE NOCASE,
                     member_name TEXT NOT NULL COLLATE NOCASE,
                     role TEXT NOT NULL,
+                    token TEXT DEFAULT '',
                     joined_at TEXT NOT NULL,
                     last_seen_at TEXT NOT NULL,
                     UNIQUE(room_name, member_name)
@@ -109,6 +110,16 @@ class ChatStorage:
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_reactions_msg 
                 ON reactions(message_id);
+            """)
+
+            # Persistent Member Identities table for global anti-impersonation
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS member_identities (
+                    member_name TEXT PRIMARY KEY COLLATE NOCASE,
+                    token TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'agent',
+                    created_at TEXT NOT NULL
+                );
             """)
 
             # Polls table
@@ -159,6 +170,15 @@ class ChatStorage:
                 pass
             try:
                 conn.execute("ALTER TABLE messages ADD COLUMN metadata TEXT DEFAULT '{}';")
+            except sqlite3.OperationalError:
+                pass
+
+            # Backfill existing member tokens into member_identities
+            try:
+                conn.execute("""
+                    INSERT OR IGNORE INTO member_identities (member_name, token, role, created_at)
+                    SELECT member_name, token, role, joined_at FROM members WHERE token != '';
+                """)
             except sqlite3.OperationalError:
                 pass
 
@@ -269,12 +289,15 @@ class ChatStorage:
         generate_token: bool = False,
     ) -> str:
         """Registers or refreshes a member in the room, assigning or preserving their authentication token."""
+        import secrets
         now = datetime.now().isoformat()
         conn = self._get_connection()
         clean_room = room_name.strip()
         clean_member = member_name.strip()
+        clean_role = (role or "agent").strip().lower()
 
-        # Check existing member token
+        # 1. Check global member identity in member_identities table
+        # Check existing member token in this room
         cursor = conn.execute(
             "SELECT token FROM members WHERE room_name = ? COLLATE NOCASE AND member_name = ? COLLATE NOCASE",
             (clean_room, clean_member),
@@ -282,12 +305,21 @@ class ChatStorage:
         row = cursor.fetchone()
         existing_token = row[0] if row and row[0] else ""
 
-        if token:
-            final_token = token
-        elif existing_token:
-            final_token = existing_token
-        elif role == "agent" and generate_token:
-            import secrets
+        clean_token = (token or "").strip()
+        if existing_token:
+            if clean_token:
+                if not secrets.compare_digest(clean_token, existing_token):
+                    raise PermissionError(f"Acesso negado: O membro '{clean_member}' já está registado com outro token.")
+                final_token = existing_token
+            else:
+                # Member exists in this room with a token, but caller provided NO token!
+                # Do NOT return the token! Block token theft (C4).
+                if generate_token:
+                    raise PermissionError(f"Acesso negado: O membro '{clean_member}' já está registado nesta sala. É obrigatório fornecer o respetivo member_token.")
+                final_token = ""
+        elif clean_token:
+            final_token = clean_token
+        elif clean_role == "agent" and generate_token:
             final_token = secrets.token_hex(16)
         else:
             final_token = ""
@@ -302,7 +334,7 @@ class ChatStorage:
                     token = CASE WHEN excluded.token != '' THEN excluded.token ELSE members.token END,
                     last_seen_at = excluded.last_seen_at
                 """,
-                (clean_room, clean_member, role, final_token, now, now),
+                (clean_room, clean_member, clean_role, final_token, now, now),
             )
         return final_token
 
@@ -315,22 +347,32 @@ class ChatStorage:
         conn = self._get_connection()
         clean_room = room_name.strip()
         clean_member = member_name.strip()
+
+        # Check global identity token
         cursor = conn.execute(
-            "SELECT token, role FROM members WHERE room_name = ? COLLATE NOCASE AND member_name = ? COLLATE NOCASE",
+            "SELECT token FROM member_identities WHERE member_name = ? COLLATE NOCASE",
+            (clean_member,),
+        )
+        id_row = cursor.fetchone()
+        global_token = id_row[0] if id_row and id_row[0] else ""
+
+        # Check room-specific token
+        cursor = conn.execute(
+            "SELECT token FROM members WHERE room_name = ? COLLATE NOCASE AND member_name = ? COLLATE NOCASE",
             (clean_room, clean_member),
         )
         row = cursor.fetchone()
-        if not row:
-            # Member not explicitly registered yet
+        room_token = row[0] if row and row[0] else ""
+
+        valid_tokens = [t for t in (global_token, room_token) if t]
+        if not valid_tokens:
+            # Unregistered sender without a registered token in the system
             return True, ""
-        stored_token = row[0] or ""
-        if not stored_token:
-            # Legacy member without token
-            return True, ""
+
         clean_token = (token or "").strip()
-        if clean_token and secrets.compare_digest(clean_token, stored_token):
+        if clean_token and any(secrets.compare_digest(clean_token, t) for t in valid_tokens):
             return True, ""
-        return False, f"Impersonation blocked: Remetente '{clean_member}' tem registo protegido nesta sala. Token fornecido é inválido ou está em falta."
+        return False, f"Impersonation blocked: Remetente '{clean_member}' é uma identidade protegida. Token fornecido é inválido ou está em falta."
 
     def get_member_rooms(self, member_name: str) -> list[str]:
         """Returns the list of room names a member has joined."""
@@ -423,7 +465,22 @@ class ChatStorage:
         self._append_to_jsonl_log(clean_room, msg_data)
 
         # Update member last_seen
-        self.add_or_update_member(clean_room, sender, role)
+        conn = self._get_connection()
+        with conn:
+            cursor = conn.execute(
+                "UPDATE members SET last_seen_at = ? WHERE room_name = ? COLLATE NOCASE AND member_name = ? COLLATE NOCASE",
+                (now, clean_room, sender.strip()),
+            )
+            if cursor.rowcount == 0:
+                conn.execute(
+                    """
+                    INSERT INTO members (room_name, member_name, role, token, joined_at, last_seen_at)
+                    VALUES (?, ?, ?, '', ?, ?)
+                    ON CONFLICT(room_name, member_name) DO UPDATE SET
+                        last_seen_at = excluded.last_seen_at
+                    """,
+                    (clean_room, sender.strip(), role, now, now),
+                )
 
         return msg_data
 
@@ -747,15 +804,38 @@ class ChatStorage:
         return r
 
     def get_room_log_file(self, room_name: str) -> Path:
-        """Returns path to the text log file for the room."""
-        # Sanitize filename
-        safe_name = "".join(c for c in room_name if c.isalnum() or c in ("-", "_")).rstrip()
-        return self.logs_dir / f"{safe_name or 'chat'}.log"
+        """Returns path to the text log file for the room, indexed by room ID to prevent collisions."""
+        room = self.get_room(room_name)
+        safe_name = "".join(c for c in room_name if c.isalnum() or c in ("-", "_")).rstrip() or "chat"
+        if room and room.get("id"):
+            room_id = room["id"]
+            new_path = self.logs_dir / f"room_{room_id}_{safe_name}.log"
+            legacy_path = self.logs_dir / f"{safe_name}.log"
+            if legacy_path.exists() and not new_path.exists():
+                try:
+                    import shutil
+                    shutil.move(legacy_path, new_path)
+                except Exception:
+                    pass
+            return new_path
+        return self.logs_dir / f"{safe_name}.log"
 
     def get_room_jsonl_file(self, room_name: str) -> Path:
-        """Returns path to the JSONL log file for the room."""
-        safe_name = "".join(c for c in room_name if c.isalnum() or c in ("-", "_")).rstrip()
-        return self.logs_dir / f"{safe_name or 'chat'}.jsonl"
+        """Returns path to the JSONL log file for the room, indexed by room ID to prevent collisions."""
+        room = self.get_room(room_name)
+        safe_name = "".join(c for c in room_name if c.isalnum() or c in ("-", "_")).rstrip() or "chat"
+        if room and room.get("id"):
+            room_id = room["id"]
+            new_path = self.logs_dir / f"room_{room_id}_{safe_name}.jsonl"
+            legacy_path = self.logs_dir / f"{safe_name}.jsonl"
+            if legacy_path.exists() and not new_path.exists():
+                try:
+                    import shutil
+                    shutil.move(legacy_path, new_path)
+                except Exception:
+                    pass
+            return new_path
+        return self.logs_dir / f"{safe_name}.jsonl"
 
     def _append_to_text_log(self, room_name: str, msg: dict[str, Any]) -> None:
         """Appends formatted message to room text transcript."""

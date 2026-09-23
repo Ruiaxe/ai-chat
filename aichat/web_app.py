@@ -7,7 +7,7 @@ from typing import Any
 from starlette.applications import Starlette
 from starlette.endpoints import WebSocketEndpoint
 from starlette.requests import Request
-from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
@@ -19,15 +19,47 @@ from aichat.mcp_server import hub, mcp
 INDEX_HTML = STATIC_DIR / "index.html"
 
 
+def safe_int(val: Any, default: int = 0, min_val: int | None = None, max_val: int | None = None) -> int:
+    """Safely converts value to int with bounds, avoiding unhandled 500 exceptions."""
+    try:
+        res = int(val)
+    except (ValueError, TypeError):
+        return default
+    if min_val is not None and res < min_val:
+        return min_val
+    if max_val is not None and res > max_val:
+        return max_val
+    return res
+
+
+def is_authenticated_human(request: Request) -> bool:
+    """Verifies if request originates from authenticated human via HttpOnly session cookie or header."""
+    cookie_token = request.cookies.get("human_session", "").strip()
+    header_token = request.headers.get("X-Human-Token", "").strip()
+    return bool(
+        (cookie_token and secrets.compare_digest(cookie_token, hub.human_token)) or
+        (header_token and secrets.compare_digest(header_token, hub.human_token))
+    )
+
+
 # --- HTTP Endpoints ---
 
 async def endpoint_index(request: Request) -> Response:
-    """Serves the Web UI HTML application with authenticated session token injected."""
+    """Serves the Web UI HTML application. Authenticates session via ?auth= query param."""
+    auth_param = request.query_params.get("auth", "").strip()
+    if auth_param and secrets.compare_digest(auth_param, hub.human_token):
+        response = RedirectResponse(url="/", status_code=303)
+        response.set_cookie(
+            key="human_session",
+            value=hub.human_token,
+            httponly=True,
+            samesite="strict",
+            path="/",
+        )
+        return response
+
     if INDEX_HTML.exists():
         html = INDEX_HTML.read_text(encoding="utf-8")
-        token_tag = f'<script>window.__HUMAN_AUTH_TOKEN__ = "{hub.human_token}";</script>'
-        if "</head>" in html:
-            html = html.replace("</head>", f"  {token_tag}\n</head>", 1)
         return HTMLResponse(html)
     return HTMLResponse("<h1>AI Chat Hub</h1><p>index.html not found</p>", status_code=404)
 
@@ -66,8 +98,8 @@ async def endpoint_get_messages(request: Request) -> Response:
     """Gets recent messages for a room."""
     room_name = request.path_params["room_name"]
     password = request.query_params.get("password", "")
-    since_id = int(request.query_params.get("since_id", 0))
-    limit = min(int(request.query_params.get("limit", 500)), 1000)
+    since_id = safe_int(request.query_params.get("since_id"), default=0, min_val=0)
+    limit = safe_int(request.query_params.get("limit"), default=500, min_val=1, max_val=1000)
 
     try:
         messages = hub.read_messages(
@@ -86,7 +118,7 @@ async def endpoint_get_messages(request: Request) -> Response:
 
 
 async def endpoint_post_message(request: Request) -> Response:
-    """Posts a message to a room."""
+    """Posts a message to a room with strict authentication."""
     room_name = request.path_params["room_name"]
     try:
         data = await request.json()
@@ -100,12 +132,23 @@ async def endpoint_post_message(request: Request) -> Response:
     content = data.get("content", "").strip()
     password = data.get("password", "")
     member_token = data.get("member_token", "")
-    human_token = request.headers.get("X-Human-Token") or data.get("human_token", "")
 
-    # Role defaults to human only if authenticated, otherwise agent
-    role = data.get("role", "")
-    if not role:
-        role = "human" if (human_token and secrets.compare_digest(human_token.strip(), hub.human_token)) else "agent"
+    is_human = is_authenticated_human(request)
+    sender_norm = "".join(c for c in sender.lower() if c.isalnum())
+    is_reserved = sender_norm in hub.RESERVED_HUMAN_NAMES or sender.lower() in hub.RESERVED_HUMAN_NAMES
+    req_role = (data.get("role") or "").strip().lower()
+
+    if req_role == "human" or is_reserved:
+        if not is_human:
+            return JSONResponse(
+                {"error": f"Acesso negado: Remetente '{sender}' ou papel 'human' reservado exclusivamente ao utilizador humano autenticado."},
+                status_code=403,
+            )
+        role = "human"
+        effective_ht = hub.human_token
+    else:
+        role = "agent"
+        effective_ht = ""
 
     if not content:
         return JSONResponse({"error": "Content cannot be empty"}, status_code=400)
@@ -118,7 +161,7 @@ async def endpoint_post_message(request: Request) -> Response:
             role=role,
             password=password,
             member_token=member_token,
-            human_token=human_token,
+            human_token=effective_ht,
         )
         return JSONResponse(msg, status_code=201)
     except PermissionError as pe:
@@ -228,6 +271,8 @@ async def endpoint_toggle_reaction(request: Request) -> Response:
 
 async def endpoint_resolve_decision(request: Request) -> Response:
     """Resolves a pending human decision request."""
+    if not is_authenticated_human(request):
+        return JSONResponse({"error": "Acesso negado: Apenas o utilizador humano autenticado pode tomar decisões."}, status_code=403)
     message_id = int(request.path_params["message_id"])
     try:
         data = await request.json()
@@ -239,8 +284,12 @@ async def endpoint_resolve_decision(request: Request) -> Response:
     if not decision:
         return JSONResponse({"error": "Decision is required"}, status_code=400)
     try:
-        res = await hub.resolve_human_decision(message_id, room_name, decision, decider)
+        res = await hub.resolve_human_decision(
+            message_id, room_name, decision, decider, human_token=hub.human_token
+        )
         return JSONResponse(res)
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -255,11 +304,26 @@ async def endpoint_create_poll(request: Request) -> Response:
     creator = data.get("creator", "Human").strip()
     question = data.get("question", "").strip()
     options = data.get("options", [])
+    member_token = data.get("member_token", "").strip()
     if not question or len(options) < 2:
         return JSONResponse({"error": "Question and at least 2 options are required"}, status_code=400)
+
+    is_human = is_authenticated_human(request)
     try:
-        poll = await hub.create_poll(room_name, creator, question, options)
+        poll = await hub.create_poll(
+            room_name=room_name,
+            creator=creator,
+            question=question,
+            options=options,
+            member_token=member_token,
+            human_token=hub.human_token if is_human else "",
+            role="human" if is_human else "agent",
+        )
         return JSONResponse(poll, status_code=201)
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=400)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -297,47 +361,49 @@ async def endpoint_close_poll(request: Request) -> Response:
     except Exception:
         data = {}
     closer = data.get("closer", "Human").strip()
+    member_token = data.get("member_token", "").strip()
+    is_human = is_authenticated_human(request)
     try:
-        poll = await hub.close_poll(poll_id, closer, is_human=True)
+        poll = await hub.close_poll(
+            poll_id=poll_id,
+            closer=closer,
+            is_human=is_human,
+            member_token=member_token,
+            human_token=hub.human_token if is_human else "",
+        )
         return JSONResponse(poll)
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=400)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
 async def endpoint_archive_room(request: Request) -> Response:
-    """Archives a room. Restricted strictly to human users."""
-    room_name = request.path_params["room_name"]
-    try:
-        data = await request.json()
-    except Exception:
-        data = {}
-    human_token = request.headers.get("X-Human-Token") or data.get("human_token", "")
-    if not human_token or not secrets.compare_digest(human_token.strip(), hub.human_token):
+    """Archives a room. Restricted strictly to authenticated human users."""
+    if not is_authenticated_human(request):
         return JSONResponse({"error": "Apenas o utilizador humano autenticado tem permissão para arquivar salas."}, status_code=403)
+    room_name = request.path_params["room_name"]
     try:
         res = hub.archive_room(room_name, requester_role="human")
         await hub._broadcast_to_websockets(room_name, {"type": "room_archived", "room_name": room_name})
         return JSONResponse(res)
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=403)
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 async def endpoint_unarchive_room(request: Request) -> Response:
-    """Unarchives a room. Restricted strictly to human users."""
-    room_name = request.path_params["room_name"]
-    try:
-        data = await request.json()
-    except Exception:
-        data = {}
-    human_token = request.headers.get("X-Human-Token") or data.get("human_token", "")
-    if not human_token or not secrets.compare_digest(human_token.strip(), hub.human_token):
+    """Unarchives a room. Restricted strictly to authenticated human users."""
+    if not is_authenticated_human(request):
         return JSONResponse({"error": "Apenas o utilizador humano autenticado tem permissão para desarquivar salas."}, status_code=403)
+    room_name = request.path_params["room_name"]
     try:
         res = hub.unarchive_room(room_name, requester_role="human")
         await hub._broadcast_to_websockets(room_name, {"type": "room_unarchived", "room_name": room_name})
         return JSONResponse(res)
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=403)
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 async def endpoint_status(request: Request) -> Response:
@@ -412,8 +478,23 @@ async def endpoint_tts_voices(request: Request) -> Response:
 # --- WebSocket Endpoint ---
 
 async def websocket_room_endpoint(websocket: WebSocket) -> None:
-    """Real-time WebSocket handler for chat rooms."""
+    """Real-time WebSocket handler for chat rooms, validating room password and access."""
     room_name = websocket.path_params["room_name"]
+    password = websocket.query_params.get("password", "")
+
+    # Check if human is authenticated via cookie
+    cookie_token = websocket.cookies.get("human_session", "").strip()
+    is_human = bool(cookie_token and secrets.compare_digest(cookie_token, hub.human_token))
+
+    if not is_human:
+        try:
+            if not hub.verify_room_access(room_name, password):
+                await websocket.close(code=4403, reason="Access denied: invalid or missing room password")
+                return
+        except ValueError:
+            await websocket.close(code=4404, reason="Room not found")
+            return
+
     await websocket.accept()
     await hub.register_websocket(room_name, websocket)
     try:

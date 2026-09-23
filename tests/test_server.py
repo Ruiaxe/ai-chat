@@ -535,8 +535,13 @@ class TestWebAppAndApi(unittest.TestCase):
     def test_web_ui_root(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("AI Agent Hub", response.text)
-        self.assertIn("window.__HUMAN_AUTH_TOKEN__", response.text)
+        self.assertIn("AI Agent", response.text)
+        self.assertNotIn("window.__HUMAN_AUTH_TOKEN__", response.text)
+
+        # Authenticating via ?auth= sets HttpOnly session cookie and redirects
+        auth_resp = self.client.get(f"/?auth={hub.human_token}", follow_redirects=False)
+        self.assertEqual(auth_resp.status_code, 303)
+        self.assertIn("human_session", auth_resp.headers.get("set-cookie", ""))
 
     def test_api_rooms_and_messages(self):
         import uuid
@@ -718,7 +723,7 @@ class TestMCPTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(gp_res["poll"]["options"][0]["votes"], 1)
 
         # Close poll tool
-        cp_res = json.loads(await tool_close_poll(poll_id, closer_name="FeatureAgent"))
+        cp_res = json.loads(await tool_close_poll(poll_id, closer_name="FeatureAgent", member_token=token))
         self.assertEqual(cp_res["status"], "success")
 
         # Archive room tool as agent -> blocked

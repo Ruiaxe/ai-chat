@@ -24,6 +24,7 @@ from aichat.config import (
     find_free_port,
     save_server_info,
 )
+from aichat.mcp_server import hub
 from aichat.web_app import create_app
 
 
@@ -89,7 +90,7 @@ def main():
     print_banner(host=host, port=port)
 
     if not args.no_browser:
-        open_browser_delayed(f"http://{host}:{port}/")
+        open_browser_delayed(f"http://{host}:{port}/?auth={hub.human_token}")
 
     app = create_app()
 
