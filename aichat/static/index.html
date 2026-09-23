@@ -1077,11 +1077,15 @@
       try {
         const res = await fetch(`/api/decisions/${messageId}/resolve`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Human-Token': window.__HUMAN_AUTH_TOKEN__ || ''
+          },
           body: JSON.stringify({
             room_name: currentRoom.name,
             decision: decision,
-            decider: getMyUsername()
+            decider: getMyUsername(),
+            human_token: window.__HUMAN_AUTH_TOKEN__ || ''
           })
         });
         if (res.ok) {
@@ -1228,8 +1232,15 @@
       try {
         const res = await fetch(endpoint, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ requester_role: 'human', requester_name: getMyUsername() })
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Human-Token': window.__HUMAN_AUTH_TOKEN__ || ''
+          },
+          body: JSON.stringify({
+            requester_role: 'human',
+            requester_name: getMyUsername(),
+            human_token: window.__HUMAN_AUTH_TOKEN__ || ''
+          })
         });
         if (res.ok) {
           currentRoom.is_archived = !isArchived;
@@ -1420,12 +1431,16 @@
       try {
         const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/messages`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Human-Token': window.__HUMAN_AUTH_TOKEN__ || ''
+          },
           body: JSON.stringify({
             sender: sender,
             content: content,
             role: 'human',
-            password: password
+            password: password,
+            human_token: window.__HUMAN_AUTH_TOKEN__ || ''
           })
         });
 

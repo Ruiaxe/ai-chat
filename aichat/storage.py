@@ -479,6 +479,7 @@ class ChatStorage:
     ) -> dict[str, Any]:
         """Toggles an emoji reaction from a sender on a message."""
         conn = self._get_connection()
+        clean_room = room_name.strip()
         clean_sender = sender.strip()
         clean_emoji = emoji.strip()
         with conn:
@@ -494,11 +495,18 @@ class ChatStorage:
                 now = datetime.now().isoformat()
                 conn.execute(
                     "INSERT INTO reactions (message_id, room_name, sender, emoji, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (message_id, room_name.strip(), clean_sender, clean_emoji, now),
+                    (message_id, clean_room, clean_sender, clean_emoji, now),
                 )
                 action = "added"
         reactions = self.get_message_reactions(message_id)
-        return {"action": action, "message_id": message_id, "emoji": clean_emoji, "reactions": reactions}
+        return {
+            "action": action,
+            "message_id": message_id,
+            "room_name": clean_room,
+            "sender": clean_sender,
+            "emoji": clean_emoji,
+            "reactions": reactions,
+        }
 
     def resolve_decision(
         self,
@@ -707,6 +715,36 @@ class ChatStorage:
             r["reactions"] = reactions_map.get(r["id"], [])
 
         return rows
+
+    def get_message_by_id(self, message_id: int) -> dict[str, Any] | None:
+        """Retrieves a single message by ID, including its parsed metadata and reactions."""
+        conn = self._get_connection()
+        cursor = conn.execute(
+            """
+            SELECT id, room_name, sender, role, content, is_verified, 
+                   COALESCE(message_type, 'text') as message_type, 
+                   COALESCE(metadata, '{}') as metadata, created_at
+            FROM messages
+            WHERE id = ?
+            """,
+            (message_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        r = dict(row)
+        r["is_verified"] = bool(r.get("is_verified", False))
+        r["message_type"] = r.get("message_type") or "text"
+        meta = r.get("metadata")
+        if isinstance(meta, str) and meta:
+            try:
+                r["metadata"] = json.loads(meta)
+            except Exception:
+                r["metadata"] = {}
+        elif not isinstance(meta, dict):
+            r["metadata"] = {}
+        r["reactions"] = self.get_message_reactions(message_id)
+        return r
 
     def get_room_log_file(self, room_name: str) -> Path:
         """Returns path to the text log file for the room."""

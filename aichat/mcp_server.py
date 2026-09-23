@@ -108,10 +108,17 @@ async def send_message(
       If provided, verifies the sender identity and marks the message as verified (✓ Verificado).
       If a token was already issued for this sender, omitting or passing an invalid token will be rejected to prevent impersonation.
     """
+    clean_sender = (sender_name or "").strip()
+    if clean_sender.lower() in hub.RESERVED_HUMAN_NAMES:
+        return json.dumps({
+            "status": "error",
+            "error": f"Agents cannot send messages as '{clean_sender}'. This name is reserved for the human user."
+        }, indent=2)
+
     try:
         msg = await hub.send_message(
             room_name=room_name,
-            sender=sender_name,
+            sender=clean_sender,
             content=content,
             role="agent",
             password=password,
@@ -121,7 +128,7 @@ async def send_message(
             "status": "success",
             "message_id": msg["id"],
             "room": room_name,
-            "sender": sender_name,
+            "sender": clean_sender,
             "is_verified": msg.get("is_verified", False),
             "created_at": msg["created_at"],
         }, indent=2)
@@ -135,10 +142,13 @@ def read_messages(
     password: str = "",
     since_id: int = 0,
     limit: int = 50,
+    message_id: int = 0,
 ) -> str:
     """
-    Reads recent messages from a room.
-    Use 'since_id' to only fetch messages newer than a specific message ID you have already seen.
+    Reads recent messages from a room, or fetches a specific message by message_id.
+    - since_id: Only fetch messages newer than this ID.
+    - message_id: If specified (> 0), fetches that specific message with its current reactions and status.
+    Each message includes 'reactions': [{'emoji': '👍', 'count': 1, 'users': ['Rui']}].
     """
     try:
         msgs = hub.read_messages(
@@ -146,6 +156,7 @@ def read_messages(
             password=password,
             since_id=since_id,
             limit=limit,
+            message_id=message_id if message_id > 0 else None,
         )
         return json.dumps({
             "status": "success",
@@ -169,15 +180,15 @@ async def wait_for_new_messages(
 ) -> str:
     """
     Long-polling notification tool for agents:
-    Suspends and waits until another agent or the human sends a new message.
+    Suspends and waits until another agent or the human sends a new message OR reacts with an emoji (e.g. 👍).
     - room_name: Specific room name, 'subscribed' (or empty) to watch all joined rooms, or comma-separated list.
-    - agent_name: Your agent's name (e.g. 'Claude'). Your own messages are ignored.
+    - agent_name: Your agent's name (e.g. 'Claude'). Your own messages and reactions are ignored.
     - since_id: ID of the last message you processed. If 0 (default), waits for new messages arriving from now on.
     - timeout_seconds: Maximum seconds to wait before timing out (1 to 3600, default 600 = 10 minutes).
       Sends regular MCP progress heartbeats (every 45s) to prevent client timeouts (e.g. Claude Code 300s limit).
     - password: Room password if protected.
-    Returns immediately if new messages already exist or as soon as one arrives.
-    If timeout expires without new messages, returns status 'timeout'.
+    Returns immediately if new messages/reactions already exist or as soon as one arrives.
+    Returns status 'new_messages' on new messages, 'new_reactions' on emoji reactions, or 'timeout'.
     """
     try:
         # Cap timeout between 1 and 3600 seconds (1 hour)
@@ -398,13 +409,12 @@ async def close_poll(
 def archive_room(room_name: str, requester_name: str = "", requester_role: str = "agent") -> str:
     """
     Archives a chat room to read-only mode.
-    WARNING: THIS TOOL IS STRICTLY RESTRICTED TO THE HUMAN USER. AGENTS CANNOT ARCHIVE ROOMS.
+    WARNING: THIS TOOL IS STRICTLY RESTRICTED TO THE HUMAN USER VIA WEB UI. AGENTS CANNOT ARCHIVE ROOMS.
     """
-    try:
-        res = hub.archive_room(room_name=room_name, requester_role=requester_role)
-        return json.dumps({"status": "success", "details": res}, indent=2)
-    except Exception as e:
-        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+    return json.dumps({
+        "status": "error",
+        "error": "Apenas o utilizador humano através da Web UI tem permissão para arquivar salas."
+    }, indent=2)
 
 
 @mcp.resource("chat://rooms")

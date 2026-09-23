@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+import secrets
 from typing import Any
 
 from starlette.applications import Starlette
@@ -21,9 +22,13 @@ INDEX_HTML = STATIC_DIR / "index.html"
 # --- HTTP Endpoints ---
 
 async def endpoint_index(request: Request) -> Response:
-    """Serves the Web UI HTML application."""
+    """Serves the Web UI HTML application with authenticated session token injected."""
     if INDEX_HTML.exists():
-        return HTMLResponse(INDEX_HTML.read_text(encoding="utf-8"))
+        html = INDEX_HTML.read_text(encoding="utf-8")
+        token_tag = f'<script>window.__HUMAN_AUTH_TOKEN__ = "{hub.human_token}";</script>'
+        if "</head>" in html:
+            html = html.replace("</head>", f"  {token_tag}\n</head>", 1)
+        return HTMLResponse(html)
     return HTMLResponse("<h1>AI Chat Hub</h1><p>index.html not found</p>", status_code=404)
 
 
@@ -93,9 +98,14 @@ async def endpoint_post_message(request: Request) -> Response:
         return JSONResponse({"error": "Sender cannot be empty"}, status_code=400)
 
     content = data.get("content", "").strip()
-    role = data.get("role", "agent" if sender.lower() not in ("human", "rui") else "human")
     password = data.get("password", "")
     member_token = data.get("member_token", "")
+    human_token = request.headers.get("X-Human-Token") or data.get("human_token", "")
+
+    # Role defaults to human only if authenticated, otherwise agent
+    role = data.get("role", "")
+    if not role:
+        role = "human" if (human_token and secrets.compare_digest(human_token.strip(), hub.human_token)) else "agent"
 
     if not content:
         return JSONResponse({"error": "Content cannot be empty"}, status_code=400)
@@ -108,12 +118,15 @@ async def endpoint_post_message(request: Request) -> Response:
             role=role,
             password=password,
             member_token=member_token,
+            human_token=human_token,
         )
         return JSONResponse(msg, status_code=201)
     except PermissionError as pe:
         return JSONResponse({"error": str(pe)}, status_code=403)
     except ValueError as ve:
-        return JSONResponse({"error": str(ve)}, status_code=404)
+        err_msg = str(ve)
+        status_code = 404 if "does not exist" in err_msg.lower() else 400
+        return JSONResponse({"error": err_msg}, status_code=status_code)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -295,6 +308,13 @@ async def endpoint_archive_room(request: Request) -> Response:
     """Archives a room. Restricted strictly to human users."""
     room_name = request.path_params["room_name"]
     try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    human_token = request.headers.get("X-Human-Token") or data.get("human_token", "")
+    if not human_token or not secrets.compare_digest(human_token.strip(), hub.human_token):
+        return JSONResponse({"error": "Apenas o utilizador humano autenticado tem permissão para arquivar salas."}, status_code=403)
+    try:
         res = hub.archive_room(room_name, requester_role="human")
         await hub._broadcast_to_websockets(room_name, {"type": "room_archived", "room_name": room_name})
         return JSONResponse(res)
@@ -305,6 +325,13 @@ async def endpoint_archive_room(request: Request) -> Response:
 async def endpoint_unarchive_room(request: Request) -> Response:
     """Unarchives a room. Restricted strictly to human users."""
     room_name = request.path_params["room_name"]
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    human_token = request.headers.get("X-Human-Token") or data.get("human_token", "")
+    if not human_token or not secrets.compare_digest(human_token.strip(), hub.human_token):
+        return JSONResponse({"error": "Apenas o utilizador humano autenticado tem permissão para desarquivar salas."}, status_code=403)
     try:
         res = hub.unarchive_room(room_name, requester_role="human")
         await hub._broadcast_to_websockets(room_name, {"type": "room_unarchived", "room_name": room_name})

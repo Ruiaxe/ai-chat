@@ -9,6 +9,7 @@ from starlette.testclient import TestClient
 
 from aichat.hub import ChatHub
 from aichat.mcp_server import (
+    hub,
     create_room as tool_create_room,
     join_room as tool_join_room,
     list_rooms as tool_list_rooms,
@@ -16,6 +17,7 @@ from aichat.mcp_server import (
     read_messages as tool_read_messages,
     send_message as tool_send_message,
     wait_for_new_messages as tool_wait_for_new_messages,
+    check_new_messages as tool_check_new_messages,
     react_to_message as tool_react_to_message,
     call_human as tool_call_human,
     create_poll as tool_create_poll,
@@ -296,7 +298,7 @@ class TestChatHubAndAuth(unittest.IsolatedAsyncioTestCase):
         """When since_id=0 and the room already has past messages, wait_for_new_messages must WAIT for future messages instead of returning old ones."""
         self.hub.create_room("active-room")
         # Pre-existing messages from Human and AgentB
-        await self.hub.send_message("active-room", "Human", "Welcome to the room!", role="human")
+        await self.hub.send_message("active-room", "Human", "Welcome to the room!", role="human", human_token=self.hub.human_token)
         await self.hub.send_message("active-room", "AgentB", "Hi Human!", role="agent")
 
         # AgentA joins and waits with since_id=0
@@ -339,7 +341,7 @@ class TestChatHubAndAuth(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(wait_task.done())
 
         # Someone else sends a message
-        await self.hub.send_message("self-test-room", "Human", "Good job!", role="human")
+        await self.hub.send_message("self-test-room", "Human", "Good job!", role="human", human_token=self.hub.human_token)
 
         result = await asyncio.wait_for(wait_task, timeout=2.0)
         self.assertEqual(result["status"], "new_messages")
@@ -401,8 +403,12 @@ class TestChatHubAndAuth(unittest.IsolatedAsyncioTestCase):
         msg_unreg = await self.hub.send_message("secure-room", "UnregisteredBob", "Hello all", role="agent")
         self.assertFalse(msg_unreg["is_verified"])
 
-        # Human message -> verified by default
-        msg_human = await self.hub.send_message("secure-room", "Rui", "Hello team", role="human")
+        # Human message without token -> PermissionError
+        with self.assertRaises(PermissionError):
+            await self.hub.send_message("secure-room", "Rui", "Hello team without token", role="human")
+
+        # Human message with valid human_token -> verified
+        msg_human = await self.hub.send_message("secure-room", "Rui", "Hello team", role="human", human_token=self.hub.human_token)
         self.assertTrue(msg_human["is_verified"])
 
     async def test_multi_room_subscription_and_waiting(self):
@@ -510,13 +516,27 @@ class TestWebAppAndApi(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls.temp_dir = tempfile.mkdtemp()
+        cls.test_storage = ChatStorage(
+            db_path=Path(cls.temp_dir) / "test_api.db",
+            logs_dir=Path(cls.temp_dir) / "logs",
+        )
+        cls.orig_storage = hub.storage
+        hub.storage = cls.test_storage
         cls.app = create_app()
         cls.client = TestClient(cls.app)
+
+    @classmethod
+    def tearDownClass(cls):
+        hub.storage.close()
+        hub.storage = cls.orig_storage
+        shutil.rmtree(cls.temp_dir, ignore_errors=True)
 
     def test_web_ui_root(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn("AI Agent Hub", response.text)
+        self.assertIn("window.__HUMAN_AUTH_TOKEN__", response.text)
 
     def test_api_rooms_and_messages(self):
         import uuid
@@ -525,10 +545,18 @@ class TestWebAppAndApi(unittest.TestCase):
         res = self.client.post("/api/rooms", json={"name": room_name, "topic": "API Testing"})
         self.assertIn(res.status_code, [200, 201])
 
-        # Post message
+        # Attempt to post as human without token -> 403 Forbidden
+        post_fail = self.client.post(
+            f"/api/rooms/{room_name}/messages",
+            json={"sender": "UserTest", "content": "Fake Human", "role": "human"},
+        )
+        self.assertEqual(post_fail.status_code, 403)
+
+        # Post message with valid human token -> 201 Created
         post_res = self.client.post(
             f"/api/rooms/{room_name}/messages",
             json={"sender": "UserTest", "content": "Hello from API!", "role": "human"},
+            headers={"X-Human-Token": hub.human_token},
         )
         self.assertEqual(post_res.status_code, 201)
 
@@ -559,7 +587,9 @@ class TestWebAppAndApi(unittest.TestCase):
         msg_res = self.client.post(
             f"/api/rooms/{room_name}/messages",
             json={"sender": "Tester", "content": "Let's react to this", "role": "human"},
+            headers={"X-Human-Token": hub.human_token},
         )
+        self.assertEqual(msg_res.status_code, 201)
         msg_id = msg_res.json()["id"]
 
         # Reaction endpoint
@@ -591,17 +621,35 @@ class TestWebAppAndApi(unittest.TestCase):
         self.assertEqual(vote_res.status_code, 200)
         self.assertEqual(vote_res.json()["options"][0]["votes"], 1)
 
-        # Archive room endpoint
-        arch_res = self.client.post(f"/api/rooms/{room_name}/archive")
+        # Archive room endpoint without token -> 403
+        arch_fail = self.client.post(f"/api/rooms/{room_name}/archive")
+        self.assertEqual(arch_fail.status_code, 403)
+
+        # Archive room endpoint with token -> 200
+        arch_res = self.client.post(f"/api/rooms/{room_name}/archive", headers={"X-Human-Token": hub.human_token})
         self.assertEqual(arch_res.status_code, 200)
 
-        # Unarchive room endpoint
-        unarch_res = self.client.post(f"/api/rooms/{room_name}/unarchive")
+        # Unarchive room endpoint with token -> 200
+        unarch_res = self.client.post(f"/api/rooms/{room_name}/unarchive", headers={"X-Human-Token": hub.human_token})
         self.assertEqual(unarch_res.status_code, 200)
 
 
 class TestMCPTools(unittest.IsolatedAsyncioTestCase):
     """Tests for FastMCP tool functions directly."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.test_storage = ChatStorage(
+            db_path=Path(self.temp_dir) / "test_mcp.db",
+            logs_dir=Path(self.temp_dir) / "logs",
+        )
+        self.orig_storage = hub.storage
+        hub.storage = self.test_storage
+
+    def tearDown(self):
+        hub.storage.close()
+        hub.storage = self.orig_storage
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     async def test_mcp_tools_flow(self):
         import uuid
@@ -677,6 +725,74 @@ class TestMCPTools(unittest.IsolatedAsyncioTestCase):
         ar_res = json.loads(tool_archive_room(room_name, requester_name="FeatureAgent", requester_role="agent"))
         self.assertEqual(ar_res["status"], "error")
         self.assertIn("utilizador humano", ar_res["error"])
+
+    async def test_mcp_human_impersonation_blocked(self):
+        """Agents must be blocked from joining or sending as Human or Rui via MCP."""
+        tool_create_room("mcp-secure-room")
+
+        # Attempt to join as Human -> error
+        join_human = json.loads(tool_join_room("mcp-secure-room", agent_name="Human"))
+        self.assertEqual(join_human["status"], "error")
+        self.assertIn("reservado", join_human["error"].lower())
+
+        # Attempt to join as Rui -> error
+        join_rui = json.loads(tool_join_room("mcp-secure-room", agent_name="Rui"))
+        self.assertEqual(join_rui["status"], "error")
+        self.assertIn("reservado", join_rui["error"].lower())
+
+        # Attempt to send as Human -> error
+        send_human = json.loads(await tool_send_message("mcp-secure-room", sender_name="Human", content="I am human"))
+        self.assertEqual(send_human["status"], "error")
+        self.assertIn("reserved", send_human["error"].lower())
+
+        # Attempt to send as Rui -> error
+        send_rui = json.loads(await tool_send_message("mcp-secure-room", sender_name="Rui", content="I am Rui"))
+        self.assertEqual(send_rui["status"], "error")
+        self.assertIn("reserved", send_rui["error"].lower())
+
+    async def test_reactions_wakes_wait_for_new_messages(self):
+        """wait_for_new_messages must wake up and return when an emoji reaction is added."""
+        tool_create_room("mcp-react-room")
+        join_res = json.loads(tool_join_room("mcp-react-room", agent_name="WorkerAgent"))
+        token = join_res["member_token"]
+
+        # Worker sends a proposal message
+        msg_res = json.loads(await tool_send_message("mcp-react-room", sender_name="WorkerAgent", content="Proposal ready for approval", member_token=token))
+        msg_id = msg_res["message_id"]
+
+        # Worker waits for feedback
+        wait_task = asyncio.create_task(
+            hub.wait_for_new_messages(
+                room_name="mcp-react-room",
+                agent_name="WorkerAgent",
+                since_id=msg_id,
+                timeout_seconds=5.0,
+            )
+        )
+        await asyncio.sleep(0.05)
+        self.assertFalse(wait_task.done())
+
+        # Rui reacts with 👍 to the worker's proposal
+        await hub.toggle_reaction(message_id=msg_id, room_name="mcp-react-room", sender="Rui", emoji="👍")
+
+        # Worker wait_task should immediately wake up with status 'new_reactions'
+        result = await asyncio.wait_for(wait_task, timeout=2.0)
+        self.assertEqual(result["status"], "new_reactions")
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["reactions"][0]["emoji"], "👍")
+        self.assertEqual(result["reactions"][0]["sender"], "Rui")
+        self.assertEqual(result["reactions"][0]["message_id"], msg_id)
+
+        # Check non-blocking check_new_messages also detects reactions
+        chk_res = json.loads(tool_check_new_messages("mcp-react-room", agent_name="WorkerAgent", since_id=msg_id))
+        self.assertTrue(chk_res["has_new_reactions"])
+
+        # Check reading specific message returns reactions
+        read_single = json.loads(tool_read_messages("mcp-react-room", message_id=msg_id))
+        self.assertEqual(read_single["status"], "success")
+        self.assertEqual(len(read_single["messages"]), 1)
+        self.assertEqual(read_single["messages"][0]["id"], msg_id)
+        self.assertTrue(any(r["emoji"] == "👍" for r in read_single["messages"][0]["reactions"]))
 
 
 if __name__ == "__main__":

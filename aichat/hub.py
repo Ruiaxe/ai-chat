@@ -10,13 +10,35 @@ from aichat.storage import ChatStorage
 class ChatHub:
     """Core hub managing room business logic, authentication, pub/sub events, and WebSockets."""
 
-    def __init__(self, storage: ChatStorage | None = None):
+    RESERVED_HUMAN_NAMES = {"human", "rui", "admin", "administrator", "system", "moderator", "root"}
+
+    def __init__(self, storage: ChatStorage | None = None, human_token: str | None = None):
         self.storage = storage or ChatStorage()
         # Active WebSocket connections per room: {room_name: set(WebSocket)}
         self._active_websockets: dict[str, set[Any]] = {}
         # Waiting listeners for long polling: {room_name: list[asyncio.Event]}
         self._room_listeners: dict[str, list[asyncio.Event]] = {}
+        # Reaction events log for long-polling notification: list of event dicts
+        self._reaction_events: list[dict[str, Any]] = []
+        self._reaction_seq: int = 0
         self._lock = asyncio.Lock()
+
+        # Human authentication token (persisted in .human_token next to db)
+        if human_token:
+            self.human_token = human_token
+        else:
+            token_file = self.storage.db_path.parent / ".human_token"
+            if token_file.exists():
+                try:
+                    self.human_token = token_file.read_text(encoding="utf-8").strip()
+                except Exception:
+                    self.human_token = secrets.token_hex(24)
+            else:
+                self.human_token = secrets.token_hex(24)
+                try:
+                    token_file.write_text(self.human_token, encoding="utf-8")
+                except Exception:
+                    pass
 
     def _hash_password(self, password: str, salt: str | None = None) -> tuple[str, str]:
         """Generates salted SHA-256 hash for a password."""
@@ -110,6 +132,9 @@ class ChatHub:
         if not clean_member:
             raise ValueError("Member name cannot be empty.")
 
+        if clean_member.lower() in self.RESERVED_HUMAN_NAMES:
+            raise ValueError(f"O nome '{clean_member}' está reservado para o utilizador humano. Agentes devem usar outro nome.")
+
         room = self.storage.get_room(room_name)
         if not room:
             raise ValueError(f"Room '{room_name}' does not exist.")
@@ -166,10 +191,12 @@ class ChatHub:
         member_token: str = "",
         message_type: str = "text",
         metadata: dict[str, Any] | None = None,
+        human_token: str = "",
     ) -> dict[str, Any]:
         """
         Sends a message to the room.
         Validates member token for sender authentication.
+        Enforces human session authentication for Human/Rui identities.
         Blocks sending if room is archived.
         Persists to SQLite, logs to file, broadcasts to WebSockets, and notifies waiting agents.
         """
@@ -191,15 +218,32 @@ class ChatHub:
         if not self.verify_room_access(canonical_name, password):
             raise PermissionError(f"Access denied to room '{canonical_name}': Invalid or missing password.")
 
-        # Sender Authentication: verify token if registered
+        # Sender Authentication: verify token or human authorization
         is_verified = False
-        valid, err = self.storage.verify_member_token(canonical_name, clean_sender, member_token)
-        if not valid:
-            raise PermissionError(err)
-        if valid and member_token:
+        is_reserved = clean_sender.lower() in self.RESERVED_HUMAN_NAMES
+
+        if role == "human" or is_reserved:
+            clean_ht = (human_token or "").strip()
+            if not clean_ht or not secrets.compare_digest(clean_ht, self.human_token):
+                raise PermissionError(
+                    f"Acesso negado: Remetente '{clean_sender}' ou papel '{role}' reservado exclusivamente ao utilizador humano com autenticação válida."
+                )
+            role = "human"
             is_verified = True
-        elif role in ("human", "system"):
+        elif role == "system":
+            clean_ht = (human_token or "").strip()
+            if not clean_ht or not secrets.compare_digest(clean_ht, self.human_token):
+                raise PermissionError("Acesso negado: Papel 'system' requer autenticação de administração.")
             is_verified = True
+        else:
+            # Agent role: cannot use reserved human names
+            if is_reserved:
+                raise PermissionError(f"O nome '{clean_sender}' está reservado para o utilizador humano. Agentes não podem usar esta identidade.")
+            valid, err = self.storage.verify_member_token(canonical_name, clean_sender, member_token)
+            if not valid:
+                raise PermissionError(err)
+            if valid and member_token:
+                is_verified = True
 
         # Save to database and log files
         msg = self.storage.add_message(
@@ -256,7 +300,7 @@ class ChatHub:
         sender: str,
         emoji: str,
     ) -> dict[str, Any]:
-        """Toggles an emoji reaction on a message and broadcasts update."""
+        """Toggles an emoji reaction on a message, logs reaction event, and broadcasts update."""
         room = self.storage.get_room(room_name)
         canonical_name = room["name"] if room else room_name
         res = self.storage.toggle_reaction(message_id, canonical_name, sender, emoji)
@@ -264,6 +308,26 @@ class ChatHub:
             "type": "reaction_updated",
             "data": res,
         })
+
+        # Record reaction event for long-polling agents
+        async with self._lock:
+            self._reaction_seq += 1
+            event_item = {
+                "seq": self._reaction_seq,
+                "room": canonical_name,
+                "message_id": message_id,
+                "sender": sender,
+                "emoji": emoji,
+                "action": res["action"],
+                "reactions": res["reactions"],
+                "created_at": datetime.now().isoformat(),
+            }
+            self._reaction_events.append(event_item)
+            if len(self._reaction_events) > 200:
+                self._reaction_events = self._reaction_events[-200:]
+
+        # Wake up any agents long-polling for updates
+        self._notify_listeners(canonical_name)
         return res
 
     async def call_human(
@@ -323,6 +387,7 @@ class ChatHub:
             sender=decider,
             content=f"👤 **[DECISÃO DO HUMANO]**:\n\nOpção escolhida: **{decision}**",
             role="human",
+            human_token=self.human_token,
         )
         return {"metadata": meta, "message": resp_msg}
 
@@ -402,6 +467,7 @@ class ChatHub:
             content=f"🏁 **[VOTAÇÃO ENCERRADA #{poll['id']}]**\n\n**{poll['question']}**\n\n**Resultado Final:**\n{results_str}\nTotal de votos: {poll['total_votes']}",
             role="human" if is_human else "agent",
             member_token=token_to_use,
+            human_token=self.human_token if is_human else "",
         )
         await self._broadcast_to_websockets(poll["room_name"], {
             "type": "poll_closed",
@@ -419,10 +485,17 @@ class ChatHub:
         password: str = "",
         since_id: int = 0,
         limit: int = 50,
+        message_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Reads recent messages from room after verifying password."""
+        """Reads recent messages from room, or fetches a single message by message_id."""
         if not self.verify_room_access(room_name, password):
             raise PermissionError(f"Access denied to room '{room_name}': Invalid or missing password.")
+
+        if message_id is not None and message_id > 0:
+            msg = self.storage.get_message_by_id(message_id)
+            if msg and msg["room_name"].strip().lower() == room_name.strip().lower():
+                return [msg]
+            return []
 
         return self.storage.get_messages(room_name=room_name, since_id=since_id, limit=limit)
 
@@ -471,6 +544,7 @@ class ChatHub:
         - since_id: Message ID to listen from. If 0 (default), waits for new messages arriving from now on.
         - timeout_seconds: Max seconds to wait (1 to 3600, default 600).
         - on_progress: Optional async callback (elapsed, total, msg) called every 45s to report progress to MCP client.
+        Wakes up on new messages OR new reactions to messages in target rooms.
         """
         target_rooms = self._resolve_target_rooms(room_name, agent_name, password)
         clean_agent = agent_name.strip().lower() if agent_name else ""
@@ -483,6 +557,9 @@ class ChatHub:
                 room_since_ids[r] = since_id
             else:
                 room_since_ids[r] = max_id
+
+        # Record the reaction sequence at start
+        start_reaction_seq = self._reaction_seq
 
         # If since_id was explicitly provided for a single room and unread messages already exist, return them immediately
         if len(target_rooms) == 1 and since_id > 0:
@@ -544,7 +621,7 @@ class ChatHub:
                             pass
                     continue
 
-                # Event fired! Check all target_rooms for new messages since their respective effective_since_id
+                # Event fired! First check all target_rooms for new messages
                 for r in target_rooms:
                     effective_since = room_since_ids[r]
                     new_msgs = self.storage.get_messages(r, since_id=effective_since, limit=50)
@@ -562,6 +639,36 @@ class ChatHub:
                         }
                     if new_msgs:
                         room_since_ids[r] = max(m["id"] for m in new_msgs)
+
+                # If no new messages, check for new reaction events in target rooms
+                target_room_set = {r.strip().lower() for r in target_rooms}
+                new_reactions = [
+                    ev for ev in self._reaction_events
+                    if ev["seq"] > start_reaction_seq
+                    and ev["room"].strip().lower() in target_room_set
+                    and (not clean_agent or ev["sender"].strip().lower() != clean_agent)
+                ]
+                if new_reactions:
+                    start_reaction_seq = self._reaction_seq
+                    reactions_payload = []
+                    for ev in new_reactions:
+                        msg_obj = self.storage.get_message_by_id(ev["message_id"])
+                        reactions_payload.append({
+                            "message_id": ev["message_id"],
+                            "room": ev["room"],
+                            "sender": ev["sender"],
+                            "emoji": ev["emoji"],
+                            "action": ev["action"],
+                            "all_reactions": ev["reactions"],
+                            "message": msg_obj,
+                        })
+                    return {
+                        "status": "new_reactions",
+                        "room": new_reactions[0]["room"] if len(target_rooms) == 1 else "subscribed",
+                        "count": len(reactions_payload),
+                        "reactions": reactions_payload,
+                        "last_id": self.storage.get_max_message_id(target_rooms[0]) if len(target_rooms) == 1 else 0,
+                    }
         finally:
             async with self._lock:
                 for r in target_rooms:
@@ -577,7 +684,7 @@ class ChatHub:
         password: str = "",
     ) -> dict[str, Any]:
         """
-        Instant non-blocking check for new messages across one room, 'subscribed' rooms, or a list of rooms.
+        Instant non-blocking check for new messages or reactions across one room, 'subscribed' rooms, or a list of rooms.
         """
         target_rooms = self._resolve_target_rooms(room_name, agent_name, password)
         clean_agent = agent_name.strip().lower() if agent_name else ""
@@ -601,6 +708,13 @@ class ChatHub:
                 ]
                 all_new.extend(external)
 
+        target_room_set = {r.strip().lower() for r in target_rooms}
+        recent_reactions = [
+            ev for ev in self._reaction_events
+            if ev["room"].strip().lower() in target_room_set
+            and (not clean_agent or ev["sender"].strip().lower() != clean_agent)
+        ][-10:]
+
         if since_id > 0 and len(target_rooms) == 1:
             return {
                 "status": "success",
@@ -608,6 +722,8 @@ class ChatHub:
                 "has_new": len(all_new) > 0,
                 "count": len(all_new),
                 "messages": all_new,
+                "has_new_reactions": len(recent_reactions) > 0,
+                "recent_reactions": recent_reactions,
                 "last_id": max(m["id"] for m in all_new) if all_new else since_id,
                 "room_max_id": self.storage.get_max_message_id(target_rooms[0]),
             }
@@ -619,6 +735,8 @@ class ChatHub:
                 "has_new": False,
                 "count": len(recent),
                 "messages": recent,
+                "has_new_reactions": len(recent_reactions) > 0,
+                "recent_reactions": recent_reactions,
                 "last_id": last_id,
                 "room_max_id": last_id,
                 "hint": f"Room currently has {len(recent)} recent messages up to ID #{last_id}.",
@@ -630,6 +748,8 @@ class ChatHub:
                 "has_new": len(all_new) > 0,
                 "count": len(all_new),
                 "messages": all_new,
+                "has_new_reactions": len(recent_reactions) > 0,
+                "recent_reactions": recent_reactions,
                 "last_id": last_id,
                 "hint": f"Checked {len(target_rooms)} subscribed rooms.",
             }
