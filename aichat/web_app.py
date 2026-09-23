@@ -88,9 +88,12 @@ async def endpoint_post_message(request: Request) -> Response:
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
-    sender = data.get("sender", "Human").strip()
+    sender = (data.get("sender") or data.get("sender_name") or data.get("agent_name") or "").strip()
+    if not sender:
+        return JSONResponse({"error": "Sender cannot be empty"}, status_code=400)
+
     content = data.get("content", "").strip()
-    role = data.get("role", "human")
+    role = data.get("role", "agent" if sender.lower() not in ("human", "rui") else "human")
     password = data.get("password", "")
     member_token = data.get("member_token", "")
 
