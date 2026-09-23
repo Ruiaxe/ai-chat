@@ -42,6 +42,18 @@ def is_authenticated_human(request: Request) -> bool:
     )
 
 
+def set_human_session_cookie(response: Response, token: str) -> None:
+    """Sets a persistent HttpOnly cookie for human authentication (30 days validity)."""
+    response.set_cookie(
+        key="human_session",
+        value=token,
+        max_age=86400 * 30,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+
 # --- HTTP Endpoints ---
 
 async def endpoint_index(request: Request) -> Response:
@@ -49,19 +61,52 @@ async def endpoint_index(request: Request) -> Response:
     auth_param = request.query_params.get("auth", "").strip()
     if auth_param and secrets.compare_digest(auth_param, hub.human_token):
         response = RedirectResponse(url="/", status_code=303)
-        response.set_cookie(
-            key="human_session",
-            value=hub.human_token,
-            httponly=True,
-            samesite="strict",
-            path="/",
-        )
+        set_human_session_cookie(response, hub.human_token)
         return response
 
     if INDEX_HTML.exists():
         html = INDEX_HTML.read_text(encoding="utf-8")
         return HTMLResponse(html)
     return HTMLResponse("<h1>AI Chat Hub</h1><p>index.html not found</p>", status_code=404)
+
+
+async def endpoint_auth_status(request: Request) -> Response:
+    """Checks human authentication status."""
+    is_auth = is_authenticated_human(request)
+    return JSONResponse({
+        "authenticated": is_auth,
+        "human_name": hub.human_name,
+    })
+
+
+async def endpoint_auth_login(request: Request) -> Response:
+    """Authenticates human user with token, setting persistent session cookie."""
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    token = (data.get("token") or "").strip()
+    if not token:
+        return JSONResponse({"error": "Token is required"}, status_code=400)
+
+    if not secrets.compare_digest(token, hub.human_token):
+        return JSONResponse({"error": "Token inválido. Verifique a credencial de acesso humano."}, status_code=401)
+
+    response = JSONResponse({
+        "success": True,
+        "message": "Autenticado com sucesso",
+        "human_name": hub.human_name,
+    })
+    set_human_session_cookie(response, hub.human_token)
+    return response
+
+
+async def endpoint_auth_logout(request: Request) -> Response:
+    """Clears human session cookie."""
+    response = JSONResponse({"success": True, "message": "Sessão terminada"})
+    response.delete_cookie(key="human_session", path="/")
+    return response
 
 
 async def endpoint_get_rooms(request: Request) -> Response:
@@ -535,6 +580,9 @@ def create_app() -> Starlette:
     routes = [
         Route("/", endpoint=endpoint_index, methods=["GET"]),
         Route("/api/status", endpoint=endpoint_status, methods=["GET"]),
+        Route("/api/auth/status", endpoint=endpoint_auth_status, methods=["GET"]),
+        Route("/api/auth/login", endpoint=endpoint_auth_login, methods=["POST"]),
+        Route("/api/auth/logout", endpoint=endpoint_auth_logout, methods=["POST"]),
         Route("/api/tts", endpoint=endpoint_tts, methods=["GET", "POST"]),
         Route("/api/tts/voices", endpoint=endpoint_tts_voices, methods=["GET"]),
         Route("/api/rooms", endpoint=endpoint_get_rooms, methods=["GET"]),

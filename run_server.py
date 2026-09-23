@@ -30,6 +30,7 @@ from aichat.web_app import create_app
 
 def print_banner(host: str, port: int) -> None:
     web_url = f"http://{host}:{port}/"
+    auth_url = f"http://{host}:{port}/?auth={hub.human_token}"
     sse_url = f"http://{host}:{port}/sse"
     ws_url = f"ws://{host}:{port}/ws/<room>"
     db_path = DATA_DIR / "chat.db"
@@ -41,6 +42,8 @@ def print_banner(host: str, port: int) -> None:
 🚀 AI CHAT ROOM - MCP SERVER & WEB HUB
 ================================================================================
  🌐 Web Interface:         {web_url}
+ 🔑 Human Web Login:        {auth_url}
+ 🔐 Human Token:            {hub.human_token}
  ⚡ MCP SSE Endpoint:      {sse_url}
  🔌 WebSocket Endpoint:    {ws_url}
  💾 SQLite Database:       {db_path}

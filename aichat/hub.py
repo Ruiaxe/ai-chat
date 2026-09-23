@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import os
 import secrets
 from datetime import datetime
 from typing import Any
@@ -23,18 +24,32 @@ class ChatHub:
         self._reaction_seq: int = 0
         self._lock = asyncio.Lock()
 
-        # Human authentication token (kept in memory only; never persisted to disk)
+        # Human identity name
+        self.human_name: str = "Rui"
+
+        # Human authentication token (supports env var, persisted local file, or generated)
+        env_token = os.environ.get("AICHAT_HUMAN_TOKEN", "").strip()
+        token_file = self.storage.db_path.parent / ".human_token"
         if human_token:
             self.human_token = human_token
+        elif env_token:
+            self.human_token = env_token
+        elif token_file.exists():
+            try:
+                saved = token_file.read_text(encoding="utf-8").strip()
+                if len(saved) >= 16:
+                    self.human_token = saved
+                else:
+                    self.human_token = secrets.token_hex(24)
+                    token_file.write_text(self.human_token, encoding="utf-8")
+            except Exception:
+                self.human_token = secrets.token_hex(24)
         else:
             self.human_token = secrets.token_hex(24)
-            # Remove any legacy plaintext .human_token file from disk
-            token_file = self.storage.db_path.parent / ".human_token"
-            if token_file.exists():
-                try:
-                    token_file.unlink()
-                except Exception:
-                    pass
+            try:
+                token_file.write_text(self.human_token, encoding="utf-8")
+            except Exception:
+                pass
 
     def _hash_password(self, password: str, salt: str | None = None) -> tuple[str, str]:
         """Generates salted SHA-256 hash for a password."""

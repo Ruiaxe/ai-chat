@@ -30,12 +30,48 @@ class TestSecurityAuditVulnerabilities(unittest.IsolatedAsyncioTestCase):
         self.storage.close()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    # --- C1: Human token security ---
-    def test_c1_token_not_persisted_to_disk(self):
-        """Verifies human_token is kept strictly in-memory and not written to disk."""
-        token_file = Path(self.temp_dir) / ".human_token"
-        self.assertFalse(token_file.exists())
-        self.assertTrue(len(self.hub.human_token) >= 32)
+    # --- C1: Human token security and auth endpoints ---
+    def test_c1_token_security_and_auth_endpoints(self):
+        """Verifies GET / does not leak token, and /api/auth/ endpoints work with persistent cookie."""
+        from aichat.mcp_server import hub as global_hub
+        orig_storage = global_hub.storage
+        global_hub.storage = self.storage
+        try:
+            app = create_app()
+            client = TestClient(app)
+
+            # 1. GET / must not contain human_token in response body (HTML leak prevention)
+            resp = client.get("/")
+            self.assertEqual(resp.status_code, 200)
+            self.assertNotIn(global_hub.human_token, resp.text)
+            self.assertNotIn("window.__HUMAN_AUTH_TOKEN__", resp.text)
+
+            # 2. GET /api/auth/status initially unauthenticated
+            status_unauth = client.get("/api/auth/status")
+            self.assertEqual(status_unauth.status_code, 200)
+            self.assertFalse(status_unauth.json()["authenticated"])
+
+            # 3. POST /api/auth/login with invalid token -> 401
+            login_fail = client.post("/api/auth/login", json={"token": "wrong-token"})
+            self.assertEqual(login_fail.status_code, 401)
+
+            # 4. POST /api/auth/login with valid token -> 200 and sets persistent cookie
+            login_ok = client.post("/api/auth/login", json={"token": global_hub.human_token})
+            self.assertEqual(login_ok.status_code, 200)
+            cookie_header = login_ok.headers.get("set-cookie", "")
+            self.assertIn("human_session", cookie_header)
+            self.assertIn("Max-Age=", cookie_header)
+
+            # 5. Subsequent GET /api/auth/status with session is authenticated
+            status_auth = client.get("/api/auth/status", cookies={"human_session": global_hub.human_token})
+            self.assertEqual(status_auth.status_code, 200)
+            self.assertTrue(status_auth.json()["authenticated"])
+
+            # 6. POST /api/auth/logout clears session
+            logout_resp = client.post("/api/auth/logout")
+            self.assertEqual(logout_resp.status_code, 200)
+        finally:
+            global_hub.storage = orig_storage
 
     # --- C2: Human decision resolve authentication ---
     async def test_c2_resolve_decision_requires_human_auth(self):

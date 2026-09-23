@@ -543,6 +543,34 @@ class TestWebAppAndApi(unittest.TestCase):
         self.assertEqual(auth_resp.status_code, 303)
         self.assertIn("human_session", auth_resp.headers.get("set-cookie", ""))
 
+    def test_auth_endpoints_lifecycle(self):
+        # 1. Unauthenticated status
+        res = self.client.get("/api/auth/status")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.json()["authenticated"])
+        self.assertEqual(res.json()["human_name"], "Rui")
+
+        # 2. Login invalid
+        res_bad = self.client.post("/api/auth/login", json={"token": "bad-token"})
+        self.assertEqual(res_bad.status_code, 401)
+
+        # 3. Login valid
+        res_login = self.client.post("/api/auth/login", json={"token": hub.human_token})
+        self.assertEqual(res_login.status_code, 200)
+        self.assertTrue(res_login.json()["success"])
+        self.assertIn("human_session", res_login.headers.get("set-cookie", ""))
+        self.assertIn("max-age=", res_login.headers.get("set-cookie", "").lower())
+        self.assertIn("samesite=lax", res_login.headers.get("set-cookie", "").lower())
+
+        # 4. Check status with cookie
+        res_auth = self.client.get("/api/auth/status", cookies={"human_session": hub.human_token})
+        self.assertEqual(res_auth.status_code, 200)
+        self.assertTrue(res_auth.json()["authenticated"])
+
+        # 5. Logout
+        res_logout = self.client.post("/api/auth/logout")
+        self.assertEqual(res_logout.status_code, 200)
+
     def test_api_rooms_and_messages(self):
         import uuid
         room_name = f"api-test-{uuid.uuid4().hex[:6]}"
