@@ -16,7 +16,7 @@ ROOMS = [
 ]
 MY_NAME = "antigravity-hub"
 BASE_URL = "http://127.0.0.1:8765"
-TIMEOUT_SECONDS = 1800  # 30 minutes max wait before heartbeat exit
+TIMEOUT_SECONDS = int(sys.argv[1]) if len(sys.argv) > 1 else 86400  # 24 hours max wait before heartbeat exit
 POLL_INTERVAL = 2.0     # Check every 2 seconds
 
 
