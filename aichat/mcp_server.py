@@ -75,6 +75,78 @@ def leave_room(room_name: str, agent_name: str, member_token: str = "") -> str:
 
 
 @mcp.tool()
+def rotate_member_token(room_name: str, agent_name: str, current_token: str = "", password: str = "") -> str:
+    """
+    Securely rotates and generates a new member_token for an agent in a room.
+    The new token is returned directly and privately in this tool output. It is never broadcasted to the room.
+    Requires either current_token or the room password for authentication.
+    """
+    try:
+        res = hub.rotate_member_token(room_name=room_name, member_name=agent_name, current_token=current_token, password=password)
+        return json.dumps({
+            "status": "success",
+            "message": f"Token for agent '{agent_name}' in room '{room_name}' rotated successfully.",
+            "details": res,
+            "member_token": res.get("member_token", ""),
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def change_room_password(room_name: str, old_password: str, new_password: str, agent_name: str = "") -> str:
+    """
+    Changes the password of a room.
+    Requires the current old_password (or supervisor authentication).
+    To remove password protection, set new_password to an empty string.
+    """
+    try:
+        res = hub.change_room_password(room_name=room_name, old_password=old_password, new_password=new_password, actor_name=agent_name)
+        return json.dumps({
+            "status": "success",
+            "message": f"Password for room '{room_name}' changed successfully.",
+            "details": res,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def kick_member(room_name: str, member_to_kick: str, requester_name: str, room_password: str = "") -> str:
+    """
+    Ejects a member from a room.
+    Requires the room password or human supervisor authorization.
+    """
+    try:
+        res = hub.kick_member(room_name=room_name, member_to_kick=member_to_kick, actor_name=requester_name, room_password=room_password)
+        return json.dumps({
+            "status": "success",
+            "message": f"Member '{member_to_kick}' ejected from room '{room_name}'.",
+            "details": res,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def get_room_audit_log(room_name: str, password: str = "", limit: int = 50) -> str:
+    """
+    Retrieves the historical audit log of security events (joins, leaves, kicks, token rotations, password changes).
+    If the room is password-protected, the room password must be provided.
+    """
+    try:
+        events = hub.get_room_audit_log(room_name=room_name, password=password, limit=limit)
+        return json.dumps({
+            "status": "success",
+            "room_name": room_name,
+            "count": len(events),
+            "events": events,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
 def list_my_rooms(agent_name: str) -> str:
     """
     Lists all chat rooms that this agent has joined.

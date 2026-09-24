@@ -460,6 +460,117 @@ async def endpoint_unarchive_room(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+async def endpoint_rotate_token(request: Request) -> Response:
+    """Rotates member token for a room."""
+    room_name = request.path_params["room_name"]
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    member_name = (data.get("member_name") or data.get("agent_name") or "").strip()
+    if not member_name:
+        return JSONResponse({"error": "member_name is required"}, status_code=400)
+
+    current_token = (data.get("current_token") or data.get("member_token") or "").strip()
+    password = data.get("password", "") or request.headers.get("x-room-password", "")
+
+    try:
+        res = hub.rotate_member_token(
+            room_name=room_name,
+            member_name=member_name,
+            current_token=current_token,
+            password=password,
+        )
+        return JSONResponse(res, status_code=200)
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_change_password(request: Request) -> Response:
+    """Changes password for a room."""
+    room_name = request.path_params["room_name"]
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    old_password = data.get("old_password", "") or request.headers.get("x-room-password", "")
+    new_password = data.get("new_password", "")
+    actor_name = data.get("actor_name", "") or ("Rui" if is_authenticated_human(request) else "")
+    supervisor_token = hub.human_token if is_authenticated_human(request) else data.get("supervisor_token", "")
+
+    try:
+        res = hub.change_room_password(
+            room_name=room_name,
+            old_password=old_password,
+            new_password=new_password,
+            actor_name=actor_name,
+            supervisor_token=supervisor_token,
+        )
+        return JSONResponse(res, status_code=200)
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_kick_member(request: Request) -> Response:
+    """Kicks/ejects a member from a room."""
+    room_name = request.path_params["room_name"]
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    member_to_kick = (data.get("member_to_kick") or data.get("member_name") or "").strip()
+    if not member_to_kick:
+        return JSONResponse({"error": "member_to_kick is required"}, status_code=400)
+
+    actor_name = data.get("actor_name", "") or ("Rui" if is_authenticated_human(request) else "")
+    supervisor_token = hub.human_token if is_authenticated_human(request) else data.get("supervisor_token", "")
+    room_password = data.get("room_password", "") or request.headers.get("x-room-password", "")
+
+    try:
+        res = hub.kick_member(
+            room_name=room_name,
+            member_to_kick=member_to_kick,
+            actor_name=actor_name,
+            supervisor_token=supervisor_token,
+            room_password=room_password,
+        )
+        return JSONResponse(res, status_code=200)
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_get_audit(request: Request) -> Response:
+    """Gets audit log for a room."""
+    room_name = request.path_params["room_name"]
+    password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
+    limit = safe_int(request.query_params.get("limit"), default=50, min_val=1, max_val=200)
+
+    try:
+        events = hub.get_room_audit_log(room_name=room_name, password=password, limit=limit)
+        return JSONResponse(events, status_code=200)
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 async def endpoint_status(request: Request) -> Response:
     """Returns server health status."""
     return JSONResponse({
@@ -802,6 +913,10 @@ def create_app() -> Starlette:
         Route("/api/polls/{poll_id:int}/close", endpoint=endpoint_close_poll, methods=["POST"]),
         Route("/api/rooms/{room_name}/archive", endpoint=endpoint_archive_room, methods=["POST"]),
         Route("/api/rooms/{room_name}/unarchive", endpoint=endpoint_unarchive_room, methods=["POST"]),
+        Route("/api/rooms/{room_name}/rotate-token", endpoint=endpoint_rotate_token, methods=["POST"]),
+        Route("/api/rooms/{room_name}/password", endpoint=endpoint_change_password, methods=["POST"]),
+        Route("/api/rooms/{room_name}/kick", endpoint=endpoint_kick_member, methods=["POST"]),
+        Route("/api/rooms/{room_name}/audit", endpoint=endpoint_get_audit, methods=["GET"]),
         Route("/api/rooms/{room_name}/presence", endpoint=endpoint_get_presence, methods=["GET"]),
         Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_get_tasks, methods=["GET"]),
         Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_create_task, methods=["POST"]),

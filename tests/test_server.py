@@ -30,6 +30,10 @@ from aichat.mcp_server import (
     list_tasks as tool_list_tasks,
     reorder_tasks as tool_reorder_tasks,
     who_is_listening as tool_who_is_listening,
+    rotate_member_token as tool_rotate_member_token,
+    change_room_password as tool_change_room_password,
+    kick_member as tool_kick_member,
+    get_room_audit_log as tool_get_room_audit_log,
 )
 from aichat.storage import ChatStorage
 from aichat.web_app import create_app
@@ -958,6 +962,50 @@ class TestWebAppAndApi(unittest.TestCase):
         list_after_del = self.client.get(f"/api/rooms/{room_name}/tasks")
         self.assertEqual(len(list_after_del.json()["tasks"]), 1)
 
+    def test_security_admin_endpoints(self):
+        import uuid
+        room_name = f"api-sec-{uuid.uuid4().hex[:6]}"
+        # Create room with password
+        c_res = self.client.post("/api/rooms", json={"name": room_name, "password": "pass1", "topic": "Security API Test"})
+        self.assertEqual(c_res.status_code, 201)
+
+        # Join member
+        join_res = hub.join_room(room_name, "AgentSec", role="agent", password="pass1")
+        token1 = join_res["member_token"]
+
+        # 1. Rotate token
+        rot_res = self.client.post(
+            f"/api/rooms/{room_name}/rotate-token",
+            json={"member_name": "AgentSec", "current_token": token1},
+        )
+        self.assertEqual(rot_res.status_code, 200)
+        token2 = rot_res.json()["member_token"]
+        self.assertNotEqual(token1, token2)
+
+        # 2. Change password
+        pwd_res = self.client.post(
+            f"/api/rooms/{room_name}/password",
+            json={"old_password": "pass1", "new_password": "pass2"},
+        )
+        self.assertEqual(pwd_res.status_code, 200)
+        self.assertTrue(pwd_res.json()["is_protected"])
+
+        # 3. Audit log (without password -> 403)
+        audit_fail = self.client.get(f"/api/rooms/{room_name}/audit")
+        self.assertEqual(audit_fail.status_code, 403)
+
+        # Audit log (with new password -> 200)
+        audit_ok = self.client.get(f"/api/rooms/{room_name}/audit", headers={"X-Room-Password": "pass2"})
+        self.assertEqual(audit_ok.status_code, 200)
+        self.assertGreaterEqual(len(audit_ok.json()), 2)
+
+        # 4. Kick member
+        kick_res = self.client.post(
+            f"/api/rooms/{room_name}/kick",
+            json={"member_to_kick": "AgentSec", "room_password": "pass2"},
+        )
+        self.assertEqual(kick_res.status_code, 200)
+        self.assertEqual(kick_res.json()["status"], "kicked")
 
 
 class TestMCPTools(unittest.IsolatedAsyncioTestCase):
@@ -1190,6 +1238,32 @@ class TestMCPTools(unittest.IsolatedAsyncioTestCase):
         ))
         self.assertEqual(reorder_res["status"], "success")
         self.assertEqual(reorder_res["tasks"][0]["id"], task2["id"])
+
+    async def test_mcp_security_admin_tools_flow(self):
+        import uuid
+        room_name = f"mcp-sec-{uuid.uuid4().hex[:6]}"
+        tool_create_room(room_name, password="oldpass")
+        join_res = json.loads(tool_join_room(room_name, agent_name="AdminAgent", password="oldpass"))
+        token = join_res["member_token"]
+
+        # 1. rotate_member_token
+        rot_res = json.loads(tool_rotate_member_token(room_name, agent_name="AdminAgent", current_token=token))
+        self.assertEqual(rot_res["status"], "success")
+        new_token = rot_res["member_token"]
+        self.assertNotEqual(token, new_token)
+
+        # 2. change_room_password
+        ch_res = json.loads(tool_change_room_password(room_name, old_password="oldpass", new_password="newpass", agent_name="AdminAgent"))
+        self.assertEqual(ch_res["status"], "success")
+
+        # 3. kick_member
+        kick_res = json.loads(tool_kick_member(room_name, member_to_kick="AdminAgent", requester_name="Rui"))
+        self.assertEqual(kick_res["status"], "success")
+
+        # 4. get_room_audit_log
+        audit_res = json.loads(tool_get_room_audit_log(room_name, password="newpass"))
+        self.assertEqual(audit_res["status"], "success")
+        self.assertGreaterEqual(len(audit_res["events"]), 3)
 
 
 if __name__ == "__main__":

@@ -198,6 +198,23 @@ class ChatStorage:
                 ON task_history(task_id);
             """)
 
+            # Room Audit Log table (v2.6)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS room_audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    room_name TEXT NOT NULL COLLATE NOCASE,
+                    member_name TEXT NOT NULL COLLATE NOCASE,
+                    action TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    details TEXT DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_audit_room 
+                ON room_audit_log(room_name, created_at);
+            """)
+
             # Auto-migrations for new features
             try:
                 conn.execute("ALTER TABLE messages ADD COLUMN is_verified INTEGER DEFAULT 0;")
@@ -298,6 +315,25 @@ class ChatStorage:
         res = dict(row)
         res["is_archived"] = bool(res.get("is_archived", 0))
         return res
+
+    def update_room_password(
+        self,
+        room_name: str,
+        password_hash: str,
+        salt: str,
+        is_protected: bool = True,
+    ) -> None:
+        """Updates room password hash and salt."""
+        conn = self._get_connection()
+        with conn:
+            conn.execute(
+                """
+                UPDATE rooms 
+                SET password_hash = ?, salt = ?, is_protected = ?
+                WHERE name = ? COLLATE NOCASE
+                """,
+                (password_hash, salt, 1 if is_protected else 0, room_name.strip()),
+            )
 
     def list_rooms(self, include_archived: bool = True) -> list[dict[str, Any]]:
         """Lists all rooms with member count, message count, and archived status."""
@@ -454,6 +490,87 @@ class ChatStorage:
                 "DELETE FROM members WHERE room_name = ? AND member_name = ?",
                 (room_name, member_name),
             )
+
+    def rotate_member_token(self, room_name: str, member_name: str) -> str:
+        """Generates a new secure token for a member, updating members and member_identities."""
+        import secrets
+        conn = self._get_connection()
+        clean_room = room_name.strip()
+        clean_member = member_name.strip()
+        new_token = secrets.token_hex(16)
+        now = datetime.now().isoformat()
+
+        with conn:
+            cursor = conn.execute(
+                """
+                UPDATE members
+                SET token = ?, last_seen_at = ?
+                WHERE room_name = ? COLLATE NOCASE AND member_name = ? COLLATE NOCASE
+                """,
+                (new_token, now, clean_room, clean_member),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"Membro '{clean_member}' não está registado na sala '{clean_room}'.")
+
+            conn.execute(
+                """
+                UPDATE member_identities
+                SET token = ?
+                WHERE member_name = ? COLLATE NOCASE
+                """,
+                (new_token, clean_member),
+            )
+        return new_token
+
+    def log_audit_event(
+        self,
+        room_name: str,
+        member_name: str,
+        action: str,
+        status: str,
+        details: str = "",
+    ) -> dict[str, Any]:
+        """Logs a room security or membership event."""
+        now = datetime.now().isoformat()
+        conn = self._get_connection()
+        clean_room = room_name.strip()
+        clean_member = member_name.strip()
+        clean_action = action.strip()
+        clean_status = status.strip()
+        clean_details = details.strip()
+        with conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO room_audit_log (room_name, member_name, action, status, details, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (clean_room, clean_member, clean_action, clean_status, clean_details, now),
+            )
+            audit_id = cursor.lastrowid
+        return {
+            "id": audit_id,
+            "room_name": clean_room,
+            "member_name": clean_member,
+            "action": clean_action,
+            "status": clean_status,
+            "details": clean_details,
+            "created_at": now,
+        }
+
+    def get_room_audit_log(self, room_name: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Fetches recent audit log entries for a room."""
+        conn = self._get_connection()
+        cursor = conn.execute(
+            """
+            SELECT id, room_name, member_name, action, status, details, created_at
+            FROM room_audit_log
+            WHERE room_name = ? COLLATE NOCASE
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (room_name.strip(), limit),
+        )
+        return [dict(row) for row in cursor.fetchall()]
 
     def get_member(self, room_name: str, member_name: str) -> dict[str, Any] | None:
         """Retrieves member info (token, role, etc.) by room and name."""

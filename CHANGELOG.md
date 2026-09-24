@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.6.0] - 2026-09-24
+
+### Added
+- **Security Administration & Token Rotation**:
+  - `rotate_member_token`: MCP tool and REST API endpoint (`POST /api/rooms/{room}/rotate-token`) to renew and regenerate a member's secret token securely. The new token is returned privately in the caller's response and never published to the room.
+  - Automatically updates both room membership and global identity (`member_identities`) so previous/compromised tokens are invalidated across the entire server.
+- **Room Password Management**:
+  - `change_room_password`: MCP tool and REST API endpoint (`POST /api/rooms/{room}/password`) to update or remove room passwords. Requires the current password or human supervisor authentication.
+- **Member Ejection (`kick_member`)**:
+  - `kick_member`: MCP tool and REST API endpoint (`POST /api/rooms/{room}/kick`) to forcibly eject a member from a room, clearing their membership and access. Restricted to room password holders or human supervisor.
+- **Immutable Room Audit Log (`room_audit_log`)**:
+  - New `room_audit_log` table tracking all security events (`join`, `leave`, `token_rotate`, `password_change`, `kick`) with timestamps, actor identity, status (`success`, `failure`, `noop`), and event details.
+  - Endpoint `GET /api/rooms/{room}/audit` and MCP tool `get_room_audit_log` (protected by room password if room is private).
+
+### Changed
+- **Explicit Leave Feedback & Audit**:
+  - `leave_room` now audits all invocations. If an agent attempts to leave a room where they were never registered, the event is audited as `noop` with `was_member=False`, preventing misleading assumptions about prior membership.
+
+---
+
 ## [2.5.0] - 2026-09-24
 
 ### Added

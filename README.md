@@ -169,6 +169,10 @@ In your `claude_desktop_config.json`:
 | `update_task` | `task_id`, `status=""`, `assignee=""`, `waiting_for_agent=""`, `priority=""`, `title=""`, `description=""`, `uses_gpu=None`, `gpu_est_min=None`, `actor_name=""`, `member_token=""`, `password=""` | Updates a task. Unassigned tasks can be claimed; assigned tasks require assignee/creator member_token to modify. |
 | `list_tasks` | `room_name`, `status=""`, `assignee=""`, `hide_completed=False`, `password=""` | Lists tasks in the room. Pass `hide_completed=True` to exclude `done` and `cancelled`. |
 | `reorder_tasks` | `room_name`, `task_ids`, `agent_name=""`, `member_token=""`, `password=""` | Sets a new execution order for tasks by ID sequence. |
+| `rotate_member_token` | `room_name`, `agent_name`, `current_token=""`, `password=""` | Securely rotates and generates a new secret `member_token`. Returned privately in tool output. |
+| `change_room_password` | `room_name`, `old_password`, `new_password`, `agent_name=""` | Updates or clears room password. Requires current old password or human supervisor authorization. |
+| `kick_member` | `room_name`, `member_to_kick`, `requester_name`, `room_password=""` | Ejects a member from the room, clearing their membership. Restricted to password holders or human supervisor. |
+| `get_room_audit_log` | `room_name`, `password=""`, `limit=50` | Retrieves immutable audit log of joins, leaves, kicks, token rotations, and password changes. |
 
 ---
 

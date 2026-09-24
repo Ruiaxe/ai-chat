@@ -280,6 +280,102 @@ class TestSecurityAuditVulnerabilities(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(msg["is_verified"])
         self.assertEqual(msg["role"], "human")
 
+    # --- v2.6: Security Administration Tests ---
+    async def test_v26_token_rotation(self):
+        """Verifies rotate_member_token invalidates old token and validates new token."""
+        self.hub.create_room("priv-room", password="secret_pass")
+        join_res = self.hub.join_room("priv-room", "AgentOne", role="agent", password="secret_pass")
+        token1 = join_res["member_token"]
+        self.assertTrue(token1)
+
+        # Send with token1 -> OK
+        msg1 = await self.hub.send_message("priv-room", "AgentOne", "msg 1", password="secret_pass", member_token=token1)
+        self.assertTrue(msg1["is_verified"])
+
+        # Rotate with wrong token -> fails
+        with self.assertRaises(PermissionError):
+            self.hub.rotate_member_token("priv-room", "AgentOne", current_token="wrong_token")
+
+        # Rotate with valid token1 -> succeeds
+        rot_res = self.hub.rotate_member_token("priv-room", "AgentOne", current_token=token1)
+        token2 = rot_res["member_token"]
+        self.assertNotEqual(token1, token2)
+
+        # Message with old token1 -> fails verification
+        with self.assertRaises(PermissionError):
+            await self.hub.send_message("priv-room", "AgentOne", "impersonation", password="secret_pass", member_token=token1)
+
+        # Message with new token2 -> succeeds
+        msg2 = await self.hub.send_message("priv-room", "AgentOne", "msg 2", password="secret_pass", member_token=token2)
+        self.assertTrue(msg2["is_verified"])
+
+    async def test_v26_change_room_password(self):
+        """Verifies changing room password requires old password or supervisor token."""
+        self.hub.create_room("locked-room", password="old_password")
+
+        # Unauthorized change -> fails
+        with self.assertRaises(PermissionError):
+            self.hub.change_room_password("locked-room", old_password="wrong", new_password="new_pass")
+
+        # Authorized change -> succeeds
+        res = self.hub.change_room_password("locked-room", old_password="old_password", new_password="new_password")
+        self.assertEqual(res["status"], "password_changed")
+
+        # Access with old password -> fails
+        self.assertFalse(self.hub.verify_room_access("locked-room", "old_password"))
+
+        # Access with new password -> succeeds
+        self.assertTrue(self.hub.verify_room_access("locked-room", "new_password"))
+
+        # Supervisor can change password without old password
+        res2 = self.hub.change_room_password(
+            "locked-room", old_password="", new_password="super_pass", supervisor_token=self.hub.human_token
+        )
+        self.assertEqual(res2["status"], "password_changed")
+        self.assertTrue(self.hub.verify_room_access("locked-room", "super_pass"))
+
+    def test_v26_kick_member(self):
+        """Verifies kick_member ejects a member and requires proper authorization."""
+        self.hub.create_room("kick-room", password="kick_pass")
+        self.hub.join_room("kick-room", "BadActor", role="agent", password="kick_pass")
+
+        # Unauthorized kick -> fails
+        with self.assertRaises(PermissionError):
+            self.hub.kick_member("kick-room", "BadActor", actor_name="OtherAgent", room_password="wrong")
+
+        # Kick with room password -> succeeds
+        kres = self.hub.kick_member("kick-room", "BadActor", actor_name="AdminAgent", room_password="kick_pass")
+        self.assertEqual(kres["status"], "kicked")
+
+        # Member should no longer exist
+        self.assertIsNone(self.storage.get_member("kick-room", "BadActor"))
+
+    def test_v26_room_audit_log(self):
+        """Verifies room_audit_log records join, leave, rotate, kick, and password events."""
+        self.hub.create_room("audit-room", password="audit_pass")
+
+        # Join event
+        join_res = self.hub.join_room("audit-room", "TestAgent", role="agent", password="audit_pass")
+        token = join_res["member_token"]
+        
+        # Failed join event
+        with self.assertRaises(PermissionError):
+            self.hub.join_room("audit-room", "Hacker", role="agent", password="wrong")
+
+        # Leave without token -> fails
+        with self.assertRaises(PermissionError):
+            self.hub.leave_room("audit-room", "TestAgent")
+
+        # Leave event with token -> succeeds
+        self.hub.leave_room("audit-room", "TestAgent", member_token=token)
+
+        # Get audit log
+        logs = self.hub.get_room_audit_log("audit-room", password="audit_pass")
+        self.assertGreaterEqual(len(logs), 4)
+        actions = [l["action"] for l in logs]
+        self.assertIn("join", actions)
+        self.assertIn("leave", actions)
+
 
 if __name__ == "__main__":
     unittest.main()

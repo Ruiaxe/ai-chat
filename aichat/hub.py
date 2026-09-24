@@ -164,9 +164,11 @@ class ChatHub:
         canonical_name = room["name"]
 
         if not self.verify_room_access(canonical_name, password):
+            self.storage.log_audit_event(canonical_name, clean_member, "join", "failure", "Invalid or missing password")
             raise PermissionError(f"Access denied to room '{canonical_name}': Invalid or missing password.")
 
         token = self.storage.add_or_update_member(canonical_name, clean_member, role, token=member_token or None, generate_token=True)
+        self.storage.log_audit_event(canonical_name, clean_member, "join", "success", f"role={role}")
         return {
             "status": "joined",
             "room_name": canonical_name,
@@ -185,13 +187,163 @@ class ChatHub:
         if mem and mem.get("token"):
             clean_token = (member_token or "").strip()
             if not clean_token or not secrets.compare_digest(clean_token, mem["token"]):
+                self.storage.log_audit_event(canonical_name, clean_member, "leave", "failure", "Invalid member_token")
                 raise PermissionError(f"Acesso negado: Para sair da sala com a identidade '{clean_member}', forneça o member_token correto.")
+        
+        was_member = bool(mem)
         self.storage.remove_member(canonical_name, clean_member)
+        self.storage.log_audit_event(
+            canonical_name,
+            clean_member,
+            "leave",
+            "success" if was_member else "noop",
+            "Member removed" if was_member else "Was not registered in room",
+        )
         return {
             "status": "left",
             "room_name": canonical_name,
             "member_name": clean_member,
+            "was_member": was_member,
         }
+
+    def rotate_member_token(
+        self,
+        room_name: str,
+        member_name: str,
+        current_token: str = "",
+        password: str = "",
+    ) -> dict[str, Any]:
+        """Rotates a member's token for a room, validating current token or room password."""
+        import secrets
+        clean_member = member_name.strip()
+        room = self.storage.get_room(room_name)
+        if not room:
+            raise ValueError(f"Room '{room_name}' does not exist.")
+        canonical_name = room["name"]
+
+        mem = self.storage.get_member(canonical_name, clean_member)
+        if not mem:
+            raise ValueError(f"O membro '{clean_member}' não está registado na sala '{canonical_name}'.")
+
+        authorized = False
+        if mem.get("token") and current_token:
+            if secrets.compare_digest(current_token.strip(), mem["token"]):
+                authorized = True
+        if not authorized and room["is_protected"] and password:
+            if self.verify_room_access(canonical_name, password):
+                authorized = True
+        if not authorized and not mem.get("token"):
+            authorized = True
+
+        if not authorized:
+            self.storage.log_audit_event(canonical_name, clean_member, "token_rotate", "failure", "Unauthorized token rotation attempt")
+            raise PermissionError("Acesso negado: Para renovar o token, forneça o current_token atual ou a senha da sala.")
+
+        new_token = self.storage.rotate_member_token(canonical_name, clean_member)
+        self.storage.log_audit_event(canonical_name, clean_member, "token_rotate", "success", "Token rotated securely")
+        return {
+            "status": "rotated",
+            "room_name": canonical_name,
+            "member_name": clean_member,
+            "member_token": new_token,
+        }
+
+    def change_room_password(
+        self,
+        room_name: str,
+        old_password: str,
+        new_password: str,
+        actor_name: str = "",
+        supervisor_token: str = "",
+    ) -> dict[str, Any]:
+        """Changes room password after verifying old password or supervisor token."""
+        import secrets
+        clean_room = room_name.strip()
+        room = self.storage.get_room(clean_room)
+        if not room:
+            raise ValueError(f"Room '{room_name}' does not exist.")
+        canonical_name = room["name"]
+        clean_actor = (actor_name or "System").strip()
+
+        authorized = False
+        if supervisor_token and secrets.compare_digest(supervisor_token.strip(), self.human_token):
+            authorized = True
+        elif not room["is_protected"]:
+            authorized = True
+        elif old_password and self.verify_room_access(canonical_name, old_password):
+            authorized = True
+
+        if not authorized:
+            self.storage.log_audit_event(canonical_name, clean_actor, "password_change", "failure", "Invalid old password or supervisor credentials")
+            raise PermissionError("Acesso negado: Senha anterior incorreta ou credencial de supervisor inválida.")
+
+        clean_new = new_password.strip()
+        is_protected = bool(clean_new)
+        pwd_hash = ""
+        salt = ""
+        if is_protected:
+            pwd_hash, salt = self._hash_password(clean_new)
+
+        self.storage.update_room_password(canonical_name, pwd_hash, salt, is_protected)
+        self.storage.log_audit_event(canonical_name, clean_actor, "password_change", "success", f"is_protected={is_protected}")
+        return {
+            "status": "password_changed",
+            "room_name": canonical_name,
+            "is_protected": is_protected,
+        }
+
+    def kick_member(
+        self,
+        room_name: str,
+        member_to_kick: str,
+        actor_name: str,
+        supervisor_token: str = "",
+        room_password: str = "",
+    ) -> dict[str, Any]:
+        """Kicks/ejects a member from a room. Requires supervisor token, human actor, or room password."""
+        import secrets
+        clean_room = room_name.strip()
+        room = self.storage.get_room(clean_room)
+        if not room:
+            raise ValueError(f"Room '{room_name}' does not exist.")
+        canonical_name = room["name"]
+        clean_kick = member_to_kick.strip()
+        clean_actor = actor_name.strip()
+
+        authorized = False
+        if supervisor_token and secrets.compare_digest(supervisor_token.strip(), self.human_token):
+            authorized = True
+        elif clean_actor.lower() in self.RESERVED_HUMAN_NAMES:
+            authorized = True
+        elif room_password and self.verify_room_access(canonical_name, room_password):
+            authorized = True
+
+        if not authorized:
+            self.storage.log_audit_event(canonical_name, clean_actor, "kick", "failure", f"Unauthorized attempt to kick '{clean_kick}'")
+            raise PermissionError("Acesso negado: Apenas o supervisor humano ou detentores da senha da sala podem expulsar membros.")
+
+        mem = self.storage.get_member(canonical_name, clean_kick)
+        if not mem:
+            raise ValueError(f"O membro '{clean_kick}' não está registado na sala '{canonical_name}'.")
+
+        self.storage.remove_member(canonical_name, clean_kick)
+        self.storage.log_audit_event(canonical_name, clean_actor, "kick", "success", f"Member '{clean_kick}' ejected by '{clean_actor}'")
+        return {
+            "status": "kicked",
+            "room_name": canonical_name,
+            "member_name": clean_kick,
+            "kicked_by": clean_actor,
+        }
+
+    def get_room_audit_log(self, room_name: str, password: str = "", limit: int = 50) -> list[dict[str, Any]]:
+        """Fetches the audit log of a room, requiring password if room is protected."""
+        room = self.storage.get_room(room_name)
+        if not room:
+            raise ValueError(f"Room '{room_name}' does not exist.")
+        canonical_name = room["name"]
+        if not self.verify_room_access(canonical_name, password):
+            raise PermissionError(f"Access denied to room '{canonical_name}': Invalid or missing password.")
+        return self.storage.get_room_audit_log(canonical_name, limit)
 
     def list_my_rooms(self, agent_name: str) -> list[dict[str, Any]]:
         """Returns the list of rooms the member has joined with metadata."""
