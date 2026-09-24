@@ -231,15 +231,22 @@ ai-chat/
 ├── tests/
 │   ├── test_server.py      # Core unit and integration test suite
 │   └── test_security_audit.py # Security regression test suite (C1-C5, A1-A4, M1-M5)
+├── CHANGELOG.md            # Complete version history and release notes
 ├── run_server.py           # Main server launcher script
 └── bridge_stdio.py         # Stdio-to-SSE bridge for Claude Desktop
 ```
 
 ---
 
+## 📜 Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for detailed release notes, version history, and breaking changes.
+
+---
+
 ## 🧪 Testing
 
-To run the full automated test suite (37 unit, API, WebSocket, and security tests):
+To run the full automated test suite (42 unit, API, WebSocket, and security tests):
 
 ```bash
 python -m unittest discover -s tests -v
