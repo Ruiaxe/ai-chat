@@ -215,35 +215,168 @@
           <span class="hidden sm:inline">Log</span>
         </button>
         <div id="auth-status-container" class="flex items-center"></div>
+
+        <!-- Real-time Presence Badge & Popover -->
+        <div class="relative">
+          <button id="presence-btn" onclick="togglePresencePopover(event)" title="Quem está na sala à escuta"
+            class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 flex items-center space-x-1.5 transition">
+            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+            <span id="presence-count-text">0 a escutar</span>
+          </button>
+          <!-- Popover -->
+          <div id="presence-popover" class="hidden absolute right-0 mt-2 w-72 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-3 z-50 text-xs backdrop-blur-md">
+            <div class="font-bold text-white mb-2 flex items-center justify-between pb-1.5 border-b border-slate-800">
+              <span class="flex items-center gap-1.5"><i data-lucide="radio" class="w-3.5 h-3.5 text-emerald-400"></i> À escuta nesta sala</span>
+              <span id="presence-popover-count" class="text-emerald-400 font-mono text-[11px] font-semibold">0</span>
+            </div>
+            <div id="presence-listeners-list" class="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+              <div class="text-slate-500 text-center py-2 text-[11px]">Nenhum ouvinte detetado.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Task Planner Toggle Button -->
+        <button id="tasks-toggle-btn" onclick="toggleTaskPlanner()" title="Abrir/Fechar Task Planner"
+          class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-indigo-600/30 text-slate-300 hover:text-indigo-300 text-xs font-medium border border-slate-700 flex items-center space-x-1.5 transition">
+          <i data-lucide="check-square" class="w-3.5 h-3.5 text-indigo-400"></i>
+          <span class="hidden sm:inline">Tarefas</span>
+          <span id="header-tasks-badge" class="hidden px-1.5 py-0.2 rounded-full text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-mono">0</span>
+        </button>
+
         <button onclick="refreshMessages()" title="Refresh" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition border border-slate-700">
           <i data-lucide="rotate-cw" class="w-4 h-4"></i>
         </button>
       </div>
     </header>
 
-    <!-- Message Stream -->
-    <div id="messages-container" class="flex-1 min-w-0 overflow-y-auto overflow-x-hidden p-4 md:p-6 space-y-4 select-text">
-      <div class="h-full flex flex-col items-center justify-center text-slate-500 space-y-2">
-        <i data-lucide="messages-square" class="w-12 h-12 stroke-[1.2] text-slate-600"></i>
-        <p class="text-sm">Choose a room from the left sidebar or create a new one.</p>
-      </div>
-    </div>
-
-    <!-- Message Input Bar -->
-    <footer class="p-4 border-t border-slate-800/80 bg-slate-900/30 flex-shrink-0">
-      <form id="chat-form" onsubmit="handleSendMessage(event)" class="max-w-5xl mx-auto flex items-end space-x-2">
-        <div class="flex-1 relative bg-slate-900 border border-slate-800 rounded-xl focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500 transition shadow-inner">
-          <textarea id="message-input" rows="1" placeholder="Type a message as Human... (Press Enter to send, Shift+Enter for newline)"
-            onkeydown="handleKeyDown(event)" oninput="autoResize(this)"
-            class="w-full px-4 py-3 bg-transparent text-slate-200 placeholder-slate-500 text-sm resize-none focus:outline-none max-h-40"></textarea>
+    <!-- Split Content Container (Chat + Retractable Task Planner Side Panel) -->
+    <div class="flex-1 flex min-h-0 overflow-hidden relative">
+      <!-- Chat Column -->
+      <div class="flex-1 min-w-0 flex flex-col h-full overflow-hidden">
+        <!-- Message Stream -->
+        <div id="messages-container" class="flex-1 min-w-0 overflow-y-auto overflow-x-hidden p-4 md:p-6 space-y-4 select-text">
+          <div class="h-full flex flex-col items-center justify-center text-slate-500 space-y-2">
+            <i data-lucide="messages-square" class="w-12 h-12 stroke-[1.2] text-slate-600"></i>
+            <p class="text-sm">Choose a room from the left sidebar or create a new one.</p>
+          </div>
         </div>
-        <button type="submit" id="send-btn" disabled
-          class="h-[46px] px-5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:hover:bg-indigo-600 text-white rounded-xl font-medium text-sm flex items-center justify-center transition shadow-md shadow-indigo-600/20">
-          <i data-lucide="send" class="w-4 h-4 mr-1.5"></i>
-          <span>Send</span>
-        </button>
-      </form>
-    </footer>
+
+        <!-- Message Input Bar -->
+        <footer class="p-4 border-t border-slate-800/80 bg-slate-900/30 flex-shrink-0">
+          <form id="chat-form" onsubmit="handleSendMessage(event)" class="max-w-5xl mx-auto flex items-end space-x-2">
+            <div class="flex-1 relative bg-slate-900 border border-slate-800 rounded-xl focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500 transition shadow-inner">
+              <textarea id="message-input" rows="1" placeholder="Type a message as Human... (Press Enter to send, Shift+Enter for newline)"
+                onkeydown="handleKeyDown(event)" oninput="autoResize(this)"
+                class="w-full px-4 py-3 bg-transparent text-slate-200 placeholder-slate-500 text-sm resize-none focus:outline-none max-h-40"></textarea>
+            </div>
+            <button type="submit" id="send-btn" disabled
+              class="h-[46px] px-5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:hover:bg-indigo-600 text-white rounded-xl font-medium text-sm flex items-center justify-center transition shadow-md shadow-indigo-600/20">
+              <i data-lucide="send" class="w-4 h-4 mr-1.5"></i>
+              <span>Send</span>
+            </button>
+          </form>
+        </footer>
+      </div>
+
+      <!-- Retractable Task Planner Side Panel (Split-View) -->
+      <aside id="task-planner-panel" class="hidden w-80 md:w-96 bg-slate-900 border-l border-slate-800 flex-col h-full flex-shrink-0 shadow-2xl z-20">
+        <!-- Panel Header -->
+        <div class="p-3.5 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
+          <div class="flex items-center space-x-2">
+            <div class="p-1.5 rounded-lg bg-indigo-600/20 text-indigo-400 border border-indigo-500/30">
+              <i data-lucide="check-square" class="w-4 h-4"></i>
+            </div>
+            <div>
+              <h3 class="font-bold text-sm text-white flex items-center gap-1.5">
+                Task Planner
+                <span id="task-count-badge" class="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 text-indigo-300 font-mono">0</span>
+              </h3>
+            </div>
+          </div>
+          <div class="flex items-center space-x-1">
+            <button onclick="toggleNewTaskForm()" id="new-task-toggle-btn" title="Criar nova tarefa" class="p-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs transition shadow-sm flex items-center gap-1">
+              <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+              <span class="text-[11px] font-semibold pr-1">Nova</span>
+            </button>
+            <button onclick="toggleTaskPlanner()" title="Fechar painel" class="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition">
+              <i data-lucide="x" class="w-4 h-4"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- Active GPU Alert Banner -->
+        <div id="gpu-active-banner" class="hidden px-3 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-300 text-xs flex items-center justify-between animate-pulse">
+          <span class="flex items-center gap-1.5 font-semibold">
+            <i data-lucide="flame" class="w-3.5 h-3.5 text-amber-400"></i>
+            <span id="gpu-active-text">GPU em uso</span>
+          </span>
+          <span class="text-[10px] bg-amber-500/20 px-1.5 py-0.5 rounded font-mono">VRAM Ocupada</span>
+        </div>
+
+        <!-- Filter Tabs & Hide Completed Option -->
+        <div class="p-2 border-b border-slate-800/80 bg-slate-950/40 space-y-1.5">
+          <!-- Filter Buttons -->
+          <div class="flex items-center space-x-1 overflow-x-auto text-[11px] pb-1 scrollbar-none">
+            <button onclick="setTaskFilter('all')" data-filter="all" class="task-filter-btn px-2.5 py-1 rounded-md font-semibold transition bg-indigo-600 text-white">Todas</button>
+            <button onclick="setTaskFilter('in_progress')" data-filter="in_progress" class="task-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">Em Curso</button>
+            <button onclick="setTaskFilter('waiting')" data-filter="waiting" class="task-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">À Espera</button>
+            <button onclick="setTaskFilter('gpu')" data-filter="gpu" class="task-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">GPU</button>
+            <button onclick="setTaskFilter('done')" data-filter="done" class="task-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">Concluídas</button>
+          </div>
+          <!-- Hide Completed Checkbox -->
+          <div class="flex items-center justify-between pt-1 border-t border-slate-800/60 text-xs text-slate-400 px-1">
+            <label class="flex items-center space-x-2 cursor-pointer select-none">
+              <input type="checkbox" id="hide-completed-toggle" onchange="toggleHideCompleted(this.checked)" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 w-3.5 h-3.5" />
+              <span class="text-[11px] font-medium text-slate-300">Ocultar concluídas</span>
+            </label>
+            <button onclick="fetchTasks()" title="Atualizar tarefas" class="text-slate-500 hover:text-slate-300 transition">
+              <i data-lucide="rotate-cw" class="w-3 h-3"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- Inline New Task Form (collapsible) -->
+        <div id="new-task-form" class="hidden p-3 border-b border-slate-800 bg-slate-950/80 space-y-2.5 text-xs">
+          <div class="flex items-center justify-between font-semibold text-slate-300">
+            <span>Criar Nova Tarefa</span>
+            <button onclick="toggleNewTaskForm()" class="text-slate-500 hover:text-slate-300"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>
+          </div>
+          <input id="task-input-title" type="text" placeholder="Título da tarefa *" class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700/80 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500" />
+          <textarea id="task-input-desc" rows="2" placeholder="Descrição / critérios de aceitação (opcional)..." class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700/80 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500 resize-none"></textarea>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Prioridade</label>
+              <select id="task-input-priority" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-xs">
+                <option value="urgent">🔴 Urgente</option>
+                <option value="high">🟠 Alta</option>
+                <option value="medium" selected>🔵 Média</option>
+                <option value="low">⚪ Baixa</option>
+              </select>
+            </div>
+            <div>
+              <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Responsável</label>
+              <input id="task-input-assignee" type="text" placeholder="ex: Claude, Rui" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-xs" />
+            </div>
+          </div>
+          <div class="flex items-center justify-between pt-1">
+            <label class="flex items-center space-x-1.5 cursor-pointer">
+              <input type="checkbox" id="task-input-gpu" onchange="document.getElementById('task-gpu-min-box').classList.toggle('hidden', !this.checked)" class="rounded bg-slate-900 border-slate-700 text-amber-500 focus:ring-0 w-3.5 h-3.5" />
+              <span class="text-[11px] text-amber-400 font-medium">Usa GPU</span>
+            </label>
+            <div id="task-gpu-min-box" class="hidden flex items-center space-x-1">
+              <span class="text-[10px] text-slate-500">Min:</span>
+              <input id="task-input-gpu-min" type="number" min="1" value="10" class="w-12 bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-slate-200 text-center text-xs" />
+            </div>
+            <button onclick="submitNewTask()" class="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition shadow">Criar Tarefa</button>
+          </div>
+        </div>
+
+        <!-- Task Cards Container -->
+        <div id="tasks-list-container" class="flex-1 overflow-y-auto p-3 space-y-2.5">
+          <div class="text-center text-slate-500 py-12 text-xs">A carregar tarefas...</div>
+        </div>
+      </aside>
+    </div>
   </main>
 
   <!-- Create Room Modal -->
@@ -420,12 +553,25 @@
     let activeReactionMsgId = null;
     let pendingDecisionMsgId = null;
 
-    // Close reaction picker on outside click
+    // Task Planner & Presence State (v2.5)
+    let taskPlannerOpen = false;
+    let roomTasks = [];
+    let activeTaskFilter = 'all'; // 'all', 'in_progress', 'waiting', 'gpu', 'done'
+    let hideCompletedTasks = localStorage.getItem('ai_chat_hide_completed') === 'true';
+    let currentPresence = null;
+    let presencePopoverOpen = false;
+
+    // Close floating pickers and popovers on outside click
     document.addEventListener('click', (e) => {
       const picker = document.getElementById('global-reaction-picker');
       if (picker && !picker.classList.contains('hidden') && !e.target.closest('#global-reaction-picker') && !e.target.closest('.reaction-picker-btn')) {
         picker.classList.add('hidden');
         activeReactionMsgId = null;
+      }
+      if (presencePopoverOpen && !e.target.closest('#presence-popover') && !e.target.closest('#presence-btn')) {
+        const popover = document.getElementById('presence-popover');
+        if (popover) popover.classList.add('hidden');
+        presencePopoverOpen = false;
       }
     });
 
@@ -966,6 +1112,8 @@
         renderMessages();
         renderRoomsList();
         connectWebSocket(room.name);
+        fetchPresence();
+        fetchTasks();
         return true;
       } catch (err) {
         console.error('Error loading room:', err);
@@ -1124,7 +1272,7 @@
         `;
 
         return `
-          <div class="flex items-start space-x-3 group animate-fadeIn max-w-full">
+          <div id="msg-${msg.id}" class="flex items-start space-x-3 group animate-fadeIn max-w-full rounded-2xl transition duration-500">
             <div class="w-9 h-9 rounded-xl flex-shrink-0 flex items-center justify-center font-bold text-xs ${
               isAgent ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20'
             }">
@@ -1459,14 +1607,19 @@
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const pwd = getSavedPassword(roomName);
-      const query = pwd ? `?password=${encodeURIComponent(pwd)}` : '';
-      const wsUrl = `${protocol}//${window.location.host}/ws/${encodeURIComponent(roomName)}${query}`;
+      const params = new URLSearchParams();
+      if (pwd) params.set('password', pwd);
+      params.set('username', getMyUsername());
+      const wsUrl = `${protocol}//${window.location.host}/ws/${encodeURIComponent(roomName)}?${params.toString()}`;
 
       ws = new WebSocket(wsUrl);
 
       ws.onopen = async () => {
         document.getElementById('server-status').textContent = 'Live Connected';
         document.getElementById('server-status').parentElement.querySelector('span').className = 'w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
+
+        fetchPresence();
+        fetchTasks();
 
         // Catch up on any messages that arrived while reconnecting
         if (currentRoom && lastSeenId > 0) {
@@ -1544,6 +1697,14 @@
               loadRoomMessages(currentRoom, getSavedPassword(currentRoom.name));
             }
             fetchRooms();
+          } else if (data.type === 'task_created' || data.type === 'task_updated' || data.type === 'task_deleted' || data.type === 'tasks_reordered') {
+            if (currentRoom && data.room && data.room.toLowerCase() === currentRoom.name.toLowerCase()) {
+              fetchTasks();
+            }
+          } else if (data.type === 'presence_updated') {
+            if (currentRoom && data.room && data.room.toLowerCase() === currentRoom.name.toLowerCase()) {
+              renderPresence(data.presence);
+            }
           }
         } catch (e) {
           console.error('WS parse error:', e);
@@ -1604,6 +1765,444 @@
           icon: isAgent ? '🤖' : '👤',
         });
       }
+    }
+
+    // =============================================================
+    // Task Planner & Real-Time Presence Operations (v2.5)
+    // =============================================================
+
+    function toggleTaskPlanner() {
+      taskPlannerOpen = !taskPlannerOpen;
+      const panel = document.getElementById('task-planner-panel');
+      const toggleBtn = document.getElementById('tasks-toggle-btn');
+      if (taskPlannerOpen) {
+        panel.classList.remove('hidden');
+        panel.classList.add('flex');
+        toggleBtn.classList.add('bg-indigo-600/30', 'text-indigo-300', 'border-indigo-500/40');
+        // Restore saved hide completed checkbox state
+        const hideCompletedToggle = document.getElementById('hide-completed-toggle');
+        if (hideCompletedToggle) hideCompletedToggle.checked = hideCompletedTasks;
+        fetchTasks();
+      } else {
+        panel.classList.add('hidden');
+        panel.classList.remove('flex');
+        toggleBtn.classList.remove('bg-indigo-600/30', 'text-indigo-300', 'border-indigo-500/40');
+      }
+      lucide.createIcons();
+    }
+
+    function toggleNewTaskForm() {
+      const form = document.getElementById('new-task-form');
+      if (form) {
+        form.classList.toggle('hidden');
+        if (!form.classList.contains('hidden')) {
+          document.getElementById('task-input-title').focus();
+        }
+      }
+    }
+
+    function setTaskFilter(filter) {
+      activeTaskFilter = filter;
+      document.querySelectorAll('.task-filter-btn').forEach(btn => {
+        if (btn.dataset.filter === filter) {
+          btn.className = 'task-filter-btn px-2.5 py-1 rounded-md font-semibold transition bg-indigo-600 text-white shadow-sm';
+        } else {
+          btn.className = 'task-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white';
+        }
+      });
+      renderTasks();
+    }
+
+    function toggleHideCompleted(checked) {
+      hideCompletedTasks = checked;
+      localStorage.setItem('ai_chat_hide_completed', checked ? 'true' : 'false');
+      fetchTasks();
+    }
+
+    async function fetchTasks() {
+      if (!currentRoom) return;
+      const pwd = getSavedPassword(currentRoom.name);
+      try {
+        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/tasks?password=${encodeURIComponent(pwd)}&hide_completed=${hideCompletedTasks && activeTaskFilter !== 'done'}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        roomTasks = data.tasks || [];
+
+        // Count active tasks (not done and not cancelled)
+        const activeCount = roomTasks.filter(t => t.status !== 'done' && t.status !== 'cancelled').length;
+        const badge = document.getElementById('task-count-badge');
+        const headerBadge = document.getElementById('header-tasks-badge');
+        if (badge) badge.textContent = activeCount;
+        if (headerBadge) {
+          headerBadge.textContent = activeCount;
+          if (activeCount > 0) headerBadge.classList.remove('hidden');
+          else headerBadge.classList.add('hidden');
+        }
+
+        // Active GPU alert
+        const gpuActiveBanner = document.getElementById('gpu-active-banner');
+        const gpuActiveText = document.getElementById('gpu-active-text');
+        const activeGpuTask = roomTasks.find(t => t.uses_gpu && t.status === 'in_progress');
+        if (activeGpuTask && gpuActiveBanner) {
+          gpuActiveBanner.classList.remove('hidden');
+          const who = activeGpuTask.assignee ? `@${activeGpuTask.assignee}` : 'Agente';
+          const est = activeGpuTask.gpu_est_min ? ` (~${activeGpuTask.gpu_est_min}m)` : '';
+          gpuActiveText.textContent = `GPU em uso por ${who}${est}`;
+        } else if (gpuActiveBanner) {
+          gpuActiveBanner.classList.add('hidden');
+        }
+
+        renderTasks();
+      } catch (err) {
+        console.error('Error fetching tasks:', err);
+      }
+    }
+
+    function renderTasks() {
+      const container = document.getElementById('tasks-list-container');
+      if (!container) return;
+
+      // Filter tasks
+      let filtered = [...roomTasks];
+      if (activeTaskFilter === 'in_progress') {
+        filtered = filtered.filter(t => t.status === 'in_progress');
+      } else if (activeTaskFilter === 'waiting') {
+        filtered = filtered.filter(t => t.status === 'waiting_human' || t.status === 'waiting_agent');
+      } else if (activeTaskFilter === 'gpu') {
+        filtered = filtered.filter(t => t.uses_gpu);
+      } else if (activeTaskFilter === 'done') {
+        filtered = filtered.filter(t => t.status === 'done');
+      } else if (hideCompletedTasks) {
+        filtered = filtered.filter(t => t.status !== 'done' && t.status !== 'cancelled');
+      }
+
+      if (filtered.length === 0) {
+        container.innerHTML = `
+          <div class="text-center text-slate-500 py-12 text-xs space-y-2">
+            <i data-lucide="inbox" class="w-8 h-8 stroke-[1.2] mx-auto text-slate-600"></i>
+            <p>Nenhuma tarefa encontrada neste filtro.</p>
+          </div>
+        `;
+        lucide.createIcons();
+        return;
+      }
+
+      container.innerHTML = filtered.map(t => {
+        // Priority
+        let priorityBadge = '';
+        if (t.priority === 'urgent') {
+          priorityBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30 flex items-center gap-1">🔴 Urgente</span>';
+        } else if (t.priority === 'high') {
+          priorityBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">🟠 Alta</span>';
+        } else if (t.priority === 'medium') {
+          priorityBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-500/20 text-blue-300 border border-blue-500/30 flex items-center gap-1">🔵 Média</span>';
+        } else {
+          priorityBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-400 border border-slate-700 flex items-center gap-1">⚪ Baixa</span>';
+        }
+
+        // Status
+        let statusBadge = '';
+        if (t.status === 'in_progress') {
+          statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">🟢 Em Curso</span>';
+        } else if (t.status === 'waiting_human') {
+          statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/25 text-amber-300 border border-amber-500/40 animate-pulse flex items-center gap-1">⏳ Espera Rui</span>';
+        } else if (t.status === 'waiting_agent') {
+          statusBadge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">⏳ Espera @${escapeHtml(t.waiting_for_agent || 'Agente')}</span>`;
+        } else if (t.status === 'done') {
+          statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-950/40 text-emerald-400 border border-emerald-800/60 flex items-center gap-1">✓ Concluída</span>';
+        } else if (t.status === 'cancelled') {
+          statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-900 text-slate-500 border border-slate-800 flex items-center gap-1">✕ Cancelada</span>';
+        } else {
+          statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1">🟡 Planeada</span>';
+        }
+
+        // Stale
+        const staleBadge = t.is_stale ? `
+          <span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/25 text-amber-300 border border-amber-500/50 animate-pulse flex items-center gap-1" title="Sem atividade há mais de 15 minutos!">
+            <i data-lucide="alert-triangle" class="w-3 h-3"></i> Parada (${t.stale_minutes}m)
+          </span>
+        ` : '';
+
+        // GPU
+        const gpuBadge = t.uses_gpu ? `
+          <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-500/20 text-orange-300 border border-orange-500/30 flex items-center gap-1" title="Usa recursos da GPU local">
+            <i data-lucide="flame" class="w-3 h-3 text-orange-400"></i> GPU${t.gpu_est_min ? ' (~' + t.gpu_est_min + 'm)' : ''}
+          </span>
+        ` : '';
+
+        // Message Link
+        const messageLinkBtn = ((t.status === 'waiting_human' || t.status === 'waiting_agent') && t.message_id) ? `
+          <button onclick="scrollToMessage(${t.message_id})" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/40 flex items-center gap-1 transition shadow-sm active:scale-95" title="Ir para a mensagem no chat">
+            <i data-lucide="external-link" class="w-2.5 h-2.5"></i> Ver Pedido (#${t.message_id})
+          </button>
+        ` : '';
+
+        const isDone = t.status === 'done';
+        const cardBg = isDone ? 'bg-slate-900/40 border-slate-800/50 opacity-75' : (t.is_stale ? 'bg-amber-950/20 border-amber-500/40' : 'bg-slate-900/90 border-slate-800');
+
+        return `
+          <div class="p-3 rounded-xl border ${cardBg} transition space-y-2 hover:border-slate-700 group shadow-sm">
+            <div class="flex items-center justify-between gap-1 flex-wrap">
+              <div class="flex items-center gap-1 flex-wrap">
+                ${priorityBadge}
+                ${statusBadge}
+                ${staleBadge}
+                ${gpuBadge}
+              </div>
+              <div class="flex items-center space-x-1 opacity-60 group-hover:opacity-100 transition">
+                <button onclick="handleMoveTask(${t.id}, -1)" title="Mover para cima" class="p-0.5 text-slate-400 hover:text-white transition">
+                  <i data-lucide="chevron-up" class="w-3.5 h-3.5"></i>
+                </button>
+                <button onclick="handleMoveTask(${t.id}, 1)" title="Mover para baixo" class="p-0.5 text-slate-400 hover:text-white transition">
+                  <i data-lucide="chevron-down" class="w-3.5 h-3.5"></i>
+                </button>
+                <button onclick="handleDeleteTask(${t.id})" title="Eliminar tarefa" class="p-0.5 text-slate-400 hover:text-rose-400 transition ml-1">
+                  <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <h4 class="font-semibold text-xs ${isDone ? 'line-through text-slate-400' : 'text-slate-100'}">${escapeHtml(t.title)}</h4>
+              ${t.description ? `<p class="text-[11px] text-slate-400 mt-1 leading-snug whitespace-pre-wrap">${escapeHtml(t.description)}</p>` : ''}
+            </div>
+
+            <div class="pt-1.5 border-t border-slate-800/60 flex items-center justify-between gap-2 flex-wrap text-[11px]">
+              <div class="flex items-center gap-2">
+                <span class="text-slate-500 text-[10px]">Resp: <strong class="text-slate-300 font-medium">${t.assignee ? '@' + escapeHtml(t.assignee) : 'Livre'}</strong></span>
+                ${messageLinkBtn}
+              </div>
+              <div class="flex items-center gap-1">
+                ${!isDone && t.status !== 'in_progress' ? `
+                  <button onclick="handleUpdateTaskStatus(${t.id}, 'in_progress')" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 flex items-center gap-1 transition">
+                    <i data-lucide="play" class="w-2.5 h-2.5"></i> Iniciar
+                  </button>
+                ` : ''}
+                ${!isDone ? `
+                  <button onclick="handleUpdateTaskStatus(${t.id}, 'done')" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 hover:bg-emerald-600/30 text-slate-300 hover:text-emerald-300 border border-slate-700 hover:border-emerald-500/40 flex items-center gap-1 transition">
+                    <i data-lucide="check" class="w-2.5 h-2.5"></i> Concluir
+                  </button>
+                ` : `
+                  <button onclick="handleUpdateTaskStatus(${t.id}, 'planned')" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 hover:bg-slate-700 text-slate-400 flex items-center gap-1 transition">
+                    <i data-lucide="rotate-ccw" class="w-2.5 h-2.5"></i> Reabrir
+                  </button>
+                `}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      lucide.createIcons();
+    }
+
+    async function submitNewTask() {
+      if (!currentRoom) return;
+      const titleInput = document.getElementById('task-input-title');
+      const descInput = document.getElementById('task-input-desc');
+      const prioritySelect = document.getElementById('task-input-priority');
+      const assigneeInput = document.getElementById('task-input-assignee');
+      const gpuCheckbox = document.getElementById('task-input-gpu');
+      const gpuMinInput = document.getElementById('task-input-gpu-min');
+
+      const title = titleInput.value.trim();
+      if (!title) {
+        alert('Por favor introduza o título da tarefa.');
+        titleInput.focus();
+        return;
+      }
+
+      const pwd = getSavedPassword(currentRoom.name);
+      try {
+        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/tasks`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: title,
+            description: descInput.value.trim(),
+            priority: prioritySelect.value,
+            assignee: assigneeInput.value.trim(),
+            uses_gpu: gpuCheckbox.checked,
+            gpu_est_min: parseInt(gpuMinInput.value || 0),
+            password: pwd,
+          })
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          alert('Erro ao criar tarefa: ' + (err.error || 'Erro desconhecido'));
+          return;
+        }
+
+        titleInput.value = '';
+        descInput.value = '';
+        assigneeInput.value = '';
+        gpuCheckbox.checked = false;
+        document.getElementById('task-gpu-min-box').classList.add('hidden');
+        toggleNewTaskForm();
+        fetchTasks();
+      } catch (err) {
+        alert('Erro de rede ao criar tarefa: ' + err.message);
+      }
+    }
+
+    async function handleUpdateTaskStatus(taskId, newStatus) {
+      if (!currentRoom) return;
+      const pwd = getSavedPassword(currentRoom.name);
+      try {
+        const res = await fetch(`/api/tasks/${taskId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            status: newStatus,
+            password: pwd,
+          })
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          alert('Erro ao atualizar tarefa: ' + (err.error || 'Erro'));
+          return;
+        }
+        fetchTasks();
+      } catch (err) {
+        console.error('Error updating task status:', err);
+      }
+    }
+
+    async function handleDeleteTask(taskId) {
+      if (!confirm('Deseja eliminar esta tarefa?')) return;
+      if (!currentRoom) return;
+      const pwd = getSavedPassword(currentRoom.name);
+      try {
+        const res = await fetch(`/api/tasks/${taskId}?password=${encodeURIComponent(pwd)}`, {
+          method: 'DELETE'
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          alert('Erro ao eliminar tarefa: ' + (err.error || 'Erro'));
+          return;
+        }
+        fetchTasks();
+      } catch (err) {
+        console.error('Error deleting task:', err);
+      }
+    }
+
+    async function handleMoveTask(taskId, direction) {
+      if (!currentRoom || roomTasks.length < 2) return;
+      const idx = roomTasks.findIndex(t => t.id === taskId);
+      if (idx === -1) return;
+      const targetIdx = idx + direction;
+      if (targetIdx < 0 || targetIdx >= roomTasks.length) return;
+
+      const newOrder = [...roomTasks];
+      const temp = newOrder[idx];
+      newOrder[idx] = newOrder[targetIdx];
+      newOrder[targetIdx] = temp;
+
+      const taskIds = newOrder.map(t => t.id);
+      const pwd = getSavedPassword(currentRoom.name);
+      try {
+        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/tasks/reorder`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            task_ids: taskIds,
+            password: pwd,
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          roomTasks = data.tasks || newOrder;
+          renderTasks();
+        }
+      } catch (err) {
+        console.error('Error reordering tasks:', err);
+      }
+    }
+
+    function scrollToMessage(msgId) {
+      const el = document.getElementById(`msg-${msgId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('ring-2', 'ring-indigo-400', 'bg-indigo-950/60', 'shadow-xl', 'shadow-indigo-500/20');
+        setTimeout(() => {
+          el.classList.remove('ring-2', 'ring-indigo-400', 'bg-indigo-950/60', 'shadow-xl', 'shadow-indigo-500/20');
+        }, 3000);
+      } else {
+        alert(`A mensagem #${msgId} não se encontra visível na página atual.`);
+      }
+    }
+
+    function togglePresencePopover(e) {
+      if (e) e.stopPropagation();
+      presencePopoverOpen = !presencePopoverOpen;
+      const popover = document.getElementById('presence-popover');
+      if (presencePopoverOpen) {
+        popover.classList.remove('hidden');
+        fetchPresence();
+      } else {
+        popover.classList.add('hidden');
+      }
+      lucide.createIcons();
+    }
+
+    async function fetchPresence() {
+      if (!currentRoom) return;
+      const pwd = getSavedPassword(currentRoom.name);
+      try {
+        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/presence?password=${encodeURIComponent(pwd)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        currentPresence = data;
+        renderPresence(data);
+      } catch (err) {
+        console.error('Error fetching presence:', err);
+      }
+    }
+
+    function renderPresence(presence) {
+      if (!presence) return;
+      const total = presence.total_listening || 0;
+      const countText = document.getElementById('presence-count-text');
+      const popoverCount = document.getElementById('presence-popover-count');
+      const listContainer = document.getElementById('presence-listeners-list');
+
+      if (countText) countText.textContent = `${total} a escutar`;
+      if (popoverCount) popoverCount.textContent = total;
+
+      if (!listContainer) return;
+      const listeners = presence.listeners || [];
+      if (listeners.length === 0) {
+        listContainer.innerHTML = '<div class="text-slate-500 text-center py-2 text-[11px]">Nenhum ouvinte detetado.</div>';
+        return;
+      }
+
+      listContainer.innerHTML = listeners.map(l => {
+        const isHuman = l.role === 'human';
+        const icon = isHuman ? '👤' : '🤖';
+        let clientBadge = 'Web UI';
+        if (l.client === 'sentinel') {
+          clientBadge = l.idle_seconds !== undefined ? `Sentinel (há ${Math.round(l.idle_seconds)}s)` : 'Sentinel';
+        } else if (l.client === 'mcp_listener') {
+          clientBadge = 'MCP Listener';
+        } else if (l.client === 'mcp_poll' || l.client === 'http_poll') {
+          clientBadge = 'Poll Ativo';
+        }
+
+        return `
+          <div class="flex items-center justify-between p-1.5 rounded-lg bg-slate-950/60 border border-slate-800/80 text-[11px]">
+            <div class="flex items-center space-x-2 min-w-0">
+              <span class="text-sm">${icon}</span>
+              <div class="min-w-0">
+                <span class="font-semibold text-slate-200 truncate block">${escapeHtml(l.name)}</span>
+                <span class="text-[10px] text-slate-400 font-mono">${escapeHtml(clientBadge)}</span>
+              </div>
+            </div>
+            <span class="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0 animate-pulse" title="Ativo agora"></span>
+          </div>
+        `;
+      }).join('');
     }
 
     // Send Message

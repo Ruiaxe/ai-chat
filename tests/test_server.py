@@ -25,6 +25,11 @@ from aichat.mcp_server import (
     get_poll as tool_get_poll,
     close_poll as tool_close_poll,
     archive_room as tool_archive_room,
+    create_task as tool_create_task,
+    update_task as tool_update_task,
+    list_tasks as tool_list_tasks,
+    reorder_tasks as tool_reorder_tasks,
+    who_is_listening as tool_who_is_listening,
 )
 from aichat.storage import ChatStorage
 from aichat.web_app import create_app
@@ -204,6 +209,76 @@ class TestChatStorage(unittest.TestCase):
         self.storage.unarchive_room("arch-room")
         room_un = self.storage.get_room("arch-room")
         self.assertFalse(room_un["is_archived"])
+
+    def test_task_storage_lifecycle_and_stale(self):
+        self.storage.create_room("planner-room")
+        # 1. Create task
+        task = self.storage.create_task(
+            room_name="planner-room",
+            title="Implement cache layer",
+            description="Use Redis or in-memory dict",
+            assignee="Claude",
+            priority="urgent",
+            status="planned",
+            uses_gpu=True,
+            gpu_est_min=15,
+            created_by="Rui",
+        )
+        self.assertIsNotNone(task["id"])
+        self.assertEqual(task["title"], "Implement cache layer")
+        self.assertEqual(task["priority"], "urgent")
+        self.assertEqual(task["status"], "planned")
+        self.assertTrue(task["uses_gpu"])
+        self.assertEqual(task["gpu_est_min"], 15)
+        self.assertEqual(len(task["history"]), 1)
+        self.assertEqual(task["history"][0]["action"], "created")
+
+        # 2. Update task to in_progress
+        updated = self.storage.update_task(
+            task["id"],
+            actor="Claude",
+            status="in_progress",
+        )
+        self.assertEqual(updated["status"], "in_progress")
+        self.assertEqual(len(updated["history"]), 2)
+        self.assertEqual(updated["history"][1]["action"], "status_changed")
+        self.assertEqual(updated["history"][1]["from_status"], "planned")
+        self.assertEqual(updated["history"][1]["to_status"], "in_progress")
+
+        # 3. Create second task and test reordering and hide_completed
+        task2 = self.storage.create_task(
+            room_name="planner-room",
+            title="Write unit tests",
+            priority="high",
+            status="done",
+            created_by="Claude",
+        )
+        # List all
+        all_tasks = self.storage.list_tasks("planner-room")
+        self.assertEqual(len(all_tasks), 2)
+        # List hiding completed
+        active_only = self.storage.list_tasks("planner-room", hide_completed=True)
+        self.assertEqual(len(active_only), 1)
+        self.assertEqual(active_only[0]["id"], task["id"])
+
+        # Reorder
+        reordered = self.storage.reorder_tasks("planner-room", [task2["id"], task["id"]])
+        self.assertEqual(len(reordered), 2)
+
+        # 4. Test stale detection: artificially backdate updated_at by 20 minutes (1200s)
+        from datetime import datetime, timedelta
+        stale_time = (datetime.now() - timedelta(minutes=20)).isoformat()
+        conn = self.storage._get_connection()
+        with conn:
+            conn.execute("UPDATE tasks SET updated_at = ? WHERE id = ?", (stale_time, task["id"]))
+
+        stale_task = self.storage.get_task_by_id(task["id"])
+        self.assertTrue(stale_task["is_stale"])
+        self.assertGreaterEqual(stale_task["stale_minutes"], 19)
+
+        # 5. Delete task
+        self.assertTrue(self.storage.delete_task(task["id"]))
+        self.assertIsNone(self.storage.get_task_by_id(task["id"]))
 
 
 class TestChatHubAndAuth(unittest.IsolatedAsyncioTestCase):
@@ -509,6 +584,139 @@ class TestChatHubAndAuth(unittest.IsolatedAsyncioTestCase):
         msg_ok = await self.hub.send_message("poll-archive-room", "Agent1", "Hello again!", role="agent")
         self.assertEqual(msg_ok["content"], "Hello again!")
 
+    async def test_task_hub_hijacking_and_auth(self):
+        """Tests task authorization, anti-hijacking, and call_human auto-linking in ChatHub."""
+        self.hub.create_room("planner-sec")
+        join_a = self.hub.join_room("planner-sec", "AgentA", role="agent")
+        join_b = self.hub.join_room("planner-sec", "AgentB", role="agent")
+        token_a = join_a["member_token"]
+        token_b = join_b["member_token"]
+
+        # 1. AgentA creates task assigned to AgentA
+        task1 = await self.hub.create_task(
+            room_name="planner-sec",
+            title="Task for AgentA",
+            assignee="AgentA",
+            created_by="AgentA",
+            member_token=token_a,
+        )
+        self.assertEqual(task1["title"], "Task for AgentA")
+        self.assertEqual(task1["assignee"], "AgentA")
+
+        # 2. AgentB attempts to update AgentA's task -> PermissionError
+        with self.assertRaises(PermissionError):
+            await self.hub.update_task(
+                task_id=task1["id"],
+                actor="AgentB",
+                member_token=token_b,
+                status="in_progress",
+            )
+
+        # 3. AgentA updates its own task -> succeeds
+        up_a = await self.hub.update_task(
+            task_id=task1["id"],
+            actor="AgentA",
+            member_token=token_a,
+            status="in_progress",
+        )
+        self.assertEqual(up_a["status"], "in_progress")
+
+        # 4. Human can update any task with human_token
+        up_human = await self.hub.update_task(
+            task_id=task1["id"],
+            actor="Rui",
+            human_token=self.hub.human_token,
+            status="done",
+        )
+        self.assertEqual(up_human["status"], "done")
+
+        # 5. Unassigned task can be claimed by an agent
+        task_open = await self.hub.create_task(
+            room_name="planner-sec",
+            title="Open Task",
+            assignee="",
+            created_by="AgentA",
+            member_token=token_a,
+        )
+        # AgentB claims it
+        claimed = await self.hub.update_task(
+            task_id=task_open["id"],
+            actor="AgentB",
+            member_token=token_b,
+            assignee="AgentB",
+            status="in_progress",
+        )
+        self.assertEqual(claimed["assignee"], "AgentB")
+        self.assertEqual(claimed["status"], "in_progress")
+
+        # 6. Test call_human automatically links task and resolve_human_decision completes it
+        dec_msg = await self.hub.call_human(
+            "planner-sec",
+            sender="AgentA",
+            question="Approve release v2.5?",
+            options=["Approved", "Rejected"],
+            member_token=token_a,
+        )
+        # Find auto-created task
+        tasks = self.hub.list_tasks("planner-sec")
+        linked_tasks = [t for t in tasks if t.get("message_id") == dec_msg["id"]]
+        self.assertEqual(len(linked_tasks), 1)
+        self.assertEqual(linked_tasks[0]["status"], "waiting_human")
+
+        # Human resolves decision
+        await self.hub.resolve_human_decision(
+            message_id=dec_msg["id"],
+            room_name="planner-sec",
+            decision="Approved",
+            decider="Rui",
+            human_token=self.hub.human_token,
+        )
+        resolved_task = self.hub.storage.get_task_by_id(linked_tasks[0]["id"])
+        self.assertEqual(resolved_task["status"], "done")
+
+    async def test_presence_tracking_who_is_listening(self):
+        """Tests active presence tracking including websockets, MCP listeners, and Sentinel HTTP polls."""
+        self.hub.create_room("presence-room")
+
+        from datetime import datetime
+        # 1. Simulate Sentinel HTTP poll
+        self.hub.record_presence("presence-room", "SentinelSupport", client="sentinel", is_human=False)
+
+        # 2. Simulate Web UI connection
+        mock_ws = object()
+        await self.hub.register_websocket("presence-room", mock_ws, user_name="Rui", is_human=True)
+
+        # 3. Simulate MCP listener waiting
+        ev = asyncio.Event()
+        self.hub._room_listeners["presence-room"] = [{
+            "agent_name": "ClaudeBot",
+            "event": ev,
+            "started_at": datetime.now().isoformat(),
+        }]
+
+        # Query who is listening
+        presence = self.hub.who_is_listening("presence-room")
+        self.assertEqual(presence["status"], "success")
+        self.assertEqual(presence["total_listening"], 3)
+        names = [l["name"] for l in presence["listeners"]]
+        self.assertIn("Rui", names)
+        self.assertIn("SentinelSupport", names)
+        self.assertIn("ClaudeBot", names)
+
+        # Human is sorted first
+        self.assertEqual(presence["listeners"][0]["name"], "Rui")
+        self.assertEqual(presence["listeners"][0]["role"], "human")
+
+        # Cleanup ws and listener
+        await self.hub.unregister_websocket("presence-room", mock_ws)
+        self.hub._room_listeners["presence-room"] = []
+
+        # After unregister, only Sentinel remains (within 60s)
+        presence2 = self.hub.who_is_listening("presence-room")
+        self.assertEqual(presence2["total_listening"], 1)
+        self.assertEqual(presence2["listeners"][0]["name"], "SentinelSupport")
+
+
 
 
 class TestWebAppAndApi(unittest.TestCase):
@@ -665,6 +873,91 @@ class TestWebAppAndApi(unittest.TestCase):
         # Unarchive room endpoint with token -> 200
         unarch_res = self.client.post(f"/api/rooms/{room_name}/unarchive", headers={"X-Human-Token": hub.human_token})
         self.assertEqual(unarch_res.status_code, 200)
+
+    def test_tasks_and_presence_api(self):
+        import uuid
+        room_name = f"api-tasks-{uuid.uuid4().hex[:6]}"
+        self.client.post("/api/rooms", json={"name": room_name, "topic": "Tasks API"})
+
+        # 1. Presence endpoint
+        pres_res = self.client.get(f"/api/rooms/{room_name}/presence")
+        self.assertEqual(pres_res.status_code, 200)
+        self.assertIn("listeners", pres_res.json())
+
+        # 2. Create task via API
+        create_res = self.client.post(
+            f"/api/rooms/{room_name}/tasks",
+            json={
+                "title": "Build UI component",
+                "description": "Right side panel for tasks",
+                "priority": "high",
+                "assignee": "Claude",
+                "uses_gpu": True,
+                "gpu_est_min": 10,
+                "created_by": "Rui",
+            },
+            headers={"X-Human-Token": hub.human_token},
+        )
+        self.assertEqual(create_res.status_code, 201)
+        task1 = create_res.json()
+        self.assertEqual(task1["title"], "Build UI component")
+        self.assertTrue(task1["uses_gpu"])
+        self.assertEqual(task1["gpu_est_min"], 10)
+
+        # Create second task
+        create2 = self.client.post(
+            f"/api/rooms/{room_name}/tasks",
+            json={
+                "title": "Cleanup CSS",
+                "priority": "low",
+                "status": "done",
+            },
+            headers={"X-Human-Token": hub.human_token},
+        )
+        self.assertEqual(create2.status_code, 201)
+        task2 = create2.json()
+
+        # 3. List tasks without hide_completed
+        list_all = self.client.get(f"/api/rooms/{room_name}/tasks")
+        self.assertEqual(list_all.status_code, 200)
+        self.assertEqual(len(list_all.json()["tasks"]), 2)
+
+        # 4. List tasks with hide_completed=true
+        list_active = self.client.get(f"/api/rooms/{room_name}/tasks?hide_completed=true")
+        self.assertEqual(list_active.status_code, 200)
+        self.assertEqual(len(list_active.json()["tasks"]), 1)
+        self.assertEqual(list_active.json()["tasks"][0]["id"], task1["id"])
+
+        # 5. Update task (PATCH)
+        patch_res = self.client.patch(
+            f"/api/tasks/{task1['id']}",
+            json={"status": "in_progress", "actor": "Rui"},
+            headers={"X-Human-Token": hub.human_token},
+        )
+        self.assertEqual(patch_res.status_code, 200)
+        self.assertEqual(patch_res.json()["status"], "in_progress")
+
+        # 6. Reorder tasks
+        reorder_res = self.client.post(
+            f"/api/rooms/{room_name}/tasks/reorder",
+            json={"task_ids": [task2["id"], task1["id"]]},
+            headers={"X-Human-Token": hub.human_token},
+        )
+        self.assertEqual(reorder_res.status_code, 200)
+        reordered_ids = [t["id"] for t in reorder_res.json()["tasks"]]
+        self.assertEqual(reordered_ids, [task2["id"], task1["id"]])
+
+        # 7. Delete task
+        del_res = self.client.delete(
+            f"/api/tasks/{task2['id']}",
+            headers={"X-Human-Token": hub.human_token},
+        )
+        self.assertEqual(del_res.status_code, 200)
+
+        # Verify deletion
+        list_after_del = self.client.get(f"/api/rooms/{room_name}/tasks")
+        self.assertEqual(len(list_after_del.json()["tasks"]), 1)
+
 
 
 class TestMCPTools(unittest.IsolatedAsyncioTestCase):
@@ -826,6 +1119,77 @@ class TestMCPTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(read_single["messages"]), 1)
         self.assertEqual(read_single["messages"][0]["id"], msg_id)
         self.assertTrue(any(r["emoji"] == "👍" for r in read_single["messages"][0]["reactions"]))
+
+    async def test_mcp_task_tools_flow(self):
+        import uuid
+        room_name = f"mcp-tasks-{uuid.uuid4().hex[:6]}"
+        tool_create_room(room_name, topic="MCP Tasks")
+        join_res = json.loads(tool_join_room(room_name, agent_name="TaskManagerAgent"))
+        token = join_res["member_token"]
+
+        # 1. who_is_listening tool
+        listen_res = json.loads(tool_who_is_listening(room_name))
+        self.assertEqual(listen_res["status"], "success")
+
+        # 2. create_task tool
+        ct_res = json.loads(await tool_create_task(
+            room_name=room_name,
+            title="Design DB Schema",
+            description="Tasks and task_history tables",
+            assignee="TaskManagerAgent",
+            priority="urgent",
+            status="in_progress",
+            uses_gpu=True,
+            gpu_est_min=5,
+            agent_name="TaskManagerAgent",
+            member_token=token,
+        ))
+        self.assertEqual(ct_res["status"], "success")
+        task1 = ct_res["task"]
+        self.assertEqual(task1["title"], "Design DB Schema")
+        self.assertTrue(task1["uses_gpu"])
+
+        # Create second task
+        ct_res2 = json.loads(await tool_create_task(
+            room_name=room_name,
+            title="Completed Docs",
+            status="done",
+            agent_name="TaskManagerAgent",
+            member_token=token,
+        ))
+        task2 = ct_res2["task"]
+
+        # 3. list_tasks tool with hide_completed=False and True
+        list_all = json.loads(tool_list_tasks(room_name, hide_completed=False))
+        self.assertEqual(list_all["status"], "success")
+        self.assertEqual(len(list_all["tasks"]), 2)
+
+        list_hide = json.loads(tool_list_tasks(room_name, hide_completed=True))
+        self.assertEqual(list_hide["status"], "success")
+        self.assertEqual(len(list_hide["tasks"]), 1)
+        self.assertEqual(list_hide["tasks"][0]["id"], task1["id"])
+
+        # 4. update_task tool
+        up_res = json.loads(await tool_update_task(
+            task_id=task1["id"],
+            status="waiting_agent",
+            waiting_for_agent="ReviewerAgent",
+            agent_name="TaskManagerAgent",
+            member_token=token,
+        ))
+        self.assertEqual(up_res["status"], "success")
+        self.assertEqual(up_res["task"]["status"], "waiting_agent")
+        self.assertEqual(up_res["task"]["waiting_for_agent"], "ReviewerAgent")
+
+        # 5. reorder_tasks tool
+        reorder_res = json.loads(await tool_reorder_tasks(
+            room_name=room_name,
+            task_ids=[task2["id"], task1["id"]],
+            agent_name="TaskManagerAgent",
+            member_token=token,
+        ))
+        self.assertEqual(reorder_res["status"], "success")
+        self.assertEqual(reorder_res["tasks"][0]["id"], task2["id"])
 
 
 if __name__ == "__main__":

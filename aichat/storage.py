@@ -151,6 +151,53 @@ class ChatStorage:
                 ON poll_votes(poll_id);
             """)
 
+            # Tasks table (v2.5)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    room_name TEXT NOT NULL COLLATE NOCASE,
+                    title TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'planned',
+                    assignee TEXT DEFAULT '',
+                    waiting_for_agent TEXT DEFAULT '',
+                    priority TEXT NOT NULL DEFAULT 'medium',
+                    order_index INTEGER NOT NULL DEFAULT 0,
+                    message_id INTEGER,
+                    uses_gpu INTEGER NOT NULL DEFAULT 0,
+                    gpu_est_min INTEGER NOT NULL DEFAULT 0,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tasks_room_status 
+                ON tasks(room_name, status);
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tasks_room_order 
+                ON tasks(room_name, order_index);
+            """)
+
+            # Task History table (v2.5)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS task_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    from_status TEXT DEFAULT '',
+                    to_status TEXT DEFAULT '',
+                    details TEXT DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_task_history_task 
+                ON task_history(task_id);
+            """)
+
             # Auto-migrations for new features
             try:
                 conn.execute("ALTER TABLE messages ADD COLUMN is_verified INTEGER DEFAULT 0;")
@@ -170,6 +217,18 @@ class ChatStorage:
                 pass
             try:
                 conn.execute("ALTER TABLE messages ADD COLUMN metadata TEXT DEFAULT '{}';")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE tasks ADD COLUMN waiting_for_agent TEXT DEFAULT '';")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE tasks ADD COLUMN uses_gpu INTEGER DEFAULT 0;")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE tasks ADD COLUMN gpu_est_min INTEGER DEFAULT 0;")
             except sqlite3.OperationalError:
                 pass
 
@@ -802,6 +861,306 @@ class ChatStorage:
             r["metadata"] = {}
         r["reactions"] = self.get_message_reactions(message_id)
         return r
+
+    # -------------------------------------------------------------
+    # Task Planner Operations (v2.5)
+    # -------------------------------------------------------------
+    def create_task(
+        self,
+        room_name: str,
+        title: str,
+        description: str = "",
+        assignee: str = "",
+        waiting_for_agent: str = "",
+        priority: str = "medium",
+        status: str = "planned",
+        order_index: int | None = None,
+        message_id: int | None = None,
+        uses_gpu: bool = False,
+        gpu_est_min: int = 0,
+        created_by: str = "System",
+    ) -> dict[str, Any]:
+        """Creates a new task in a room."""
+        clean_room = room_name.strip()
+        clean_title = title.strip()
+        if not clean_title:
+            raise ValueError("O título da tarefa não pode estar vazio.")
+
+        valid_priorities = ("urgent", "high", "medium", "low")
+        clean_priority = priority.strip().lower() if priority else "medium"
+        if clean_priority not in valid_priorities:
+            clean_priority = "medium"
+
+        valid_statuses = ("planned", "in_progress", "waiting_human", "waiting_agent", "done", "cancelled")
+        clean_status = status.strip().lower() if status else "planned"
+        if clean_status not in valid_statuses:
+            clean_status = "planned"
+
+        conn = self._get_connection()
+        now = datetime.now().isoformat()
+
+        if order_index is None or order_index == 0:
+            cursor = conn.execute(
+                "SELECT COALESCE(MAX(order_index), 0) + 1 FROM tasks WHERE room_name = ? COLLATE NOCASE",
+                (clean_room,),
+            )
+            calc_order = cursor.fetchone()[0]
+        else:
+            calc_order = int(order_index)
+
+        with conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO tasks (
+                    room_name, title, description, status, assignee, waiting_for_agent,
+                    priority, order_index, message_id, uses_gpu, gpu_est_min,
+                    created_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    clean_room,
+                    clean_title,
+                    description.strip() if description else "",
+                    clean_status,
+                    assignee.strip() if assignee else "",
+                    waiting_for_agent.strip() if waiting_for_agent else "",
+                    clean_priority,
+                    calc_order,
+                    message_id if message_id and message_id > 0 else None,
+                    1 if uses_gpu else 0,
+                    max(0, int(gpu_est_min or 0)),
+                    created_by.strip() or "System",
+                    now,
+                    now,
+                ),
+            )
+            task_id = cursor.lastrowid
+            conn.execute(
+                """
+                INSERT INTO task_history (task_id, action, actor, to_status, details, created_at)
+                VALUES (?, 'created', ?, ?, ?, ?)
+                """,
+                (task_id, created_by.strip() or "System", clean_status, clean_title, now),
+            )
+
+        task = self.get_task_by_id(task_id)
+        if not task:
+            raise RuntimeError(f"Falha ao carregar tarefa recém-criada #{task_id}")
+        return task
+
+    def update_task(
+        self,
+        task_id: int,
+        actor: str = "System",
+        title: str | None = None,
+        description: str | None = None,
+        status: str | None = None,
+        assignee: str | None = None,
+        waiting_for_agent: str | None = None,
+        priority: str | None = None,
+        order_index: int | None = None,
+        message_id: int | None = None,
+        uses_gpu: bool | None = None,
+        gpu_est_min: int | None = None,
+    ) -> dict[str, Any]:
+        """Updates fields of an existing task."""
+        conn = self._get_connection()
+        task = self.get_task_by_id(task_id)
+        if not task:
+            raise ValueError(f"Tarefa #{task_id} não encontrada.")
+
+        now = datetime.now().isoformat()
+        updates = []
+        params = []
+        old_status = task["status"]
+
+        if title is not None and title.strip():
+            updates.append("title = ?")
+            params.append(title.strip())
+
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description.strip())
+
+        new_status = None
+        if status is not None and status.strip():
+            clean_status = status.strip().lower()
+            valid_statuses = ("planned", "in_progress", "waiting_human", "waiting_agent", "done", "cancelled")
+            if clean_status in valid_statuses:
+                updates.append("status = ?")
+                params.append(clean_status)
+                new_status = clean_status
+
+        if assignee is not None:
+            updates.append("assignee = ?")
+            params.append(assignee.strip())
+
+        if waiting_for_agent is not None:
+            updates.append("waiting_for_agent = ?")
+            params.append(waiting_for_agent.strip())
+
+        if priority is not None and priority.strip():
+            clean_priority = priority.strip().lower()
+            if clean_priority in ("urgent", "high", "medium", "low"):
+                updates.append("priority = ?")
+                params.append(clean_priority)
+
+        if order_index is not None:
+            updates.append("order_index = ?")
+            params.append(int(order_index))
+
+        if message_id is not None:
+            updates.append("message_id = ?")
+            params.append(message_id if message_id > 0 else None)
+
+        if uses_gpu is not None:
+            updates.append("uses_gpu = ?")
+            params.append(1 if uses_gpu else 0)
+
+        if gpu_est_min is not None:
+            updates.append("gpu_est_min = ?")
+            params.append(max(0, int(gpu_est_min)))
+
+        if not updates:
+            return task
+
+        updates.append("updated_at = ?")
+        params.append(now)
+        params.append(task_id)
+
+        with conn:
+            conn.execute(
+                f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?",
+                params,
+            )
+            if new_status and new_status != old_status:
+                conn.execute(
+                    """
+                    INSERT INTO task_history (task_id, action, actor, from_status, to_status, details, created_at)
+                    VALUES (?, 'status_changed', ?, ?, ?, ?, ?)
+                    """,
+                    (task_id, actor, old_status, new_status, f"Status updated to {new_status}", now),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO task_history (task_id, action, actor, details, created_at)
+                    VALUES (?, 'updated', ?, ?, ?)
+                    """,
+                    (task_id, actor, "Fields updated", now),
+                )
+
+        updated_task = self.get_task_by_id(task_id)
+        if not updated_task:
+            raise RuntimeError(f"Falha ao carregar tarefa atualizada #{task_id}")
+        return updated_task
+
+    def delete_task(self, task_id: int) -> bool:
+        """Deletes a task and its history."""
+        conn = self._get_connection()
+        with conn:
+            cursor = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            conn.execute("DELETE FROM task_history WHERE task_id = ?", (task_id,))
+            return cursor.rowcount > 0
+
+    def get_task_by_id(self, task_id: int) -> dict[str, Any] | None:
+        """Retrieves a single task by ID with staleness computation and history."""
+        conn = self._get_connection()
+        cursor = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        t = dict(row)
+        t["uses_gpu"] = bool(t.get("uses_gpu", 0))
+        t["is_stale"] = False
+        t["stale_minutes"] = 0
+        if t["status"] == "in_progress" and t.get("updated_at"):
+            try:
+                updated_dt = datetime.fromisoformat(t["updated_at"])
+                elapsed = (datetime.now() - updated_dt).total_seconds()
+                if elapsed > 900:  # 15 minutes
+                    t["is_stale"] = True
+                    t["stale_minutes"] = int(elapsed / 60)
+            except Exception:
+                pass
+        t["history"] = self.get_task_history(task_id)
+        return t
+
+    def get_task_history(self, task_id: int) -> list[dict[str, Any]]:
+        """Returns the chronological history of changes for a task."""
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT id, task_id, action, actor, from_status, to_status, details, created_at FROM task_history WHERE task_id = ? ORDER BY id ASC",
+            (task_id,),
+        )
+        return [dict(r) for r in cursor.fetchall()]
+
+    def list_tasks(
+        self,
+        room_name: str,
+        status: str | None = None,
+        assignee: str | None = None,
+        hide_completed: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Lists tasks for a room, optionally filtered by status, assignee, or hiding completed."""
+        conn = self._get_connection()
+        query = "SELECT * FROM tasks WHERE room_name = ? COLLATE NOCASE"
+        params: list[Any] = [room_name.strip()]
+
+        if status:
+            query += " AND status = ? COLLATE NOCASE"
+            params.append(status.strip().lower())
+        elif hide_completed:
+            query += " AND status NOT IN ('done', 'cancelled')"
+
+        if assignee:
+            query += " AND assignee = ? COLLATE NOCASE"
+            params.append(assignee.strip())
+
+        query += """
+            ORDER BY 
+                order_index ASC,
+                id ASC
+        """
+        cursor = conn.execute(query, params)
+        rows = [dict(r) for r in cursor.fetchall()]
+        now = datetime.now()
+        for t in rows:
+            t["uses_gpu"] = bool(t.get("uses_gpu", 0))
+            t["is_stale"] = False
+            t["stale_minutes"] = 0
+            if t["status"] == "in_progress" and t.get("updated_at"):
+                try:
+                    updated_dt = datetime.fromisoformat(t["updated_at"])
+                    elapsed = (now - updated_dt).total_seconds()
+                    if elapsed > 900:
+                        t["is_stale"] = True
+                        t["stale_minutes"] = int(elapsed / 60)
+                except Exception:
+                    pass
+        return rows
+
+    def reorder_tasks(self, room_name: str, task_ids: list[int]) -> list[dict[str, Any]]:
+        """Sets new order_index for given task IDs in the room."""
+        conn = self._get_connection()
+        now = datetime.now().isoformat()
+        with conn:
+            for idx, tid in enumerate(task_ids):
+                conn.execute(
+                    "UPDATE tasks SET order_index = ?, updated_at = ? WHERE id = ? AND room_name = ? COLLATE NOCASE",
+                    (idx + 1, now, tid, room_name.strip()),
+                )
+        return self.list_tasks(room_name)
+
+    def update_member_last_seen(self, room_name: str, member_name: str) -> None:
+        """Updates last_seen_at timestamp for a room member."""
+        conn = self._get_connection()
+        now = datetime.now().isoformat()
+        with conn:
+            conn.execute(
+                "UPDATE members SET last_seen_at = ? WHERE room_name = ? COLLATE NOCASE AND member_name = ? COLLATE NOCASE",
+                (now, room_name.strip(), member_name.strip()),
+            )
 
     def get_room_log_file(self, room_name: str) -> Path:
         """Returns path to the text log file for the room, indexed by room ID to prevent collisions."""

@@ -8,6 +8,8 @@ data/*.db
 data/*.db-shm
 data/*.db-wal
 data/.human_token
+data/.*
+data/*.json
 .server_info.json
 
 # Transcripts and Room Logs

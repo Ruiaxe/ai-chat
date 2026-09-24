@@ -417,6 +417,201 @@ def archive_room(room_name: str, requester_name: str = "", requester_role: str =
     }, indent=2)
 
 
+# -----------------------------------------------------------------
+# Task Planner & Presence MCP Tools (v2.5)
+# -----------------------------------------------------------------
+@mcp.tool()
+async def create_task(
+    room_name: str,
+    title: str,
+    description: str = "",
+    assignee: str = "",
+    waiting_for_agent: str = "",
+    priority: str = "medium",
+    status: str = "planned",
+    uses_gpu: bool = False,
+    gpu_est_min: int = 0,
+    message_id: int = 0,
+    password: str = "",
+    member_token: str = "",
+    creator_name: str = "",
+    agent_name: str = "",
+) -> str:
+    """
+    Creates a new task in the room's task planner.
+    - room_name: Target chat room
+    - title: Brief summary of the task
+    - description: Detailed notes / acceptance criteria
+    - assignee: Name of assigned agent or human
+    - waiting_for_agent: If waiting for another agent, their name
+    - priority: 'urgent', 'high', 'medium', or 'low' (default: 'medium')
+    - status: 'planned', 'in_progress', 'waiting_human', 'waiting_agent', 'done', 'cancelled'
+    - uses_gpu: True if task requires local GPU resources
+    - gpu_est_min: Estimated GPU duration in minutes
+    - message_id: Optional ID of chat message requesting this task or decision
+    - member_token: Your registered token for authentication
+    """
+    try:
+        creator = (creator_name or agent_name or assignee or "Agent").strip()
+        task = await hub.create_task(
+            room_name=room_name,
+            title=title,
+            description=description,
+            assignee=assignee,
+            waiting_for_agent=waiting_for_agent,
+            priority=priority,
+            status=status,
+            uses_gpu=uses_gpu,
+            gpu_est_min=gpu_est_min,
+            message_id=message_id if message_id > 0 else None,
+            member_token=member_token,
+            password=password,
+            created_by=creator,
+        )
+        return json.dumps({
+            "status": "success",
+            "message": f"Task #{task['id']} created.",
+            "task": task,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+async def update_task(
+    task_id: int,
+    status: str = "",
+    assignee: str = "",
+    waiting_for_agent: str = "",
+    priority: str = "",
+    title: str = "",
+    description: str = "",
+    order_index: int = 0,
+    message_id: int = 0,
+    uses_gpu: bool | None = None,
+    gpu_est_min: int | None = None,
+    member_token: str = "",
+    actor_name: str = "",
+    agent_name: str = "",
+    password: str = "",
+) -> str:
+    """
+    Updates an existing task in the room task planner.
+    Requires member_token if the task is already assigned to prevent unauthorized changes/hijacking.
+    """
+    try:
+        actor = (actor_name or agent_name or "").strip()
+        fields: dict[str, Any] = {}
+        if status:
+            fields["status"] = status
+        if assignee:
+            fields["assignee"] = assignee
+        if waiting_for_agent:
+            fields["waiting_for_agent"] = waiting_for_agent
+        if priority:
+            fields["priority"] = priority
+        if title:
+            fields["title"] = title
+        if description:
+            fields["description"] = description
+        if order_index > 0:
+            fields["order_index"] = order_index
+        if message_id > 0:
+            fields["message_id"] = message_id
+        if uses_gpu is not None:
+            fields["uses_gpu"] = uses_gpu
+        if gpu_est_min is not None:
+            fields["gpu_est_min"] = gpu_est_min
+
+        task = await hub.update_task(
+            task_id=task_id,
+            member_token=member_token,
+            password=password,
+            actor=actor,
+            **fields,
+        )
+        return json.dumps({
+            "status": "success",
+            "message": f"Task #{task_id} updated.",
+            "task": task,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def list_tasks(
+    room_name: str,
+    status: str = "",
+    assignee: str = "",
+    hide_completed: bool = False,
+    password: str = "",
+) -> str:
+    """
+    Lists tasks for a room from the task planner.
+    - status: Optional filter ('planned', 'in_progress', 'waiting_human', 'waiting_agent', 'done', 'cancelled')
+    - assignee: Optional filter by responsible agent/human
+    - hide_completed: If True, excludes 'done' and 'cancelled' tasks
+    - password: Password if room is protected
+    """
+    try:
+        tasks = hub.list_tasks(
+            room_name=room_name,
+            status=status or None,
+            assignee=assignee or None,
+            hide_completed=hide_completed,
+            password=password,
+        )
+        return json.dumps({
+            "status": "success",
+            "room": room_name,
+            "count": len(tasks),
+            "tasks": tasks,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+async def reorder_tasks(
+    room_name: str,
+    task_ids: list[int],
+    agent_name: str = "",
+    member_token: str = "",
+    password: str = "",
+) -> str:
+    """
+    Sets a new execution order for tasks in a room by providing the task IDs in preferred sequence.
+    """
+    try:
+        tasks = await hub.reorder_tasks(
+            room_name=room_name,
+            task_ids=task_ids,
+            member_token=member_token,
+            password=password,
+        )
+        return json.dumps({
+            "status": "success",
+            "message": f"Reordered {len(task_ids)} tasks in #{room_name}.",
+            "tasks": tasks,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def who_is_listening(room_name: str, password: str = "") -> str:
+    """
+    Checks who is actively listening in the chat room right now.
+    Returns listeners across Web UI, long-polling MCP listeners, and Sentinel HTTP pollers (within 60s).
+    """
+    try:
+        res = hub.who_is_listening(room_name=room_name, password=password)
+        return json.dumps(res, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
 @mcp.resource("chat://rooms")
 def resource_rooms() -> str:
     """Resource listing all chat rooms."""

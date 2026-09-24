@@ -147,6 +147,15 @@ async def endpoint_get_messages(request: Request) -> Response:
     limit = safe_int(request.query_params.get("limit"), default=500, min_val=1, max_val=1000)
 
     try:
+        # Record presence if User-Agent or header indicates Sentinel / agent
+        ua = request.headers.get("user-agent", "")
+        agent_header = request.headers.get("x-agent-name", "") or request.query_params.get("agent_name", "")
+        if agent_header:
+            hub.record_presence(room_name, agent_header.strip(), client="http_poll")
+        elif "sentinel" in ua.lower():
+            client_name = "SentinelSupport" if "support" in ua.lower() else "Sentinel"
+            hub.record_presence(room_name, client_name, client="sentinel")
+
         messages = hub.read_messages(
             room_name=room_name,
             password=password,
@@ -520,6 +529,188 @@ async def endpoint_tts_voices(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# --- Task Planner & Presence Endpoints (v2.5) ---
+
+async def endpoint_get_presence(request: Request) -> Response:
+    """Returns real-time active listeners in a room."""
+    room_name = request.path_params["room_name"]
+    password = request.query_params.get("password", "")
+    try:
+        presence = hub.who_is_listening(room_name=room_name, password=password)
+        return JSONResponse(presence)
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_get_tasks(request: Request) -> Response:
+    """Lists tasks in a room with optional filters."""
+    room_name = request.path_params["room_name"]
+    password = request.query_params.get("password", "")
+    status = request.query_params.get("status")
+    assignee = request.query_params.get("assignee")
+    hide_completed = request.query_params.get("hide_completed", "").lower() in ("true", "1", "yes")
+
+    try:
+        tasks = hub.list_tasks(
+            room_name=room_name,
+            status=status,
+            assignee=assignee,
+            hide_completed=hide_completed,
+            password=password,
+        )
+        return JSONResponse({"status": "success", "tasks": tasks, "count": len(tasks)})
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_create_task(request: Request) -> Response:
+    """Creates a new task in a room."""
+    room_name = request.path_params["room_name"]
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    title = (data.get("title") or "").strip()
+    if not title:
+        return JSONResponse({"error": "O título da tarefa é obrigatório."}, status_code=400)
+
+    is_human = is_authenticated_human(request)
+    human_tok = hub.human_token if is_human else ""
+    member_tok = data.get("member_token", "")
+    creator = "Rui" if is_human else (data.get("created_by") or data.get("creator") or "WebUser")
+
+    try:
+        task = await hub.create_task(
+            room_name=room_name,
+            title=title,
+            description=data.get("description", ""),
+            assignee=data.get("assignee", ""),
+            waiting_for_agent=data.get("waiting_for_agent", ""),
+            priority=data.get("priority", "medium"),
+            status=data.get("status", "planned"),
+            order_index=data.get("order_index"),
+            message_id=data.get("message_id"),
+            uses_gpu=bool(data.get("uses_gpu", False)),
+            gpu_est_min=safe_int(data.get("gpu_est_min"), default=0, min_val=0),
+            member_token=member_tok,
+            human_token=human_tok,
+            password=data.get("password", ""),
+            created_by=creator,
+        )
+        return JSONResponse(task, status_code=201)
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_update_task(request: Request) -> Response:
+    """Updates fields of an existing task."""
+    task_id = int(request.path_params["task_id"])
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    is_human = is_authenticated_human(request)
+    human_tok = hub.human_token if is_human else ""
+    member_tok = data.get("member_token", "")
+    actor = "Rui" if is_human else (data.get("actor") or data.get("assignee") or "")
+
+    allowed_fields = [
+        "title", "description", "status", "assignee", "waiting_for_agent",
+        "priority", "order_index", "message_id", "uses_gpu", "gpu_est_min"
+    ]
+    kwargs = {k: v for k, v in data.items() if k in allowed_fields}
+
+    try:
+        task = await hub.update_task(
+            task_id=task_id,
+            member_token=member_tok,
+            human_token=human_tok,
+            password=data.get("password", ""),
+            actor=actor,
+            **kwargs,
+        )
+        return JSONResponse(task)
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_delete_task(request: Request) -> Response:
+    """Deletes a task."""
+    task_id = int(request.path_params["task_id"])
+    is_human = is_authenticated_human(request)
+    human_tok = hub.human_token if is_human else ""
+    member_tok = request.headers.get("x-member-token", "")
+    password = request.query_params.get("password", "")
+
+    try:
+        res = await hub.delete_task(
+            task_id=task_id,
+            member_token=member_tok,
+            human_token=human_tok,
+            password=password,
+            actor="Rui" if is_human else "",
+        )
+        return JSONResponse(res)
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_reorder_tasks(request: Request) -> Response:
+    """Reorders tasks in a room."""
+    room_name = request.path_params["room_name"]
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    task_ids = data.get("task_ids", [])
+    if not isinstance(task_ids, list):
+        return JSONResponse({"error": "task_ids deve ser uma lista de inteiros"}, status_code=400)
+
+    is_human = is_authenticated_human(request)
+    human_tok = hub.human_token if is_human else ""
+    member_tok = data.get("member_token", "")
+    password = data.get("password", "")
+
+    try:
+        tasks = await hub.reorder_tasks(
+            room_name=room_name,
+            task_ids=task_ids,
+            member_token=member_tok,
+            human_token=human_tok,
+            password=password,
+        )
+        return JSONResponse({"status": "success", "tasks": tasks})
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # --- WebSocket Endpoint ---
 
 async def websocket_room_endpoint(websocket: WebSocket) -> None:
@@ -541,7 +732,16 @@ async def websocket_room_endpoint(websocket: WebSocket) -> None:
             return
 
     await websocket.accept()
-    await hub.register_websocket(room_name, websocket)
+    user_name = "Rui (Humano)" if is_human else websocket.query_params.get("username", "WebUser")
+    await hub.register_websocket(room_name, websocket, user_name=user_name, is_human=is_human)
+
+    # Broadcast presence update on join
+    try:
+        p_info = hub.who_is_listening(room_name)
+        await hub._broadcast_to_websockets(room_name, {"type": "presence_updated", "room": room_name, "presence": p_info})
+    except Exception:
+        pass
+
     try:
         while True:
             data = await websocket.receive_text()
@@ -556,6 +756,11 @@ async def websocket_room_endpoint(websocket: WebSocket) -> None:
         pass
     finally:
         await hub.unregister_websocket(room_name, websocket)
+        try:
+            p_info = hub.who_is_listening(room_name)
+            await hub._broadcast_to_websockets(room_name, {"type": "presence_updated", "room": room_name, "presence": p_info})
+        except Exception:
+            pass
 
 
 from contextlib import asynccontextmanager
@@ -597,6 +802,12 @@ def create_app() -> Starlette:
         Route("/api/polls/{poll_id:int}/close", endpoint=endpoint_close_poll, methods=["POST"]),
         Route("/api/rooms/{room_name}/archive", endpoint=endpoint_archive_room, methods=["POST"]),
         Route("/api/rooms/{room_name}/unarchive", endpoint=endpoint_unarchive_room, methods=["POST"]),
+        Route("/api/rooms/{room_name}/presence", endpoint=endpoint_get_presence, methods=["GET"]),
+        Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_get_tasks, methods=["GET"]),
+        Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_create_task, methods=["POST"]),
+        Route("/api/tasks/{task_id:int}", endpoint=endpoint_update_task, methods=["PATCH", "POST"]),
+        Route("/api/tasks/{task_id:int}", endpoint=endpoint_delete_task, methods=["DELETE"]),
+        Route("/api/rooms/{room_name}/tasks/reorder", endpoint=endpoint_reorder_tasks, methods=["POST"]),
         Route("/api/rooms/{room_name}/log", endpoint=endpoint_download_log, methods=["GET"]),
         Route("/api/rooms/{room_name}/jsonl", endpoint=endpoint_download_jsonl, methods=["GET"]),
         Route("/api/rooms/{room_name}/stream", endpoint=endpoint_room_sse_stream, methods=["GET"]),

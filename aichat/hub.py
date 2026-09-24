@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import os
 import secrets
+import time
 from datetime import datetime
 from typing import Any
 
@@ -15,10 +16,12 @@ class ChatHub:
 
     def __init__(self, storage: ChatStorage | None = None, human_token: str | None = None):
         self.storage = storage or ChatStorage()
-        # Active WebSocket connections per room: {room_name: set(WebSocket)}
-        self._active_websockets: dict[str, set[Any]] = {}
-        # Waiting listeners for long polling: {room_name: list[asyncio.Event]}
-        self._room_listeners: dict[str, list[asyncio.Event]] = {}
+        # Active WebSocket connections per room: {room_name: {ws: {"name": str, "is_human": bool, "connected_at": str}}}
+        self._active_websockets: dict[str, dict[Any, dict[str, Any]]] = {}
+        # Waiting listeners for long polling: {room_name: list[dict[str, Any]]}
+        self._room_listeners: dict[str, list[dict[str, Any]]] = {}
+        # Recent HTTP / Sentinel polls: {(room_key, name_lower): {"name": str, "room": str, "timestamp": float, "last_seen": str, "client": str, "is_human": bool}}
+        self._recent_http_polls: dict[tuple[str, str], dict[str, Any]] = {}
         # Reaction events log for long-polling notification: list of event dicts
         self._reaction_events: list[dict[str, Any]] = []
         self._reaction_seq: int = 0
@@ -106,6 +109,15 @@ class ChatHub:
         if not password:
             return False
         return self._verify_password(password, room["password_hash"], room["salt"])
+
+    def get_canonical_room_name(self, room_name: str, password: str = "") -> str:
+        """Resolves room, checks existence and password access, and returns canonical name."""
+        room = self.storage.get_room(room_name)
+        if not room:
+            raise ValueError(f"Room '{room_name}' does not exist.")
+        if not self.verify_room_access(room_name, password):
+            raise PermissionError(f"Access denied to room '{room_name}': Invalid or missing password.")
+        return room["name"]
 
     def list_rooms(self, include_archived: bool = True) -> list[dict[str, Any]]:
         """Lists all existing rooms with metadata."""
@@ -390,6 +402,19 @@ class ChatHub:
             message_type="decision_request",
             metadata=metadata,
         )
+        try:
+            task = self.storage.create_task(
+                room_name=room_name,
+                title=f"Decisão: {question.strip()[:60]}",
+                description=f"Pergunta: {question.strip()}" + (f"\nOpções: {', '.join(opts)}" if opts else ""),
+                status="waiting_human",
+                priority="urgent",
+                message_id=msg["id"],
+                created_by=sender,
+            )
+            await self._broadcast_to_websockets(room_name, {"type": "task_created", "room": room_name, "task": task})
+        except Exception:
+            pass
         return msg
 
     async def resolve_human_decision(
@@ -419,6 +444,26 @@ class ChatHub:
             "message_id": message_id,
             "metadata": meta,
         })
+        # Auto-resolve any task linked to this message_id
+        try:
+            conn = self.storage._get_connection()
+            cursor = conn.execute("SELECT id FROM tasks WHERE message_id = ?", (message_id,))
+            rows = cursor.fetchall()
+            for r in rows:
+                updated_t = self.storage.update_task(
+                    r[0],
+                    actor=decider,
+                    status="done",
+                    description=f"Decisão do humano: {decision}",
+                )
+                await self._broadcast_to_websockets(canonical_name, {
+                    "type": "task_updated",
+                    "room": canonical_name,
+                    "task": updated_t,
+                })
+        except Exception:
+            pass
+
         resp_msg = await self.send_message(
             room_name=canonical_name,
             sender=decider,
@@ -650,12 +695,17 @@ class ChatHub:
 
         # Create an event and register on all target rooms
         event = asyncio.Event()
+        listener_info = {
+            "agent_name": clean_agent or "Agent",
+            "event": event,
+            "started_at": datetime.now().isoformat(),
+        }
         async with self._lock:
             for r in target_rooms:
                 r_key = r.strip().lower()
                 if r_key not in self._room_listeners:
                     self._room_listeners[r_key] = []
-                self._room_listeners[r_key].append(event)
+                self._room_listeners[r_key].append(listener_info)
 
         loop = asyncio.get_running_loop()
         start_time = loop.time()
@@ -752,8 +802,11 @@ class ChatHub:
             async with self._lock:
                 for r in target_rooms:
                     r_key = r.strip().lower()
-                    if r_key in self._room_listeners and event in self._room_listeners[r_key]:
-                        self._room_listeners[r_key].remove(event)
+                    if r_key in self._room_listeners:
+                        self._room_listeners[r_key] = [
+                            li for li in self._room_listeners[r_key]
+                            if (li.get("event") if isinstance(li, dict) else li) != event
+                        ]
 
     def check_new_messages(
         self,
@@ -767,6 +820,9 @@ class ChatHub:
         """
         target_rooms = self._resolve_target_rooms(room_name, agent_name, password)
         clean_agent = agent_name.strip().lower() if agent_name else ""
+        if agent_name:
+            for r in target_rooms:
+                self.record_presence(r, agent_name.strip(), client="mcp_poll")
 
         all_new: list[dict[str, Any]] = []
         last_id = 0
@@ -834,31 +890,48 @@ class ChatHub:
         """Triggers all waiting asyncio events for this room."""
         room_key = room_name.strip().lower()
         listeners = self._room_listeners.get(room_key, [])
-        for ev in list(listeners):
-            ev.set()
+        for entry in list(listeners):
+            try:
+                if isinstance(entry, dict) and "event" in entry:
+                    entry["event"].set()
+                elif hasattr(entry, "set"):
+                    entry.set()
+            except Exception:
+                pass
 
     # WebSocket registration and broadcast
-    async def register_websocket(self, room_name: str, websocket: Any) -> None:
-        """Registers a connected WebSocket for a room."""
+    async def register_websocket(
+        self,
+        room_name: str,
+        websocket: Any,
+        user_name: str = "WebUser",
+        is_human: bool = False,
+    ) -> None:
+        """Registers a connected WebSocket for a room with identity metadata."""
         room_key = room_name.strip().lower()
         async with self._lock:
             if room_key not in self._active_websockets:
-                self._active_websockets[room_key] = set()
-            self._active_websockets[room_key].add(websocket)
+                self._active_websockets[room_key] = {}
+            self._active_websockets[room_key][websocket] = {
+                "name": user_name,
+                "is_human": is_human,
+                "connected_at": datetime.now().isoformat(),
+            }
 
     async def unregister_websocket(self, room_name: str, websocket: Any) -> None:
         """Unregisters a WebSocket upon disconnect."""
         room_key = room_name.strip().lower()
         async with self._lock:
             if room_key in self._active_websockets:
-                self._active_websockets[room_key].discard(websocket)
+                self._active_websockets[room_key].pop(websocket, None)
 
     async def _broadcast_to_websockets(self, room_name: str, payload: dict[str, Any]) -> None:
         """Pushes data to all active WebSockets connected to this room."""
         room_key = room_name.strip().lower()
-        sockets = list(self._active_websockets.get(room_key, set()))
-        if not sockets:
+        sockets_map = self._active_websockets.get(room_key, {})
+        if not sockets_map:
             return
+        sockets = list(sockets_map.keys())
         dead_sockets = []
         for ws in sockets:
             try:
@@ -869,4 +942,305 @@ class ChatHub:
         if dead_sockets:
             async with self._lock:
                 for ws in dead_sockets:
-                    self._active_websockets.get(room_key, set()).discard(ws)
+                    self._active_websockets.get(room_key, {}).pop(ws, None)
+
+    # -------------------------------------------------------------
+    # Real-Time Room Presence Tracking (v2.5)
+    # -------------------------------------------------------------
+    def record_presence(
+        self,
+        room_name: str,
+        name: str,
+        client: str = "sentinel",
+        is_human: bool = False,
+    ) -> None:
+        """Records presence heartbeat for an HTTP / Sentinel / MCP poller."""
+        if not name or not room_name:
+            return
+        clean_name = name.strip()
+        room_key = room_name.strip().lower()
+        now_dt = datetime.now()
+        now_ts = time.time()
+        self._recent_http_polls[(room_key, clean_name.lower())] = {
+            "name": clean_name,
+            "room": room_name.strip(),
+            "timestamp": now_ts,
+            "last_seen": now_dt.isoformat(),
+            "client": client,
+            "is_human": is_human,
+        }
+        try:
+            self.storage.update_member_last_seen(room_name, clean_name)
+        except Exception:
+            pass
+
+    def who_is_listening(self, room_name: str, password: str = "") -> dict[str, Any]:
+        """
+        Returns all active listeners in the room within the active threshold (60s).
+        Enforces room password check for protected rooms.
+        """
+        canonical_name = self.get_canonical_room_name(room_name, password)
+        room_key = canonical_name.lower()
+        now_ts = time.time()
+        now_iso = datetime.now().isoformat()
+
+        # Map by lowercase name to avoid duplicates
+        active_map: dict[str, dict[str, Any]] = {}
+
+        # 1. Connected WebSockets (Web UI)
+        ws_entries = self._active_websockets.get(room_key, {})
+        for ws, info in ws_entries.items():
+            name = info.get("name") or "Humano (Web UI)"
+            is_human = info.get("is_human", True)
+            active_map[name.lower()] = {
+                "name": name,
+                "role": "human" if is_human else "agent",
+                "client": "web_ui",
+                "status": "connected",
+                "last_seen": now_iso,
+            }
+
+        # 2. Long-polling MCP listeners (wait_for_new_messages)
+        listeners = self._room_listeners.get(room_key, [])
+        for entry in listeners:
+            if isinstance(entry, dict):
+                agent_name = entry.get("agent_name") or "Agent"
+                active_map[agent_name.lower()] = {
+                    "name": agent_name,
+                    "role": "agent",
+                    "client": "mcp_listener",
+                    "status": "listening",
+                    "last_seen": now_iso,
+                    "started_at": entry.get("started_at", now_iso),
+                }
+
+        # 3. Recent HTTP pollers (Sentinel / REST polls within 60s)
+        for (r_k, n_low), poll_info in list(self._recent_http_polls.items()):
+            if r_k == room_key:
+                elapsed = now_ts - poll_info["timestamp"]
+                if elapsed <= 60.0:
+                    name = poll_info["name"]
+                    is_h = poll_info.get("is_human", False)
+                    if n_low not in active_map:
+                        active_map[n_low] = {
+                            "name": name,
+                            "role": "human" if is_h else "agent",
+                            "client": poll_info.get("client", "sentinel"),
+                            "status": "active",
+                            "last_seen": poll_info["last_seen"],
+                            "idle_seconds": round(elapsed, 1),
+                        }
+
+        sorted_listeners = sorted(
+            active_map.values(),
+            key=lambda x: (0 if x["role"] == "human" else 1, x["name"].lower()),
+        )
+
+        return {
+            "status": "success",
+            "room": canonical_name,
+            "total_listening": len(sorted_listeners),
+            "listeners": sorted_listeners,
+        }
+
+    # -------------------------------------------------------------
+    # Task Planner Lifecycle & Security (v2.5)
+    # -------------------------------------------------------------
+    async def create_task(
+        self,
+        room_name: str,
+        title: str,
+        description: str = "",
+        assignee: str = "",
+        waiting_for_agent: str = "",
+        priority: str = "medium",
+        status: str = "planned",
+        order_index: int | None = None,
+        message_id: int | None = None,
+        uses_gpu: bool = False,
+        gpu_est_min: int = 0,
+        member_token: str = "",
+        human_token: str = "",
+        password: str = "",
+        created_by: str = "",
+    ) -> dict[str, Any]:
+        """Creates a task in a room and broadcasts the event."""
+        canonical_name = self.get_canonical_room_name(room_name, password)
+        clean_created_by = created_by.strip()
+        clean_ht = (human_token or "").strip()
+        is_human = bool(clean_ht and secrets.compare_digest(clean_ht, self.human_token))
+
+        if is_human:
+            effective_creator = clean_created_by or "Rui"
+        elif clean_created_by:
+            valid, err = self.storage.verify_member_token(canonical_name, clean_created_by, member_token)
+            if not valid:
+                raise PermissionError(f"Acesso negado: {err}")
+            effective_creator = clean_created_by
+        else:
+            effective_creator = "Agent"
+
+        task = self.storage.create_task(
+            room_name=canonical_name,
+            title=title,
+            description=description,
+            assignee=assignee,
+            waiting_for_agent=waiting_for_agent,
+            priority=priority,
+            status=status,
+            order_index=order_index,
+            message_id=message_id,
+            uses_gpu=uses_gpu,
+            gpu_est_min=gpu_est_min,
+            created_by=effective_creator,
+        )
+        await self._broadcast_to_websockets(canonical_name, {
+            "type": "task_created",
+            "room": canonical_name,
+            "task": task,
+        })
+        return task
+
+    async def update_task(
+        self,
+        task_id: int,
+        member_token: str = "",
+        human_token: str = "",
+        password: str = "",
+        actor: str = "",
+        **fields,
+    ) -> dict[str, Any]:
+        """Updates a task, verifying authorization and password for private rooms."""
+        existing = self.storage.get_task_by_id(task_id)
+        if not existing:
+            raise ValueError(f"Tarefa #{task_id} não encontrada.")
+
+        room_name = existing["room_name"]
+        canonical_name = self.get_canonical_room_name(room_name, password)
+
+        clean_ht = (human_token or "").strip()
+        is_human = bool(clean_ht and secrets.compare_digest(clean_ht, self.human_token))
+
+        clean_actor = actor.strip()
+        if is_human:
+            effective_actor = clean_actor or "Rui"
+        else:
+            expected_owners = [o for o in (existing.get("assignee"), existing.get("created_by")) if o]
+            if expected_owners and clean_actor:
+                if clean_actor.lower() in [o.lower() for o in expected_owners]:
+                    valid, err = self.storage.verify_member_token(canonical_name, clean_actor, member_token)
+                    if not valid:
+                        raise PermissionError(f"Acesso negado: {err}")
+                else:
+                    # Exception: If claiming an unassigned task
+                    if not existing.get("assignee") and fields.get("assignee") == clean_actor:
+                        valid, err = self.storage.verify_member_token(canonical_name, clean_actor, member_token)
+                        if not valid:
+                            raise PermissionError(f"Acesso negado: {err}")
+                    else:
+                        raise PermissionError(
+                            f"Acesso negado: Apenas o responsável (@{existing.get('assignee')}) ou o criador (@{existing.get('created_by')}) podem modificar esta tarefa."
+                        )
+            elif expected_owners and not clean_actor:
+                token_matched = False
+                for owner in expected_owners:
+                    valid, _ = self.storage.verify_member_token(canonical_name, owner, member_token)
+                    if valid and member_token:
+                        token_matched = True
+                        clean_actor = owner
+                        break
+                if not token_matched:
+                    raise PermissionError(
+                        f"Acesso negado: Para modificar a tarefa #{task_id}, indique o seu nome (actor) e o seu member_token."
+                    )
+            effective_actor = clean_actor or "Agent"
+
+        updated = self.storage.update_task(task_id, actor=effective_actor, **fields)
+        await self._broadcast_to_websockets(canonical_name, {
+            "type": "task_updated",
+            "room": canonical_name,
+            "task": updated,
+        })
+        return updated
+
+    async def delete_task(
+        self,
+        task_id: int,
+        member_token: str = "",
+        human_token: str = "",
+        password: str = "",
+        actor: str = "",
+    ) -> dict[str, Any]:
+        """Deletes a task after verifying authorization."""
+        existing = self.storage.get_task_by_id(task_id)
+        if not existing:
+            raise ValueError(f"Tarefa #{task_id} não encontrada.")
+
+        room_name = existing["room_name"]
+        canonical_name = self.get_canonical_room_name(room_name, password)
+
+        clean_ht = (human_token or "").strip()
+        is_human = bool(clean_ht and secrets.compare_digest(clean_ht, self.human_token))
+
+        if not is_human:
+            clean_actor = actor.strip()
+            expected_owners = [o for o in (existing.get("assignee"), existing.get("created_by")) if o]
+            if expected_owners and clean_actor:
+                if clean_actor.lower() in [o.lower() for o in expected_owners]:
+                    valid, err = self.storage.verify_member_token(canonical_name, clean_actor, member_token)
+                    if not valid:
+                        raise PermissionError(f"Acesso negado: {err}")
+                else:
+                    raise PermissionError("Acesso negado: Apenas o responsável ou criador podem eliminar esta tarefa.")
+            elif expected_owners and not clean_actor:
+                token_matched = False
+                for owner in expected_owners:
+                    valid, _ = self.storage.verify_member_token(canonical_name, owner, member_token)
+                    if valid and member_token:
+                        token_matched = True
+                        break
+                if not token_matched:
+                    raise PermissionError("Acesso negado: Forneça member_token válido para eliminar a tarefa.")
+
+        self.storage.delete_task(task_id)
+        await self._broadcast_to_websockets(canonical_name, {
+            "type": "task_deleted",
+            "room": canonical_name,
+            "task_id": task_id,
+        })
+        return {"status": "success", "task_id": task_id}
+
+    def list_tasks(
+        self,
+        room_name: str,
+        status: str | None = None,
+        assignee: str | None = None,
+        hide_completed: bool = False,
+        password: str = "",
+    ) -> list[dict[str, Any]]:
+        """Lists tasks for a room, checking room password and supporting hide_completed."""
+        canonical_name = self.get_canonical_room_name(room_name, password)
+        return self.storage.list_tasks(
+            canonical_name,
+            status=status,
+            assignee=assignee,
+            hide_completed=hide_completed,
+        )
+
+    async def reorder_tasks(
+        self,
+        room_name: str,
+        task_ids: list[int],
+        member_token: str = "",
+        human_token: str = "",
+        password: str = "",
+    ) -> list[dict[str, Any]]:
+        """Reorders tasks in a room and broadcasts the update."""
+        canonical_name = self.get_canonical_room_name(room_name, password)
+        tasks = self.storage.reorder_tasks(canonical_name, task_ids)
+        await self._broadcast_to_websockets(canonical_name, {
+            "type": "tasks_reordered",
+            "room": canonical_name,
+            "tasks": tasks,
+        })
+        return tasks

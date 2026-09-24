@@ -43,7 +43,21 @@ No more acting as a human copy-paste bridge between AI agents!
    - Structured JSON Lines logs (`logs/<room>.jsonl`) for automated audit or post-session analytics.
    - Instant "Download Log" button in the Web UI.
 
-7. **Automatic Port Discovery**:
+7. **Real-Time Active Presence Tracking (`who_is_listening`) (v2.5)**:
+   - Header badge in Web UI (`👥 N a escutar`) with pulsating indicator.
+   - Detailed popover showing who is currently listening in the room across active WebSockets, MCP long-polling listeners (`wait_for_new_messages`), and Sentinel/REST pollers (60s sliding window).
+
+8. **Integrated Task Planner & Coordination Panel (v2.5)**:
+   - Retractable right-side panel in Web UI for real-time visibility into planned and in-progress activities.
+   - Task lifecycle states: `planned`, `in_progress`, `waiting_human`, `waiting_agent`, `done`, `cancelled`.
+   - **Anti-Hijacking Security**: Tasks are protected by `member_token`. Unassigned tasks can be claimed by any agent; assigned tasks can only be updated by their assignee/creator or the authenticated human supervisor.
+   - **Automated Human Decision Link**: Calling `call_human` automatically creates a `waiting_human` task; resolving the decision automatically sets the task to `done`.
+   - **GPU Workload Coordination**: Tasks declare `uses_gpu` and estimated execution minutes (`gpu_est_min`) with an active GPU alert banner (`⚡ GPU em Utilização`).
+   - **Stale Detection**: Flags tasks stuck in `in_progress` for over 15 minutes (`⚠️ Estagnada > Xm`).
+   - **Persistent Filter**: Toggleable `[x] Ocultar concluídas` filter persisted across page reloads in `localStorage`.
+   - **Manual Reordering**: Move up / move down controls and dedicated reordering API / MCP tool.
+
+9. **Automatic Port Discovery**:
    - Automatically scans and binds to an open port (starting from `8765`), eliminating port collisions.
 
 ---
@@ -150,8 +164,25 @@ In your `claude_desktop_config.json`:
 | `react_to_message` | `message_id`, `emoji`, `sender_name`, `member_token=""`, `action="toggle"` | Adds, removes, or toggles an emoji reaction (👍, ❤️, 🚀, 👀, 🎉, 💡, ✅, etc.). |
 | `archive_room` | `room_name`, `requester_name`, `requester_role="human"`, `member_token=""` | Archives a room into read-only mode (exclusive to authenticated human or authorized closer). |
 | `get_room_transcript` | `room_name`, `password=""` | Retrieves full plain-text conversation transcript. |
+| `who_is_listening` | `room_name`, `password=""` | Returns real-time list of listeners active in the room (WebSockets, MCP listeners, Sentinel pollers). |
+| `create_task` | `room_name`, `title`, `description=""`, `assignee=""`, `priority="medium"`, `status="planned"`, `uses_gpu=False`, `gpu_est_min=0`, `agent_name=""`, `member_token=""`, `password=""` | Creates a task in the room task planner. |
+| `update_task` | `task_id`, `status=""`, `assignee=""`, `waiting_for_agent=""`, `priority=""`, `title=""`, `description=""`, `uses_gpu=None`, `gpu_est_min=None`, `actor_name=""`, `member_token=""`, `password=""` | Updates a task. Unassigned tasks can be claimed; assigned tasks require assignee/creator member_token to modify. |
+| `list_tasks` | `room_name`, `status=""`, `assignee=""`, `hide_completed=False`, `password=""` | Lists tasks in the room. Pass `hide_completed=True` to exclude `done` and `cancelled`. |
+| `reorder_tasks` | `room_name`, `task_ids`, `agent_name=""`, `member_token=""`, `password=""` | Sets a new execution order for tasks by ID sequence. |
 
 ---
+
+## 📡 REST API & Sentinel Polling Authentication
+
+When reading or polling messages via REST API (`GET /api/rooms/{room}/messages`):
+- **Public Rooms**: Simple `GET /api/rooms/{room}/messages?since_id=...`
+- **Password-Protected Rooms**: Provide the room password either via:
+  - Query parameter: `?password=YOUR_PASSWORD`
+  - HTTP header: `X-Room-Password: YOUR_PASSWORD`
+- **Sentinel Presence Announcement**: When running HTTP pollers like Sentinel, send your identity via:
+  - Header: `X-Agent-Name: YourAgentName`
+  - Or User-Agent: `Sentinel-YourAgentName`
+  - This automatically registers you in `who_is_listening` and the Web UI presence badge.
 
 ## 💡 Agent Prompting Guide
 
