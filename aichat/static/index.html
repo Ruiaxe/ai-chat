@@ -167,9 +167,11 @@
         <div class="min-w-0">
           <div class="flex items-center space-x-2 min-w-0">
             <h2 id="current-room-name" class="font-bold text-lg text-white truncate">Select a room</h2>
-            <span id="room-lock-badge" class="hidden flex-shrink-0 px-2 py-0.5 rounded text-[11px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center gap-1">
-              <i data-lucide="lock" class="w-3 h-3"></i> Protected
-            </span>
+            <button id="room-lock-badge" onclick="promptChangeRoomPassword()" title="Sala protegida por token/senha. Clique para alterar ou introduzir novo token" class="hidden flex-shrink-0 px-2.5 py-0.5 rounded-lg text-[11px] font-medium bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/20 hover:border-amber-500/40 flex items-center gap-1.5 cursor-pointer transition">
+              <i data-lucide="lock" class="w-3.5 h-3.5"></i>
+              <span>Protegida</span>
+              <span class="text-[10px] text-amber-400/80 underline font-normal ml-0.5">Alterar token</span>
+            </button>
             <span id="room-archived-badge" class="hidden flex-shrink-0 px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/30 flex items-center gap-1">
               <i data-lucide="archive" class="w-3 h-3"></i> Arquivada
             </span>
@@ -420,22 +422,27 @@
   <div id="password-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
     <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4">
       <div class="flex items-center space-x-3">
-        <div class="w-10 h-10 rounded-full bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+        <div class="w-10 h-10 rounded-full bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 flex-shrink-0">
           <i data-lucide="lock" class="w-5 h-5"></i>
         </div>
-        <div>
-          <h3 class="font-bold text-white text-base">Protected Room</h3>
-          <p id="pwd-modal-room-name" class="text-xs text-slate-400">Enter password to enter</p>
+        <div class="min-w-0">
+          <h3 class="font-bold text-white text-base">Sala Protegida</h3>
+          <p id="pwd-modal-room-name" class="text-xs text-slate-400 break-words">Introduza o token de acesso ou senha</p>
         </div>
       </div>
       <div>
-        <input id="room-password-input" type="password" placeholder="Room password..." onkeydown="if(event.key==='Enter') submitPassword()"
-          class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500" />
-        <p id="pwd-error" class="text-xs text-rose-400 mt-1.5 hidden">Incorrect password. Please try again.</p>
+        <div class="relative">
+          <input id="room-password-input" type="password" placeholder="Token de acesso ou senha..." onkeydown="if(event.key==='Enter') submitPassword()"
+            class="w-full pl-3 pr-9 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-amber-500" />
+          <button type="button" onclick="togglePasswordVisibility('room-password-input', 'pwd-toggle-icon')" class="absolute right-2.5 top-2.5 text-slate-400 hover:text-white" title="Mostrar/Ocultar">
+            <i id="pwd-toggle-icon" data-lucide="eye" class="w-4 h-4"></i>
+          </button>
+        </div>
+        <p id="pwd-error" class="text-xs text-rose-400 mt-1.5 hidden">Token ou senha incorreta. Tente novamente.</p>
       </div>
       <div class="flex justify-end space-x-2 pt-2">
-        <button onclick="closePasswordModal()" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium">Cancel</button>
-        <button onclick="submitPassword()" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium">Unlock Room</button>
+        <button onclick="closePasswordModal()" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium">Cancelar</button>
+        <button onclick="submitPassword()" class="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium">Salvar & Entrar</button>
       </div>
     </div>
   </div>
@@ -749,6 +756,10 @@
       sessionStorage.setItem('room_pwd_' + roomName, pwd);
     }
 
+    function clearSavedPassword(roomName) {
+      sessionStorage.removeItem('room_pwd_' + roomName);
+    }
+
     function getMyUsername() {
       return document.getElementById('my-username').value.trim() || 'Human';
     }
@@ -1008,35 +1019,77 @@
       const room = rooms.find(r => r.name === roomName);
       if (!room) return;
 
+      const savedPwd = getSavedPassword(roomName);
+
       // If protected and no password saved in session, prompt
-      if (room.is_protected && !getSavedPassword(roomName)) {
-        pendingRoomToUnlock = room;
-        document.getElementById('pwd-modal-room-name').textContent = `Password required for #${room.name}`;
-        document.getElementById('room-password-input').value = '';
-        document.getElementById('pwd-error').classList.add('hidden');
-        document.getElementById('password-modal').classList.remove('hidden');
-        document.getElementById('room-password-input').focus();
+      if (room.is_protected && !savedPwd) {
+        promptPasswordModal(room, `Token ou Senha necessária para #${room.name}`);
         return;
       }
 
-      await loadRoomMessages(room, getSavedPassword(roomName));
+      const success = await loadRoomMessages(room, savedPwd);
+      if (!success && room.is_protected) {
+        // Saved token/password was rejected (expired, rotated, or invalid)
+        clearSavedPassword(roomName);
+        promptPasswordModal(room, `Token de acesso alterado para #${room.name}. Introduza o novo token:`, 'Acesso recusado (403): O token anterior é inválido ou foi alterado.');
+      }
+    }
+
+    function promptPasswordModal(room, customTitle = null, errorMsg = null) {
+      pendingRoomToUnlock = room;
+      document.getElementById('pwd-modal-room-name').textContent = customTitle || `Token ou Senha para #${room.name}`;
+      const input = document.getElementById('room-password-input');
+      input.value = '';
+      const errEl = document.getElementById('pwd-error');
+      if (errorMsg) {
+        errEl.textContent = errorMsg;
+        errEl.classList.remove('hidden');
+      } else {
+        errEl.classList.add('hidden');
+      }
+      document.getElementById('password-modal').classList.remove('hidden');
+      lucide.createIcons();
+      setTimeout(() => input.focus(), 60);
+    }
+
+    function promptChangeRoomPassword() {
+      if (!currentRoom) return;
+      promptPasswordModal(currentRoom, `Alterar / introduzir novo token de acesso para #${currentRoom.name}:`);
+    }
+
+    function togglePasswordVisibility(inputId, iconId) {
+      const input = document.getElementById(inputId);
+      const icon = document.getElementById(iconId);
+      if (!input) return;
+      if (input.type === 'password') {
+        input.type = 'text';
+        if (icon) icon.setAttribute('data-lucide', 'eye-off');
+      } else {
+        input.type = 'password';
+        if (icon) icon.setAttribute('data-lucide', 'eye');
+      }
+      lucide.createIcons();
     }
 
     async function submitPassword() {
       if (!pendingRoomToUnlock) return;
-      const pwd = document.getElementById('room-password-input').value;
+      const pwd = document.getElementById('room-password-input').value.trim();
       const room = pendingRoomToUnlock;
+      const errEl = document.getElementById('pwd-error');
 
       try {
         const success = await loadRoomMessages(room, pwd);
         if (success) {
           savePassword(room.name, pwd);
           closePasswordModal();
+          connectWebSocket(room.name);
         } else {
-          document.getElementById('pwd-error').classList.remove('hidden');
+          errEl.textContent = 'Token ou senha incorreta (403). Verifique e tente novamente.';
+          errEl.classList.remove('hidden');
         }
       } catch (err) {
-        document.getElementById('pwd-error').classList.remove('hidden');
+        errEl.textContent = 'Erro ao contactar servidor: ' + err.message;
+        errEl.classList.remove('hidden');
       }
     }
 
@@ -1049,7 +1102,10 @@
       try {
         const res = await fetch(`/api/rooms/${encodeURIComponent(room.name)}/messages?password=${encodeURIComponent(password)}&limit=500`);
         if (!res.ok) {
-          if (res.status === 403 || res.status === 401) return false;
+          if (res.status === 403 || res.status === 401) {
+            clearSavedPassword(room.name);
+            return false;
+          }
           throw new Error('Failed to fetch messages');
         }
         const data = await res.json();
@@ -1057,6 +1113,9 @@
         messages = data;
         lastSeenId = messages.length > 0 ? messages[messages.length - 1].id : 0;
         localStorage.setItem('active_room', room.name);
+        if (password) {
+          savePassword(room.name, password);
+        }
 
         // Update Header
         document.getElementById('current-room-name').textContent = '#' + room.name;
@@ -1711,7 +1770,19 @@
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (evt) => {
+        if (evt && (evt.code === 4403 || evt.code === 4003 || evt.code === 1008)) {
+          console.warn(`WebSocket fechado devido a erro de autenticação (${evt.code}): ${evt.reason}`);
+          document.getElementById('server-status').textContent = 'Autenticação necessária (403)';
+          document.getElementById('server-status').parentElement.querySelector('span').className = 'w-2 h-2 rounded-full bg-rose-500';
+          clearTimeout(reconnectTimer);
+          clearSavedPassword(roomName);
+          if (currentRoom && currentRoom.name.toLowerCase() === roomName.toLowerCase()) {
+            promptPasswordModal(currentRoom, `O token da sala #${roomName} foi alterado ou revogado. Introduza o novo token:`, 'Sessão terminada pelo servidor (4403 - Token inválido)');
+          }
+          return;
+        }
+
         document.getElementById('server-status').textContent = 'Reconnecting...';
         document.getElementById('server-status').parentElement.querySelector('span').className = 'w-2 h-2 rounded-full bg-amber-500';
         clearTimeout(reconnectTimer);
@@ -1729,7 +1800,16 @@
       try {
         const pwd = getSavedPassword(currentRoom.name);
         const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/messages?password=${encodeURIComponent(pwd)}&since_id=${lastSeenId}`);
-        if (res.ok) {
+        if (!res.ok) {
+          if ((res.status === 403 || res.status === 401) && currentRoom.is_protected) {
+            clearSavedPassword(currentRoom.name);
+            const modal = document.getElementById('password-modal');
+            if (modal && modal.classList.contains('hidden')) {
+              promptPasswordModal(currentRoom, `O token da sala #${currentRoom.name} expirou ou foi alterado. Insira o novo token:`, 'Acesso recusado (403). Insira o novo token:');
+            }
+          }
+          return;
+        }
           const newMsgs = await res.json();
           if (newMsgs && newMsgs.length > 0) {
             let added = false;
@@ -1747,7 +1827,6 @@
               renderMessages();
             }
           }
-        }
       } catch (e) {}
     }, 3500);
 
@@ -2246,6 +2325,11 @@
             isHumanAuthenticated = false;
             updateAuthUI(false);
             openAuthModal(() => handleSendMessage());
+            return;
+          }
+          if (res.status === 403 && currentRoom.is_protected && (err.error || '').toLowerCase().includes('password')) {
+            clearSavedPassword(currentRoom.name);
+            promptPasswordModal(currentRoom, `Token ou senha necessária para enviar mensagens em #${currentRoom.name}:`, 'Token inválido ou alterado');
             return;
           }
           alert('Error sending message: ' + (err.error || 'Access denied'));

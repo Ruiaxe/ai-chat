@@ -529,6 +529,7 @@ class ChatHub:
         question: str,
         options: list[str] | None = None,
         member_token: str = "",
+        password: str = "",
     ) -> dict[str, Any]:
         """Calls the human user for a decision with optional predefined choices."""
         opts = options or []
@@ -550,6 +551,7 @@ class ChatHub:
             sender=sender,
             content=content,
             role="agent",
+            password=password,
             member_token=member_token,
             message_type="decision_request",
             metadata=metadata,
@@ -633,6 +635,7 @@ class ChatHub:
         options: list[str],
         member_token: str = "",
         human_token: str = "",
+        password: str = "",
         role: str = "agent",
     ) -> dict[str, Any]:
         """Creates a poll and posts it to the room."""
@@ -667,6 +670,7 @@ class ChatHub:
             sender=creator,
             content=content,
             role=effective_role,
+            password=password,
             member_token=effective_tok,
             human_token=effective_ht,
             message_type="poll",
@@ -700,6 +704,7 @@ class ChatHub:
         is_human: bool = False,
         member_token: str = "",
         human_token: str = "",
+        password: str = "",
     ) -> dict[str, Any]:
         """Closes an active poll."""
         import secrets
@@ -734,6 +739,7 @@ class ChatHub:
             sender=closer,
             content=f"🏁 **[VOTAÇÃO ENCERRADA #{poll['id']}]**\n\n**{poll['question']}**\n\n**Resultado Final:**\n{results_str}\nTotal de votos: {poll['total_votes']}",
             role=role_to_use,
+            password=password,
             member_token=tok_to_use,
             human_token=ht_to_use,
         )

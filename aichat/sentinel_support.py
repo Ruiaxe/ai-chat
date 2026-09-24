@@ -24,7 +24,14 @@ ROOMS = [
 ]
 MY_NAMES = {"antigravity-hub", "antigravity", "maintenancebot"}
 BASE_URL = "http://127.0.0.1:8765"
-TIMEOUT_SECONDS = int(sys.argv[1]) if len(sys.argv) > 1 else 86400  # 24 hours max wait before heartbeat exit
+
+def _get_timeout() -> int:
+    for a in sys.argv[1:]:
+        if a.isdigit():
+            return int(a)
+    return 86400
+
+TIMEOUT_SECONDS = _get_timeout()  # Max wait before heartbeat exit in single-run mode
 POLL_INTERVAL = 2.0     # Check every 2 seconds
 MAX_ERROR_SECONDS = 600 # 10 minutes max consecutive connection failures before alerting
 
@@ -32,7 +39,10 @@ STATE_FILE = Path(__file__).resolve().parent.parent / "data" / ".sentinel_suppor
 
 
 def fetch_json(url: str, timeout: float = 5.0) -> list | dict | None:
-    req = urllib.request.Request(url, headers={"User-Agent": "SentinelSupport/2.0"})
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "SentinelSupport/2.1",
+        "X-Agent-Name": "SentinelSupport",
+    })
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
@@ -73,6 +83,7 @@ def save_state(last_ids: dict[str, int], seen_rx: dict[str, list[str]]) -> None:
 
 
 def main():
+    is_daemon = "--daemon" in sys.argv or "--continuous" in sys.argv
     saved_ids, seen_rx = load_state()
     last_ids = {}
     is_initial_baseline = False
@@ -86,10 +97,12 @@ def main():
         print(f"[Sentinel-Support] Initialized #{room} at last_id={last_ids[room]}", flush=True)
 
     start_time = time.time()
+    last_heartbeat_time = time.time()
     error_start_time: float | None = None
-    print(f"[Sentinel-Support v2.0] Active on {ROOMS} (poll interval: {POLL_INTERVAL}s)...", flush=True)
+    mode_str = "Continuous Daemon" if is_daemon else f"Single-run (timeout {TIMEOUT_SECONDS}s)"
+    print(f"[Sentinel-Support v2.1] Mode: {mode_str} | Active on {ROOMS} (poll interval: {POLL_INTERVAL}s)...", flush=True)
 
-    while time.time() - start_time < TIMEOUT_SECONDS:
+    while is_daemon or (time.time() - start_time < TIMEOUT_SECONDS):
         detected_events = []
         connection_failed = False
 
@@ -148,7 +161,8 @@ def main():
             elif time.time() - error_start_time > MAX_ERROR_SECONDS:
                 print(f"\n⚠️ [ALERTA SENTINEL] Servidor ai-chat inacessível há mais de {MAX_ERROR_SECONDS}s!", flush=True)
                 save_state(last_ids, seen_rx)
-                return 0
+                if not is_daemon:
+                    return 0
         else:
             error_start_time = None
 
@@ -159,7 +173,13 @@ def main():
             print("\n\n".join(detected_events), flush=True)
             print("="*70 + "\n", flush=True)
             save_state(last_ids, seen_rx)
-            return 0  # <--- Wake up Antigravity
+            if not is_daemon:
+                return 0  # <--- Wake up Antigravity in legacy single-run mode
+
+        # Periodic heartbeat log in daemon mode (every 5 minutes)
+        if is_daemon and (time.time() - last_heartbeat_time >= 300):
+            last_heartbeat_time = time.time()
+            print(f"[Sentinel-Support] Heartbeat OK: active on {ROOMS} (presence verified)", flush=True)
 
         time.sleep(POLL_INTERVAL)
 

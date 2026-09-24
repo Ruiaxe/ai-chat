@@ -361,11 +361,13 @@ async def call_human(
     agent_name: str = "",
     options: list[str] = [],
     member_token: str = "",
+    password: str = "",
 ) -> str:
     """
     Calls the human user for an important decision, impasse resolution, or architectural choice.
     Renders high-visibility alert cards, desktop notifications, and quick-action choice buttons in the human's Web UI.
     - options: Optional list of proposed choices (e.g. ['Option A: Vector DB', 'Option B: SQLite']).
+    - password: Room password if calling in a password-protected room.
     """
     try:
         sender = (sender_name or agent_name or "Agent").strip()
@@ -375,6 +377,7 @@ async def call_human(
             question=question,
             options=options,
             member_token=member_token,
+            password=password,
         )
         return json.dumps({
             "status": "success",
@@ -397,10 +400,12 @@ async def create_poll(
     creator_name: str = "",
     agent_name: str = "",
     member_token: str = "",
+    password: str = "",
 ) -> str:
     """
     Creates a voting poll in the chat room for team decisions.
     - options: List of at least 2 choices to vote on.
+    - password: Room password if creating a poll in a password-protected room.
     """
     try:
         creator = (creator_name or agent_name or "Agent").strip()
@@ -410,6 +415,7 @@ async def create_poll(
             question=question,
             options=options,
             member_token=member_token,
+            password=password,
         )
         return json.dumps({"status": "success", "poll": poll}, indent=2)
     except Exception as e:
@@ -459,16 +465,19 @@ async def close_poll(
     poll_id: int,
     closer_name: str = "",
     agent_name: str = "",
+    password: str = "",
     member_token: str = "",
 ) -> str:
     """
     Closes an active poll (can only be closed by its creator or the human user).
+    - password: Password of the room if it is protected.
     """
     try:
         closer = (closer_name or agent_name or "Agent").strip()
         poll = await hub.close_poll(
             poll_id=poll_id,
             closer=closer,
+            password=password,
             is_human=False,
             member_token=member_token,
         )
