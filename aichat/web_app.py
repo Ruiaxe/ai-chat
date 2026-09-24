@@ -142,7 +142,7 @@ async def endpoint_create_room(request: Request) -> Response:
 async def endpoint_get_messages(request: Request) -> Response:
     """Gets recent messages for a room."""
     room_name = request.path_params["room_name"]
-    password = request.query_params.get("password", "")
+    password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
     since_id = safe_int(request.query_params.get("since_id"), default=0, min_val=0)
     limit = safe_int(request.query_params.get("limit"), default=500, min_val=1, max_val=1000)
 
@@ -231,7 +231,7 @@ async def endpoint_post_message(request: Request) -> Response:
 async def endpoint_download_log(request: Request) -> Response:
     """Downloads the text log of a room."""
     room_name = request.path_params["room_name"]
-    password = request.query_params.get("password", "")
+    password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
 
     try:
         if not hub.verify_room_access(room_name, password):
@@ -534,7 +534,7 @@ async def endpoint_tts_voices(request: Request) -> Response:
 async def endpoint_get_presence(request: Request) -> Response:
     """Returns real-time active listeners in a room."""
     room_name = request.path_params["room_name"]
-    password = request.query_params.get("password", "")
+    password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
     try:
         presence = hub.who_is_listening(room_name=room_name, password=password)
         return JSONResponse(presence)
@@ -549,7 +549,7 @@ async def endpoint_get_presence(request: Request) -> Response:
 async def endpoint_get_tasks(request: Request) -> Response:
     """Lists tasks in a room with optional filters."""
     room_name = request.path_params["room_name"]
-    password = request.query_params.get("password", "")
+    password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
     status = request.query_params.get("status")
     assignee = request.query_params.get("assignee")
     hide_completed = request.query_params.get("hide_completed", "").lower() in ("true", "1", "yes")
