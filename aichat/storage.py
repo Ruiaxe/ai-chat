@@ -258,6 +258,26 @@ class ChatStorage:
             except sqlite3.OperationalError:
                 pass
 
+            # Schema upgrades for v2.7: Closed Registry and Status
+            try:
+                conn.execute("ALTER TABLE member_identities ADD COLUMN status TEXT NOT NULL DEFAULT 'active';")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE member_identities ADD COLUMN is_system INTEGER NOT NULL DEFAULT 0;")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_member_identities_token ON member_identities(token);")
+            except sqlite3.OperationalError:
+                pass
+
+            # Mark system identities
+            try:
+                conn.execute("UPDATE member_identities SET is_system = 1 WHERE member_name IN ('Antigravity-Hub', 'SentinelSupport');")
+            except sqlite3.OperationalError:
+                pass
+
     def create_room(
         self,
         name: str,
@@ -436,6 +456,8 @@ class ChatStorage:
     def verify_member_token(self, room_name: str, member_name: str, token: str) -> tuple[bool, str]:
         """
         Validates the member's authentication token.
+        Enforces closed registry and callsign uniqueness:
+        Unregistered senders cannot send messages.
         Returns (is_valid, error_msg).
         """
         import secrets
@@ -445,27 +467,30 @@ class ChatStorage:
 
         # Check global identity token
         cursor = conn.execute(
-            "SELECT token FROM member_identities WHERE member_name = ? COLLATE NOCASE",
+            "SELECT token, status FROM member_identities WHERE member_name = ? COLLATE NOCASE",
             (clean_member,),
         )
         id_row = cursor.fetchone()
-        global_token = id_row[0] if id_row and id_row[0] else ""
+        if not id_row:
+            # Check room-specific token fallback for test rooms or backward compatibility
+            cursor = conn.execute(
+                "SELECT token FROM members WHERE room_name = ? COLLATE NOCASE AND member_name = ? COLLATE NOCASE",
+                (clean_room, clean_member),
+            )
+            r_row = cursor.fetchone()
+            if not r_row or not r_row[0]:
+                return False, f"Acesso negado: Remetente '{clean_member}' não está registado no servidor. Registo fechado, duplicados não são permitidos."
+            global_token = r_row[0]
+            status = "active"
+        else:
+            global_token = id_row["token"] if isinstance(id_row, sqlite3.Row) else id_row[0]
+            status = (id_row["status"] if isinstance(id_row, sqlite3.Row) else (id_row[1] if len(id_row) > 1 else "active")) or "active"
 
-        # Check room-specific token
-        cursor = conn.execute(
-            "SELECT token FROM members WHERE room_name = ? COLLATE NOCASE AND member_name = ? COLLATE NOCASE",
-            (clean_room, clean_member),
-        )
-        row = cursor.fetchone()
-        room_token = row[0] if row and row[0] else ""
-
-        valid_tokens = [t for t in (global_token, room_token) if t]
-        if not valid_tokens:
-            # Unregistered sender without a registered token in the system
-            return True, ""
+        if status != "active":
+            return False, f"Acesso negado: O registo do agente '{clean_member}' está inativo ou reformado (status='{status}')."
 
         clean_token = (token or "").strip()
-        if clean_token and any(secrets.compare_digest(clean_token, t) for t in valid_tokens):
+        if clean_token and secrets.compare_digest(clean_token, global_token):
             return True, ""
         return False, f"Impersonation blocked: Remetente '{clean_member}' é uma identidade protegida. Token fornecido é inválido ou está em falta."
 
@@ -521,6 +546,188 @@ class ChatStorage:
                 (new_token, clean_member),
             )
         return new_token
+
+    def get_agent_identity_by_token(self, token: str) -> dict[str, Any] | None:
+        """Finds an active registered agent by their secret access token."""
+        clean_token = (token or "").strip()
+        if not clean_token:
+            return None
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT member_name, token, role, status, is_system, created_at FROM member_identities WHERE token = ? AND status = 'active'",
+            (clean_token,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            # Fallback check on room members table for test environments
+            cursor = conn.execute(
+                "SELECT member_name, token, role, joined_at FROM members WHERE token = ? LIMIT 1",
+                (clean_token,),
+            )
+            r_row = cursor.fetchone()
+            if r_row:
+                return {
+                    "callsign": r_row["member_name"],
+                    "token": r_row["token"],
+                    "role": r_row["role"],
+                    "status": "active",
+                    "is_system": False,
+                    "created_at": r_row["joined_at"],
+                }
+            return None
+        return {
+            "callsign": row["member_name"],
+            "token": row["token"],
+            "role": row["role"],
+            "status": row["status"],
+            "is_system": bool(row["is_system"]),
+            "created_at": row["created_at"],
+        }
+
+    def get_agent_identity_by_name(self, name: str) -> dict[str, Any] | None:
+        """Finds a registered agent by their callsign (case-insensitive)."""
+        clean_name = (name or "").strip()
+        if not clean_name:
+            return None
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT member_name, token, role, status, is_system, created_at FROM member_identities WHERE member_name = ? COLLATE NOCASE",
+            (clean_name,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "callsign": row["member_name"],
+            "token": row["token"],
+            "role": row["role"],
+            "status": row["status"],
+            "is_system": bool(row["is_system"]),
+            "created_at": row["created_at"],
+        }
+
+    def list_registered_agents(self, include_tokens: bool = False) -> list[dict[str, Any]]:
+        """Lists all registered agents in the closed registry."""
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT member_name, token, role, status, is_system, created_at FROM member_identities ORDER BY is_system DESC, member_name ASC"
+        )
+        agents = []
+        for row in cursor.fetchall():
+            item = {
+                "callsign": row["member_name"],
+                "role": row["role"],
+                "status": row["status"],
+                "is_system": bool(row["is_system"]),
+                "created_at": row["created_at"],
+            }
+            if include_tokens:
+                item["token"] = row["token"]
+            else:
+                item["token_hint"] = (row["token"][:6] + "...") if row["token"] else ""
+            agents.append(item)
+        return agents
+
+    def register_agent_admin(
+        self,
+        callsign: str,
+        token: str | None = None,
+        role: str = "agent",
+        is_system: bool = False,
+    ) -> dict[str, Any]:
+        """Provisions or activates a unique agent in the closed registry. Fails on duplicate callsigns."""
+        import secrets
+        clean_callsign = (callsign or "").strip()
+        if not clean_callsign:
+            raise ValueError("Callsign do agente não pode estar vazio.")
+        if len(clean_callsign) > 40:
+            raise ValueError("Callsign do agente não pode exceder 40 caracteres.")
+
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT member_name, token, status FROM member_identities WHERE member_name = ? COLLATE NOCASE",
+            (clean_callsign,),
+        )
+        row = cursor.fetchone()
+        if row:
+            if row["status"] == "active":
+                raise ValueError(f"Callsign '{clean_callsign}' já está em uso no servidor. Duplicados não são permitidos.")
+            final_token = token.strip() if token else row["token"]
+            now = datetime.now().isoformat()
+            with conn:
+                conn.execute(
+                    "UPDATE member_identities SET token = ?, status = 'active', role = ? WHERE member_name = ? COLLATE NOCASE",
+                    (final_token, role, clean_callsign),
+                )
+            return {
+                "callsign": clean_callsign,
+                "token": final_token,
+                "role": role,
+                "status": "active",
+                "is_system": is_system,
+                "created_at": now,
+            }
+
+        final_token = token.strip() if token else secrets.token_hex(16)
+        now = datetime.now().isoformat()
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO member_identities (member_name, token, role, status, is_system, created_at)
+                VALUES (?, ?, ?, 'active', ?, ?)
+                """,
+                (clean_callsign, final_token, role, 1 if is_system else 0, now),
+            )
+        return {
+            "callsign": clean_callsign,
+            "token": final_token,
+            "role": role,
+            "status": "active",
+            "is_system": is_system,
+            "created_at": now,
+        }
+
+    def rotate_agent_token_admin(self, callsign: str, new_token: str | None = None) -> str:
+        """Rotates an agent's secret token in the closed registry."""
+        import secrets
+        clean_callsign = (callsign or "").strip()
+        conn = self._get_connection()
+        cursor = conn.execute(
+            "SELECT member_name FROM member_identities WHERE member_name = ? COLLATE NOCASE",
+            (clean_callsign,),
+        )
+        if not cursor.fetchone():
+            raise ValueError(f"Agente com callsign '{clean_callsign}' não encontrado no registo.")
+        final_token = new_token.strip() if new_token else secrets.token_hex(16)
+        with conn:
+            conn.execute(
+                "UPDATE member_identities SET token = ? WHERE member_name = ? COLLATE NOCASE",
+                (final_token, clean_callsign),
+            )
+            conn.execute(
+                "UPDATE members SET token = ? WHERE member_name = ? COLLATE NOCASE",
+                (final_token, clean_callsign),
+            )
+        return final_token
+
+    def mask_tokens_in_text(self, text: str, human_token: str = "") -> str:
+        """
+        Data Loss Prevention (DLP):
+        Scans message text for any active secret tokens and redacts them with [REDACTED_TOKEN].
+        """
+        if not text:
+            return text
+        conn = self._get_connection()
+        cursor = conn.execute("SELECT token FROM member_identities WHERE status = 'active'")
+        tokens = {row[0] for row in cursor.fetchall() if row[0] and len(row[0]) >= 16}
+        if human_token and len(human_token) >= 16:
+            tokens.add(human_token.strip())
+
+        masked = text
+        for tok in tokens:
+            if tok in masked:
+                masked = masked.replace(tok, "[REDACTED_TOKEN]")
+        return masked
 
     def log_audit_event(
         self,

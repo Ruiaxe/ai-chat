@@ -248,6 +248,89 @@ class ChatHub:
             "member_token": new_token,
         }
 
+    def authenticate_agent(self, token: str, expected_callsign: str = "") -> dict[str, Any]:
+        """
+        Authenticates an agent token against the closed registry.
+        Returns identity dict: {"callsign": ..., "role": ..., "is_human": bool, "status": ...}.
+        Raises PermissionError if token is missing, invalid, or belongs to a different callsign.
+        """
+        import secrets
+        clean_token = (token or "").strip()
+        if not clean_token:
+            raise PermissionError("Acesso negado: Token de agente em falta. O acesso requer um agent_token aprovado no servidor.")
+
+        # Check if caller is authenticated human supervisor
+        if secrets.compare_digest(clean_token, self.human_token):
+            return {
+                "callsign": "Rui",
+                "role": "human",
+                "is_human": True,
+                "status": "active",
+                "is_system": True,
+            }
+
+        # Check registered agent
+        agent = self.storage.get_agent_identity_by_token(clean_token)
+        if not agent:
+            raise PermissionError("Acesso negado: Token de agente inválido ou não autorizado. Registo fechado, consulte o supervisor Rui.")
+
+        if expected_callsign:
+            clean_expected = expected_callsign.strip().lower()
+            if agent["callsign"].lower() != clean_expected:
+                raise PermissionError(f"Impersonation blocked: O token fornecido pertence a '{agent['callsign']}', não pode agir como '{expected_callsign}'.")
+
+        return {
+            "callsign": agent["callsign"],
+            "role": agent.get("role", "agent"),
+            "is_human": False,
+            "status": agent.get("status", "active"),
+            "is_system": agent.get("is_system", False),
+        }
+
+    def list_registered_agents(self, requester_token: str = "") -> list[dict[str, Any]]:
+        """Lists registered agents, revealing tokens only to the authenticated human supervisor."""
+        import secrets
+        is_supervisor = bool(requester_token and secrets.compare_digest(requester_token.strip(), self.human_token))
+        return self.storage.list_registered_agents(include_tokens=is_supervisor)
+
+    def register_agent_admin(
+        self,
+        callsign: str,
+        token: str | None = None,
+        role: str = "agent",
+        is_system: bool = False,
+        supervisor_token: str = "",
+    ) -> dict[str, Any]:
+        """Provisions a new unique agent in the closed registry. Restricted to supervisor."""
+        import secrets
+        clean_st = (supervisor_token or "").strip()
+        if not clean_st or not secrets.compare_digest(clean_st, self.human_token):
+            raise PermissionError("Acesso negado: Apenas o supervisor humano Rui pode registar novos agentes.")
+
+        clean_callsign = (callsign or "").strip()
+        if clean_callsign.lower() in self.RESERVED_HUMAN_NAMES:
+            raise ValueError(f"O nome '{clean_callsign}' está reservado para o utilizador humano. Agentes devem usar outro nome.")
+
+        res = self.storage.register_agent_admin(callsign=clean_callsign, token=token, role=role, is_system=is_system)
+        self.storage.log_audit_event("system", "Rui", "agent_register", "success", f"Registered agent '{callsign}'")
+        return res
+
+    def rotate_agent_token_admin(
+        self,
+        callsign: str,
+        new_token: str | None = None,
+        supervisor_token: str = "",
+    ) -> str:
+        """Rotates an agent's secret token in the closed registry. Restricted to supervisor."""
+        import secrets
+        clean_st = (supervisor_token or "").strip()
+        if not clean_st or not secrets.compare_digest(clean_st, self.human_token):
+            raise PermissionError("Acesso negado: Apenas o supervisor humano Rui pode rodar tokens de agentes.")
+
+        rotated = self.storage.rotate_agent_token_admin(callsign=callsign, new_token=new_token)
+        self.storage.log_audit_event("system", "Rui", "agent_token_rotate", "success", f"Rotated token for agent '{callsign}'")
+        return rotated
+
     def change_room_password(
         self,
         room_name: str,
@@ -389,6 +472,9 @@ class ChatHub:
         if not clean_content:
             raise ValueError("Message content cannot be empty.")
 
+        # Data Loss Prevention (DLP): Mask any active tokens in content before storing or broadcasting
+        clean_content = self.storage.mask_tokens_in_text(clean_content, human_token=self.human_token)
+
         room = self.storage.get_room(room_name)
         if not room:
             raise ValueError(f"Room '{room_name}' does not exist.")
@@ -425,11 +511,16 @@ class ChatHub:
             is_verified = True
         else:
             role = "agent"
-            valid, err = self.storage.verify_member_token(canonical_name, clean_sender, member_token)
-            if not valid:
-                raise PermissionError(err)
-            if valid and member_token:
+            if member_token:
+                ident = self.authenticate_agent(member_token, expected_callsign=clean_sender)
+                clean_sender = ident["callsign"]
                 is_verified = True
+            else:
+                valid, err = self.storage.verify_member_token(canonical_name, clean_sender, member_token)
+                if not valid:
+                    raise PermissionError(err)
+                if valid:
+                    is_verified = True
 
         # Save to database and log files
         msg = self.storage.add_message(

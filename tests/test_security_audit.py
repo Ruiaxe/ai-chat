@@ -25,6 +25,9 @@ class TestSecurityAuditVulnerabilities(unittest.IsolatedAsyncioTestCase):
         self.logs_dir = Path(self.temp_dir) / "logs"
         self.storage = ChatStorage(db_path=self.db_path, logs_dir=self.logs_dir)
         self.hub = ChatHub(storage=self.storage)
+        self.tokens = {}
+        for name in ["AgentA", "AgentB", "Subscriber", "Sender1", "Sender2", "AgentOne", "Alice", "PollAgent", "AdminAgent"]:
+            self.tokens[name.lower()] = self.storage.register_agent_admin(callsign=name, role="agent")["token"]
 
     def tearDown(self):
         self.storage.close()
@@ -117,8 +120,8 @@ class TestSecurityAuditVulnerabilities(unittest.IsolatedAsyncioTestCase):
         """Poll closer must be creator with valid member_token or authenticated human."""
         self.hub.create_room("poll-test-room")
         # Alice registers and creates poll
-        alice_join = self.hub.join_room("poll-test-room", "Alice", role="agent")
-        alice_token = alice_join["member_token"]
+        alice_token = self.tokens["alice"]
+        alice_join = self.hub.join_room("poll-test-room", "Alice", role="agent", member_token=alice_token)
         poll = await self.hub.create_poll("poll-test-room", "Alice", "Deploy?", ["Yes", "No"], member_token=alice_token)
         poll_id = poll["id"]
 
@@ -215,7 +218,7 @@ class TestSecurityAuditVulnerabilities(unittest.IsolatedAsyncioTestCase):
         self.hub.create_room("room-a")
         self.hub.create_room("room-b")
 
-        msg_a = await self.hub.send_message("room-a", "AgentA", "Message in A", role="agent")
+        msg_a = await self.hub.send_message("room-a", "AgentA", "Message in A", role="agent", member_token=self.tokens["agenta"])
         msg_id_a = msg_a["id"]
 
         # Attempt to react to msg_id_a while targeting room-b -> PermissionError
@@ -250,8 +253,8 @@ class TestSecurityAuditVulnerabilities(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.05)
 
         # Post messages to both rooms nearly simultaneously
-        await self.hub.send_message("sub-room-1", "Sender1", "Message 1", role="agent")
-        await self.hub.send_message("sub-room-2", "Sender2", "Message 2", role="agent")
+        await self.hub.send_message("sub-room-1", "Sender1", "Message 1", role="agent", member_token=self.tokens["sender1"])
+        await self.hub.send_message("sub-room-2", "Sender2", "Message 2", role="agent", member_token=self.tokens["sender2"])
 
         result = await asyncio.wait_for(wait_task, timeout=2.0)
         self.assertEqual(result["status"], "new_messages")

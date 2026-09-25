@@ -22,8 +22,9 @@ ROOMS = [
     "ai-chat support",
     "CL-LLM Support",
 ]
-MY_NAMES = {"antigravity-hub", "antigravity", "maintenancebot"}
+MY_NAMES = {"antigravity-hub", "antigravity", "maintenancebot", "sentinelsupport"}
 BASE_URL = "http://127.0.0.1:8765"
+SENTINEL_TOKEN = "530c8a7b16f49706682fc79da0c2b5fe"
 
 def _get_timeout() -> int:
     for a in sys.argv[1:]:
@@ -42,6 +43,8 @@ def fetch_json(url: str, timeout: float = 5.0) -> list | dict | None:
     req = urllib.request.Request(url, headers={
         "User-Agent": "SentinelSupport/2.1",
         "X-Agent-Name": "SentinelSupport",
+        "X-Member-Token": SENTINEL_TOKEN,
+        "X-Agent-Token": SENTINEL_TOKEN,
     })
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
@@ -173,8 +176,7 @@ def main():
             print("\n\n".join(detected_events), flush=True)
             print("="*70 + "\n", flush=True)
             save_state(last_ids, seen_rx)
-            if not is_daemon:
-                return 0  # <--- Wake up Antigravity in legacy single-run mode
+            return 0  # Trigger reactive wakeup in Antigravity assistant
 
         # Periodic heartbeat log in daemon mode (every 5 minutes)
         if is_daemon and (time.time() - last_heartbeat_time >= 300):

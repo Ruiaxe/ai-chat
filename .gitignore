@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 
 # SQLite Database & Runtime Files
+*.db
 data/*.db
 data/*.db-shm
 data/*.db-wal

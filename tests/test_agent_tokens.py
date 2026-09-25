@@ -1,0 +1,129 @@
+import asyncio
+import json
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+
+from aichat.hub import ChatHub
+from aichat.storage import ChatStorage
+from aichat.mcp_server import (
+    hub,
+    get_my_identity,
+    create_room,
+    list_rooms,
+    join_room,
+    send_message,
+    read_messages,
+    check_new_messages,
+    who_is_listening,
+)
+
+
+class TestAgentTokensAndClosedRegistry(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = Path(self.temp_dir) / 'test_agents.db'
+        self.logs_dir = Path(self.temp_dir) / 'logs'
+        self.storage = ChatStorage(db_path=self.db_path, logs_dir=self.logs_dir)
+        self.orig_storage = hub.storage
+        hub.storage = self.storage
+        self.hub = hub
+
+    def tearDown(self):
+        self.storage.close()
+        hub.storage = self.orig_storage
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_closed_registry_and_duplicate_rejection(self):
+        with self.assertRaises(PermissionError):
+            self.hub.register_agent_admin(callsign='Claude-1.5', supervisor_token='wrong_token')
+
+        res = self.hub.register_agent_admin(callsign='Claude-1.5', supervisor_token=self.hub.human_token)
+        self.assertEqual(res['callsign'], 'Claude-1.5')
+        token_1 = res['token']
+        self.assertTrue(len(token_1) > 10)
+
+        with self.assertRaises(ValueError) as ctx:
+            self.hub.register_agent_admin(callsign='Claude-1.5', supervisor_token=self.hub.human_token)
+        self.assertIn('já está em uso', str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx:
+            self.hub.register_agent_admin(callsign='claude-1.5', supervisor_token=self.hub.human_token)
+        self.assertIn('já está em uso', str(ctx.exception))
+
+        with self.assertRaises(ValueError) as ctx:
+            self.hub.register_agent_admin(callsign='Rui', supervisor_token=self.hub.human_token)
+        self.assertIn('reservado', str(ctx.exception))
+
+    async def test_mcp_requires_token_on_all_tools(self):
+        c_res = json.loads(create_room('pub-room'))
+        self.assertEqual(c_res['status'], 'error')
+        self.assertIn('Missing agent_token', c_res['error'])
+
+        reg = self.hub.register_agent_admin(callsign='Claude-1.5', supervisor_token=self.hub.human_token)
+        claude_token = reg['token']
+
+        c_res_ok = json.loads(create_room('pub-room', agent_token=claude_token))
+        self.assertEqual(c_res_ok['status'], 'success')
+
+        l_res = json.loads(list_rooms())
+        self.assertEqual(l_res['status'], 'error')
+        self.assertIn('Missing agent_token', l_res['error'])
+
+        l_res_ok = json.loads(list_rooms(agent_token=claude_token))
+        self.assertEqual(l_res_ok['status'], 'success')
+
+        chk_res = json.loads(check_new_messages('pub-room'))
+        self.assertEqual(chk_res['status'], 'error')
+        self.assertIn('Missing agent_token', chk_res['error'])
+
+        chk_res_ok = json.loads(check_new_messages('pub-room', agent_token=claude_token))
+        self.assertEqual(chk_res_ok['status'], 'success')
+
+    async def test_auto_binding_and_anti_impersonation(self):
+        reg1 = self.hub.register_agent_admin(callsign='Claude-1.5', supervisor_token=self.hub.human_token)
+        reg2 = self.hub.register_agent_admin(callsign='CL-Neural-Dev2', supervisor_token=self.hub.human_token)
+        create_room('work-room', agent_token=reg1['token'])
+
+        msg_res = json.loads(await send_message('work-room', 'Hello from official Claude', agent_token=reg1['token']))
+        self.assertEqual(msg_res['status'], 'success')
+        self.assertEqual(msg_res['sender'], 'Claude-1.5')
+        self.assertTrue(msg_res['is_verified'])
+
+        fake_res = json.loads(await send_message('work-room', 'I am dev', sender_name='CL-Neural-Dev2', agent_token=reg1['token']))
+        self.assertEqual(fake_res['status'], 'error')
+        self.assertIn('Impersonation blocked', fake_res['error'])
+
+        fake_rui = json.loads(await send_message('work-room', 'I am Rui', sender_name='Rui', agent_token=reg1['token']))
+        self.assertEqual(fake_rui['status'], 'error')
+        self.assertIn('Impersonation blocked', fake_rui['error'])
+
+    async def test_dlp_token_masking(self):
+        reg = self.hub.register_agent_admin(callsign='Claude-1.5', supervisor_token=self.hub.human_token)
+        claude_tok = reg['token']
+        create_room('chat-room', agent_token=claude_tok)
+
+        leaked_content = f'Olha aqui o meu token secreto: {claude_tok} e o do admin {self.hub.human_token}!'
+        msg_res = json.loads(await send_message('chat-room', leaked_content, agent_token=claude_tok))
+        self.assertEqual(msg_res['status'], 'success')
+
+        read_res = json.loads(read_messages('chat-room', agent_token=claude_tok))
+        stored_content = read_res['messages'][0]['content']
+        self.assertNotIn(claude_tok, stored_content)
+        self.assertNotIn(self.hub.human_token, stored_content)
+        self.assertIn('[REDACTED_TOKEN]', stored_content)
+
+    def test_get_my_identity_tool(self):
+        reg = self.hub.register_agent_admin(callsign='Claude-1.5', supervisor_token=self.hub.human_token)
+        claude_tok = reg['token']
+
+        ident_res = json.loads(get_my_identity(agent_token=claude_tok))
+        self.assertEqual(ident_res['status'], 'success')
+        self.assertEqual(ident_res['callsign'], 'Claude-1.5')
+        self.assertEqual(ident_res['role'], 'agent')
+        self.assertFalse(ident_res['is_human'])
+
+
+if __name__ == '__main__':
+    unittest.main()

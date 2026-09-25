@@ -147,14 +147,21 @@ async def endpoint_get_messages(request: Request) -> Response:
     limit = safe_int(request.query_params.get("limit"), default=500, min_val=1, max_val=1000)
 
     try:
-        # Record presence if User-Agent or header indicates Sentinel / agent
-        ua = request.headers.get("user-agent", "")
-        agent_header = request.headers.get("x-agent-name", "") or request.query_params.get("agent_name", "")
-        if agent_header:
-            hub.record_presence(room_name, agent_header.strip(), client="http_poll")
-        elif "sentinel" in ua.lower():
-            client_name = "SentinelSupport" if "support" in ua.lower() else "Sentinel"
-            hub.record_presence(room_name, client_name, client="sentinel")
+        # Record presence only for verified tokens or authenticated human session
+        agent_tok = (
+            request.headers.get("x-agent-token", "") or
+            request.headers.get("x-member-token", "") or
+            request.query_params.get("agent_token", "") or
+            request.query_params.get("token", "")
+        ).strip()
+        if agent_tok:
+            try:
+                ident = hub.authenticate_agent(agent_tok)
+                hub.record_presence(room_name, ident["callsign"], client="http_poll", is_human=ident.get("is_human", False))
+            except Exception:
+                pass
+        elif is_authenticated_human(request):
+            hub.record_presence(room_name, hub.human_name, client="web_ui", is_human=True)
 
         messages = hub.read_messages(
             room_name=room_name,
@@ -822,6 +829,60 @@ async def endpoint_reorder_tasks(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+# --- Agent Registry Management Endpoints (v2.7) ---
+
+async def endpoint_list_agents(request: Request) -> Response:
+    """Lists registered agents. Secret tokens are only exposed to the authenticated human supervisor."""
+    is_human = is_authenticated_human(request)
+    agents = hub.list_registered_agents(requester_token=hub.human_token if is_human else "")
+    return JSONResponse({"status": "success", "count": len(agents), "agents": agents})
+
+
+async def endpoint_register_agent(request: Request) -> Response:
+    """Provisions a new unique agent callsign in the closed registry. Restricted to supervisor Rui."""
+    if not is_authenticated_human(request):
+        return JSONResponse({"error": "Acesso negado: Apenas o supervisor humano Rui pode registar agentes."}, status_code=403)
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    callsign = (data.get("callsign") or "").strip()
+    if not callsign:
+        return JSONResponse({"error": "callsign is required"}, status_code=400)
+    role = (data.get("role") or "agent").strip()
+    token = (data.get("token") or "").strip() or None
+    is_system = bool(data.get("is_system", False))
+
+    try:
+        res = hub.register_agent_admin(
+            callsign=callsign,
+            token=token,
+            role=role,
+            is_system=is_system,
+            supervisor_token=hub.human_token,
+        )
+        return JSONResponse({"status": "success", "agent": res}, status_code=201)
+    except (ValueError, PermissionError) as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_rotate_agent_token(request: Request) -> Response:
+    """Rotates an agent's secret token in the closed registry. Restricted to supervisor Rui."""
+    if not is_authenticated_human(request):
+        return JSONResponse({"error": "Acesso negado: Apenas o supervisor humano Rui pode rodar tokens de agentes."}, status_code=403)
+    callsign = request.path_params["callsign"]
+    try:
+        new_tok = hub.rotate_agent_token_admin(callsign=callsign, supervisor_token=hub.human_token)
+        return JSONResponse({"status": "success", "callsign": callsign, "agent_token": new_tok})
+    except (ValueError, PermissionError) as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # --- WebSocket Endpoint ---
 
 async def websocket_room_endpoint(websocket: WebSocket) -> None:
@@ -918,6 +979,9 @@ def create_app() -> Starlette:
         Route("/api/rooms/{room_name}/kick", endpoint=endpoint_kick_member, methods=["POST"]),
         Route("/api/rooms/{room_name}/audit", endpoint=endpoint_get_audit, methods=["GET"]),
         Route("/api/rooms/{room_name}/presence", endpoint=endpoint_get_presence, methods=["GET"]),
+        Route("/api/agents", endpoint=endpoint_list_agents, methods=["GET"]),
+        Route("/api/agents", endpoint=endpoint_register_agent, methods=["POST"]),
+        Route("/api/agents/{callsign}/rotate", endpoint=endpoint_rotate_agent_token, methods=["POST"]),
         Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_get_tasks, methods=["GET"]),
         Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_create_task, methods=["POST"]),
         Route("/api/tasks/{task_id:int}", endpoint=endpoint_update_task, methods=["PATCH", "POST"]),
