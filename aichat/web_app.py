@@ -3,9 +3,13 @@ import json
 from pathlib import Path
 import secrets
 from typing import Any
+from urllib.parse import urlparse
 
 from starlette.applications import Starlette
 from starlette.endpoints import WebSocketEndpoint
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route, WebSocketRoute
@@ -32,24 +36,75 @@ def safe_int(val: Any, default: int = 0, min_val: int | None = None, max_val: in
     return res
 
 
+def is_same_origin(origin_str: str, request_or_ws: Any) -> bool:
+    """Verifies that the origin header matches the server's own origin."""
+    if not origin_str:
+        return True
+    try:
+        parsed = urlparse(origin_str)
+        origin_netloc = (parsed.netloc or "").lower()
+        req_netloc = (request_or_ws.url.netloc or "").lower()
+        if not origin_netloc:
+            return False
+        # Exact match of host & port
+        if origin_netloc == req_netloc:
+            return True
+        # Allow testserver during unit testing
+        if origin_netloc in ("testserver", "testserver:80") and req_netloc in ("testserver", "testserver:80"):
+            return True
+        # Match port for loopback aliases (127.0.0.1 and localhost)
+        req_port = request_or_ws.url.port or (443 if request_or_ws.url.scheme == "https" else 80)
+        origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        if origin_port == req_port and parsed.hostname in ("127.0.0.1", "localhost") and request_or_ws.url.hostname in ("127.0.0.1", "localhost"):
+            return True
+        return False
+    except Exception:
+        return False
+
+
+class SecurityHardeningMiddleware(BaseHTTPMiddleware):
+    """Enforces strict Origin validation and Content-Type requirements against CSRF/DNS-rebinding."""
+
+    async def dispatch(self, request: Request, call_next):
+        # 1. Validate Origin header on state-modifying requests
+        if request.method in ("POST", "PATCH", "DELETE", "PUT"):
+            origin = request.headers.get("origin", "").strip()
+            if origin and not is_same_origin(origin, request):
+                return JSONResponse({"error": "Forbidden: Cross-origin request rejected"}, status_code=403)
+
+            # 2. Content-Type validation for JSON API endpoints
+            path = request.url.path
+            if request.method in ("POST", "PATCH") and path.startswith("/api/") and not path.startswith("/api/tts"):
+                content_len = request.headers.get("content-length", "0")
+                if content_len != "0":
+                    content_type = request.headers.get("content-type", "").lower()
+                    if not content_type or "application/json" not in content_type:
+                        return JSONResponse(
+                            {"error": f"Unsupported Media Type: expected application/json, got '{content_type}'"},
+                            status_code=415
+                        )
+
+        return await call_next(request)
+
+
 def is_authenticated_human(request: Request) -> bool:
-    """Verifies if request originates from authenticated human via HttpOnly session cookie or header."""
+    """Verifies if request originates from authenticated human via session cookie, header, or session ID."""
     cookie_token = request.cookies.get("human_session", "").strip()
     header_token = request.headers.get("X-Human-Token", "").strip()
     return bool(
-        (cookie_token and secrets.compare_digest(cookie_token, hub.human_token)) or
+        (cookie_token and (secrets.compare_digest(cookie_token, hub.human_token) or hub.verify_human_session(cookie_token))) or
         (header_token and secrets.compare_digest(header_token, hub.human_token))
     )
 
 
-def set_human_session_cookie(response: Response, token: str) -> None:
-    """Sets a persistent HttpOnly cookie for human authentication (30 days validity)."""
+def set_human_session_cookie(response: Response, session_val: str) -> None:
+    """Sets a persistent HttpOnly cookie with SameSite=Strict for human authentication."""
     response.set_cookie(
         key="human_session",
-        value=token,
+        value=session_val,
         max_age=86400 * 30,
         httponly=True,
-        samesite="lax",
+        samesite="strict",
         path="/",
     )
 
@@ -57,12 +112,15 @@ def set_human_session_cookie(response: Response, token: str) -> None:
 # --- HTTP Endpoints ---
 
 async def endpoint_index(request: Request) -> Response:
-    """Serves the Web UI HTML application. Authenticates session via ?auth= query param."""
+    """Serves the Web UI HTML application. Authenticates session via ?auth= query param (single-use code or token)."""
     auth_param = request.query_params.get("auth", "").strip()
-    if auth_param and secrets.compare_digest(auth_param, hub.human_token):
-        response = RedirectResponse(url="/", status_code=303)
-        set_human_session_cookie(response, hub.human_token)
-        return response
+    if auth_param:
+        is_valid = hub.consume_one_time_code(auth_param) or secrets.compare_digest(auth_param, hub.human_token)
+        if is_valid:
+            response = RedirectResponse(url="/", status_code=303)
+            session_id = hub.create_human_session()
+            set_human_session_cookie(response, session_id)
+            return response
 
     if INDEX_HTML.exists():
         html = INDEX_HTML.read_text(encoding="utf-8")
@@ -80,7 +138,7 @@ async def endpoint_auth_status(request: Request) -> Response:
 
 
 async def endpoint_auth_login(request: Request) -> Response:
-    """Authenticates human user with token, setting persistent session cookie."""
+    """Authenticates human user with token or one-time code, setting persistent session cookie."""
     try:
         data = await request.json()
     except Exception:
@@ -90,20 +148,26 @@ async def endpoint_auth_login(request: Request) -> Response:
     if not token:
         return JSONResponse({"error": "Token is required"}, status_code=400)
 
-    if not secrets.compare_digest(token, hub.human_token):
+    is_valid = secrets.compare_digest(token, hub.human_token) or hub.consume_one_time_code(token)
+    if not is_valid:
         return JSONResponse({"error": "Token inválido. Verifique a credencial de acesso humano."}, status_code=401)
 
+    session_id = hub.create_human_session()
     response = JSONResponse({
         "success": True,
         "message": "Autenticado com sucesso",
         "human_name": hub.human_name,
+        "session_id": session_id,
     })
-    set_human_session_cookie(response, hub.human_token)
+    set_human_session_cookie(response, session_id)
     return response
 
 
 async def endpoint_auth_logout(request: Request) -> Response:
-    """Clears human session cookie."""
+    """Clears human session cookie and invalidates session."""
+    cookie_token = request.cookies.get("human_session", "").strip()
+    if cookie_token:
+        hub.invalidate_human_session(cookie_token)
     response = JSONResponse({"success": True, "message": "Sessão terminada"})
     response.delete_cookie(key="human_session", path="/")
     return response
@@ -903,15 +967,21 @@ async def endpoint_rotate_agent_token(request: Request) -> Response:
 # --- WebSocket Endpoint ---
 
 async def websocket_room_endpoint(websocket: WebSocket) -> None:
-    """Real-time WebSocket handler for chat rooms, validating room password and access."""
+    """Real-time WebSocket handler for chat rooms, validating origin, room password, and access."""
     room_name = websocket.path_params["room_name"]
     password = websocket.query_params.get("password", "")
 
-    # Check if human is authenticated via cookie or query param
+    # D2: Validate WebSocket origin
+    origin = websocket.headers.get("origin", "").strip()
+    if origin and not is_same_origin(origin, websocket):
+        await websocket.close(code=4403, reason="Forbidden: Cross-origin WebSocket rejected")
+        return
+
+    # Check if human is authenticated via cookie, session ID, or query param
     cookie_token = websocket.cookies.get("human_session", "").strip()
     param_token = websocket.query_params.get("human_token", "").strip()
     is_human = bool(
-        (cookie_token and secrets.compare_digest(cookie_token, hub.human_token)) or
+        (cookie_token and (secrets.compare_digest(cookie_token, hub.human_token) or hub.verify_human_session(cookie_token))) or
         (param_token and secrets.compare_digest(param_token, hub.human_token))
     )
 
@@ -965,8 +1035,13 @@ async def app_lifespan(app: Starlette):
         yield
 
 
-def create_app() -> Starlette:
-    """Builds and returns the combined Starlette ASGI application."""
+def create_app(allowed_hosts: list[str] | None = None) -> Starlette:
+    """Builds and returns the combined Starlette ASGI application with security middleware."""
+    if allowed_hosts is None:
+        allowed_hosts = ["127.0.0.1", "localhost", "testserver"]
+    else:
+        allowed_hosts = [h.split(":")[0] for h in allowed_hosts]
+
     # FastMCP SSE app routes (/sse, /messages)
     mcp_sse = mcp.sse_app()
     # FastMCP Streamable HTTP app routes (/mcp)
@@ -1020,4 +1095,9 @@ def create_app() -> Starlette:
         *mcp_http.routes,
     ]
 
-    return Starlette(debug=False, routes=routes, lifespan=app_lifespan)
+    middleware = [
+        Middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts),
+        Middleware(SecurityHardeningMiddleware),
+    ]
+
+    return Starlette(debug=False, routes=routes, middleware=middleware, lifespan=app_lifespan)

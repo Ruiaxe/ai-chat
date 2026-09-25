@@ -815,7 +815,7 @@ class TestWebAppAndApi(unittest.TestCase):
         self.assertTrue(res_login.json()["success"])
         self.assertIn("human_session", res_login.headers.get("set-cookie", ""))
         self.assertIn("max-age=", res_login.headers.get("set-cookie", "").lower())
-        self.assertIn("samesite=lax", res_login.headers.get("set-cookie", "").lower())
+        self.assertIn("samesite=strict", res_login.headers.get("set-cookie", "").lower())
 
         # 4. Check status with cookie
         res_auth = self.client.get("/api/auth/status", cookies={"human_session": hub.human_token})

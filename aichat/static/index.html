@@ -7,11 +7,11 @@
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Marked for Markdown rendering -->
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
   <!-- DOMPurify for HTML sanitization (XSS protection) -->
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
   <!-- Lucide Icons -->
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://unpkg.com/lucide@0.378.0/dist/umd/lucide.min.js"></script>
   <style>
     /* Custom scrollbar */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -439,6 +439,7 @@
           </button>
         </div>
         <p id="pwd-error" class="text-xs text-rose-400 mt-1.5 hidden">Token ou senha incorreta. Tente novamente.</p>
+        <p class="text-[11px] text-slate-500 mt-2">Nota: Protege contra envios na sala errada; não impede agentes locais com acesso ao sistema de lerem a sala.</p>
       </div>
       <div class="flex justify-end space-x-2 pt-2">
         <button onclick="closePasswordModal()" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium">Cancelar</button>
@@ -1324,11 +1325,20 @@
           : (isHuman ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-slate-800 text-slate-400 border-slate-700');
         const roleLabel = isAgent ? '🤖 Agent' : (isHuman ? '👤 Human' : '📢 System');
         const verifiedBadge = msg.is_verified 
-          ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 flex-shrink-0" title="Identidade verificada via token"><i data-lucide="shield-check" class="w-3 h-3"></i>Verificado</span>`
+          ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 flex-shrink-0" title="Token de identidade (anti-engano, não é segurança)"><i data-lucide="shield-check" class="w-3 h-3"></i>Verificado</span>`
           : '';
 
-        const rawHtml = marked.parse(msg.content);
-        const parsedContent = (typeof DOMPurify !== 'undefined') ? DOMPurify.sanitize(rawHtml) : rawHtml;
+        let parsedContent = '';
+        if (typeof DOMPurify !== 'undefined' && typeof marked !== 'undefined') {
+          try {
+            parsedContent = DOMPurify.sanitize(marked.parse(msg.content));
+          } catch (e) {
+            parsedContent = '<pre class="whitespace-pre-wrap font-sans text-xs">' + escapeHtml(msg.content) + '</pre>';
+          }
+        } else {
+          // Fail-closed: Never render unescaped HTML if DOMPurify is missing or blocked
+          parsedContent = '<pre class="whitespace-pre-wrap font-sans text-xs">' + escapeHtml(msg.content) + '</pre>';
+        }
 
         // Decision Request Card
         let decisionHtml = '';

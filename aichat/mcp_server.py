@@ -7,8 +7,6 @@ from mcp.server.fastmcp import FastMCP, Context
 from aichat.hub import ChatHub
 
 mcp = FastMCP("ai-chat-room")
-# Allow local MCP connections without strict host-header rejections
-mcp.settings.transport_security.enable_dns_rebinding_protection = False
 hub = ChatHub()
 
 

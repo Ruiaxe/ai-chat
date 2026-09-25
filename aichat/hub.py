@@ -54,6 +54,56 @@ class ChatHub:
             except Exception:
                 pass
 
+        # Human session management and ephemeral one-time auth codes (D5)
+        self._one_time_auth_codes: dict[str, float] = {}  # code -> expiry_ts
+        self._human_sessions: dict[str, float] = {}       # session_id -> expiry_ts
+
+    def generate_one_time_auth_code(self, expiry_seconds: int = 300) -> str:
+        """Generates a secure ephemeral single-use auth code for login without master token."""
+        code = secrets.token_hex(16)
+        now = time.time()
+        # Clean expired
+        self._one_time_auth_codes = {c: exp for c, exp in self._one_time_auth_codes.items() if exp > now}
+        self._one_time_auth_codes[code] = now + expiry_seconds
+        return code
+
+    def consume_one_time_code(self, code: str) -> bool:
+        """Validates and immediately consumes a single-use auth code."""
+        clean_code = (code or "").strip()
+        if not clean_code:
+            return False
+        now = time.time()
+        expiry = self._one_time_auth_codes.pop(clean_code, None)
+        if expiry is not None and expiry > now:
+            return True
+        return False
+
+    def create_human_session(self, ttl_seconds: int = 86400 * 30) -> str:
+        """Creates an ephemeral session ID for an authenticated human browser session."""
+        session_id = secrets.token_hex(32)
+        now = time.time()
+        # Clean expired
+        self._human_sessions = {s: exp for s, exp in self._human_sessions.items() if exp > now}
+        self._human_sessions[session_id] = now + ttl_seconds
+        return session_id
+
+    def verify_human_session(self, session_id: str) -> bool:
+        """Checks if a session ID belongs to a currently active human session."""
+        clean_id = (session_id or "").strip()
+        if not clean_id:
+            return False
+        now = time.time()
+        expiry = self._human_sessions.get(clean_id)
+        if expiry and expiry > now:
+            return True
+        return False
+
+    def invalidate_human_session(self, session_id: str) -> None:
+        """Invalidates an active human session upon logout."""
+        clean_id = (session_id or "").strip()
+        if clean_id:
+            self._human_sessions.pop(clean_id, None)
+
     def _hash_password(self, password: str, salt: str | None = None) -> tuple[str, str]:
         """Generates salted SHA-256 hash for a password."""
         if not salt:
