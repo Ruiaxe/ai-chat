@@ -1,18 +1,21 @@
 import asyncio
 import json
+import os
 from pathlib import Path
 import secrets
+import sys
 from typing import Any
 from urllib.parse import urlparse
 
 from starlette.applications import Starlette
+from starlette.datastructures import Headers
 from starlette.endpoints import WebSocketEndpoint
 from starlette.middleware import Middleware
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route, WebSocketRoute
+from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 import edge_tts
@@ -36,63 +39,106 @@ def safe_int(val: Any, default: int = 0, min_val: int | None = None, max_val: in
     return res
 
 
-def is_same_origin(origin_str: str, request_or_ws: Any) -> bool:
+def is_same_origin_scope(origin_str: str, scope: Scope) -> bool:
     """Verifies that the origin header matches the server's own origin."""
     if not origin_str:
         return True
     try:
         parsed = urlparse(origin_str)
         origin_netloc = (parsed.netloc or "").lower()
-        req_netloc = (request_or_ws.url.netloc or "").lower()
         if not origin_netloc:
             return False
+
+        headers = Headers(scope=scope)
+        host_header = (headers.get("host") or "").lower()
+        if not host_header:
+            server = scope.get("server")
+            if server:
+                host_header = f"{server[0]}:{server[1]}"
+
         # Exact match of host & port
-        if origin_netloc == req_netloc:
+        if origin_netloc == host_header:
             return True
-        # Allow testserver during unit testing
-        if origin_netloc in ("testserver", "testserver:80") and req_netloc in ("testserver", "testserver:80"):
+
+        # Allow testserver ONLY during automated test runs
+        is_testing = "unittest" in sys.modules or "pytest" in sys.modules or os.environ.get("AICHAT_TESTING") == "1"
+        if is_testing and origin_netloc in ("testserver", "testserver:80") and host_header in ("testserver", "testserver:80"):
             return True
-        # Match port for loopback aliases (127.0.0.1 and localhost)
-        req_port = request_or_ws.url.port or (443 if request_or_ws.url.scheme == "https" else 80)
-        origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        if origin_port == req_port and parsed.hostname in ("127.0.0.1", "localhost") and request_or_ws.url.hostname in ("127.0.0.1", "localhost"):
+
+        # Match loopback aliases (127.0.0.1 and localhost) with matching port
+        parsed_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        host_port = 80
+        host_name = host_header
+        if ":" in host_header:
+            host_name, port_str = host_header.split(":", 1)
+            try:
+                host_port = int(port_str)
+            except ValueError:
+                pass
+        else:
+            host_port = 443 if scope.get("scheme") == "https" else 80
+
+        if parsed_port == host_port and parsed.hostname in ("127.0.0.1", "localhost") and host_name in ("127.0.0.1", "localhost"):
             return True
+
         return False
     except Exception:
         return False
 
 
-class SecurityHardeningMiddleware(BaseHTTPMiddleware):
-    """Enforces strict Origin validation and Content-Type requirements against CSRF/DNS-rebinding."""
+def is_same_origin(origin_str: str, request_or_ws: Any) -> bool:
+    """Helper delegating to is_same_origin_scope using request or websocket scope."""
+    scope = getattr(request_or_ws, "scope", None)
+    if scope is not None:
+        return is_same_origin_scope(origin_str, scope)
+    return False
 
-    async def dispatch(self, request: Request, call_next):
-        # 1. Validate Origin header on state-modifying requests
-        if request.method in ("POST", "PATCH", "DELETE", "PUT"):
-            origin = request.headers.get("origin", "").strip()
-            if origin and not is_same_origin(origin, request):
-                return JSONResponse({"error": "Forbidden: Cross-origin request rejected"}, status_code=403)
 
-            # 2. Content-Type validation for JSON API endpoints
-            path = request.url.path
-            if request.method in ("POST", "PATCH") and path.startswith("/api/") and not path.startswith("/api/tts"):
-                content_len = request.headers.get("content-length", "0")
-                if content_len != "0":
-                    content_type = request.headers.get("content-type", "").lower()
-                    if not content_type or "application/json" not in content_type:
-                        return JSONResponse(
-                            {"error": f"Unsupported Media Type: expected application/json, got '{content_type}'"},
-                            status_code=415
-                        )
+class SecurityHardeningMiddleware:
+    """Pure ASGI middleware enforcing strict Origin validation and Content-Type requirements against CSRF/DNS-rebinding without interfering with SSE streams or WebSockets."""
 
-        return await call_next(request)
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            method = scope.get("method", "").upper()
+            if method in ("POST", "PATCH", "DELETE", "PUT"):
+                headers = Headers(scope=scope)
+
+                # 1. Validate Origin header on state-modifying requests
+                origin = headers.get("origin", "").strip()
+                if origin and not is_same_origin_scope(origin, scope):
+                    response = JSONResponse({"error": "Forbidden: Cross-origin request rejected"}, status_code=403)
+                    await response(scope, receive, send)
+                    return
+
+                # 2. Content-Type validation for JSON API endpoints
+                path = scope.get("path", "")
+                if method in ("POST", "PATCH") and path.startswith("/api/") and not path.startswith("/api/tts"):
+                    raw_ct = headers.get("content-type", "").strip()
+                    main_ct = raw_ct.split(";")[0].strip().lower() if raw_ct else ""
+                    content_len_str = headers.get("content-length", "").strip()
+                    is_chunked = headers.get("transfer-encoding", "").lower() == "chunked"
+                    has_body = is_chunked or (content_len_str and content_len_str != "0")
+                    if has_body or raw_ct:
+                        if main_ct != "application/json":
+                            response = JSONResponse(
+                                {"error": f"Unsupported Media Type: expected application/json, got '{raw_ct}'"},
+                                status_code=415
+                            )
+                            await response(scope, receive, send)
+                            return
+
+        await self.app(scope, receive, send)
 
 
 def is_authenticated_human(request: Request) -> bool:
-    """Verifies if request originates from authenticated human via session cookie, header, or session ID."""
+    """Verifies if request originates from authenticated human via valid session cookie or X-Human-Token header."""
     cookie_token = request.cookies.get("human_session", "").strip()
     header_token = request.headers.get("X-Human-Token", "").strip()
     return bool(
-        (cookie_token and (secrets.compare_digest(cookie_token, hub.human_token) or hub.verify_human_session(cookie_token))) or
+        (cookie_token and hub.verify_human_session(cookie_token)) or
         (header_token and secrets.compare_digest(header_token, hub.human_token))
     )
 
@@ -112,11 +158,10 @@ def set_human_session_cookie(response: Response, session_val: str) -> None:
 # --- HTTP Endpoints ---
 
 async def endpoint_index(request: Request) -> Response:
-    """Serves the Web UI HTML application. Authenticates session via ?auth= query param (single-use code or token)."""
+    """Serves the Web UI HTML application. Authenticates session via ?auth= query param (single-use code only)."""
     auth_param = request.query_params.get("auth", "").strip()
     if auth_param:
-        is_valid = hub.consume_one_time_code(auth_param) or secrets.compare_digest(auth_param, hub.human_token)
-        if is_valid:
+        if hub.consume_one_time_code(auth_param):
             response = RedirectResponse(url="/", status_code=303)
             session_id = hub.create_human_session()
             set_human_session_cookie(response, session_id)
@@ -157,7 +202,6 @@ async def endpoint_auth_login(request: Request) -> Response:
         "success": True,
         "message": "Autenticado com sucesso",
         "human_name": hub.human_name,
-        "session_id": session_id,
     })
     set_human_session_cookie(response, session_id)
     return response
@@ -977,12 +1021,12 @@ async def websocket_room_endpoint(websocket: WebSocket) -> None:
         await websocket.close(code=4403, reason="Forbidden: Cross-origin WebSocket rejected")
         return
 
-    # Check if human is authenticated via cookie, session ID, or query param
+    # Check if human is authenticated via valid session cookie or X-Human-Token header
     cookie_token = websocket.cookies.get("human_session", "").strip()
-    param_token = websocket.query_params.get("human_token", "").strip()
+    header_token = websocket.headers.get("x-human-token", "").strip()
     is_human = bool(
-        (cookie_token and (secrets.compare_digest(cookie_token, hub.human_token) or hub.verify_human_session(cookie_token))) or
-        (param_token and secrets.compare_digest(param_token, hub.human_token))
+        (cookie_token and hub.verify_human_session(cookie_token)) or
+        (header_token and secrets.compare_digest(header_token, hub.human_token))
     )
 
     if not is_human:
@@ -1038,7 +1082,8 @@ async def app_lifespan(app: Starlette):
 def create_app(allowed_hosts: list[str] | None = None) -> Starlette:
     """Builds and returns the combined Starlette ASGI application with security middleware."""
     if allowed_hosts is None:
-        allowed_hosts = ["127.0.0.1", "localhost", "testserver"]
+        is_testing = "unittest" in sys.modules or "pytest" in sys.modules or os.environ.get("AICHAT_TESTING") == "1"
+        allowed_hosts = ["127.0.0.1", "localhost"] + (["testserver"] if is_testing else [])
     else:
         allowed_hosts = [h.split(":")[0] for h in allowed_hosts]
 

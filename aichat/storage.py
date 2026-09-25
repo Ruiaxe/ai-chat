@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -214,6 +215,23 @@ class ChatStorage:
                 CREATE INDEX IF NOT EXISTS idx_audit_room 
                 ON room_audit_log(room_name, created_at);
             """)
+
+            # Human Sessions table (v2.7)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS human_sessions (
+                    session_hash TEXT PRIMARY KEY,
+                    expires_at REAL NOT NULL,
+                    created_at REAL NOT NULL
+                );
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sessions_expires 
+                ON human_sessions(expires_at);
+            """)
+            try:
+                conn.execute("DELETE FROM human_sessions WHERE expires_at <= ?;", (time.time(),))
+            except Exception:
+                pass
 
             # Auto-migrations for new features
             try:
@@ -1588,3 +1606,40 @@ class ChatStorage:
             except Exception:
                 pass
         return f"No transcript available for room '{room_name}'."
+
+    def save_human_session(self, session_hash: str, expires_at: float, created_at: float) -> None:
+        """Stores or replaces a hashed human session in SQLite."""
+        conn = self._get_connection()
+        with conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO human_sessions (session_hash, expires_at, created_at) VALUES (?, ?, ?)",
+                (session_hash, expires_at, created_at),
+            )
+
+    def verify_human_session(self, session_hash: str) -> bool:
+        """Checks if a session hash exists and has not expired."""
+        conn = self._get_connection()
+        now = time.time()
+        cur = conn.execute("SELECT expires_at FROM human_sessions WHERE session_hash = ?", (session_hash,))
+        row = cur.fetchone()
+        if row is None:
+            return False
+        if row["expires_at"] > now:
+            return True
+        # Expired: clean up
+        with conn:
+            conn.execute("DELETE FROM human_sessions WHERE session_hash = ?", (session_hash,))
+        return False
+
+    def delete_human_session(self, session_hash: str) -> None:
+        """Deletes a human session upon logout."""
+        conn = self._get_connection()
+        with conn:
+            conn.execute("DELETE FROM human_sessions WHERE session_hash = ?", (session_hash,))
+
+    def cleanup_expired_sessions(self) -> None:
+        """Removes all expired sessions from database."""
+        conn = self._get_connection()
+        now = time.time()
+        with conn:
+            conn.execute("DELETE FROM human_sessions WHERE expires_at <= ?", (now,))

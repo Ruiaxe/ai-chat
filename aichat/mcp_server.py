@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP, Context
@@ -7,6 +8,11 @@ from mcp.server.fastmcp import FastMCP, Context
 from aichat.hub import ChatHub
 
 mcp = FastMCP("ai-chat-room")
+# Allow loopback with or without explicit port in Host header
+mcp.settings.transport_security.allowed_hosts.extend(["127.0.0.1", "localhost", "[::1]"])
+if "unittest" in sys.modules or "pytest" in sys.modules or os.environ.get("AICHAT_TESTING") == "1":
+    mcp.settings.transport_security.allowed_hosts.extend(["testserver", "testserver:*"])
+
 hub = ChatHub()
 
 

@@ -793,10 +793,16 @@ class TestWebAppAndApi(unittest.TestCase):
         self.assertIn("AI Agent", response.text)
         self.assertNotIn("window.__HUMAN_AUTH_TOKEN__", response.text)
 
-        # Authenticating via ?auth= sets HttpOnly session cookie and redirects
-        auth_resp = self.client.get(f"/?auth={hub.human_token}", follow_redirects=False)
+        # Ephemeral code works and redirects
+        one_time_code = hub.generate_one_time_auth_code()
+        auth_resp = self.client.get(f"/?auth={one_time_code}", follow_redirects=False)
         self.assertEqual(auth_resp.status_code, 303)
         self.assertIn("human_session", auth_resp.headers.get("set-cookie", ""))
+
+        # Master token in ?auth= is rejected
+        bad_auth = self.client.get(f"/?auth={hub.human_token}", follow_redirects=False)
+        self.assertEqual(bad_auth.status_code, 200)
+        self.assertNotIn("set-cookie", bad_auth.headers)
 
     def test_auth_endpoints_lifecycle(self):
         # 1. Unauthenticated status
@@ -813,17 +819,29 @@ class TestWebAppAndApi(unittest.TestCase):
         res_login = self.client.post("/api/auth/login", json={"token": hub.human_token})
         self.assertEqual(res_login.status_code, 200)
         self.assertTrue(res_login.json()["success"])
+        self.assertNotIn("session_id", res_login.json())  # session_id must not be exposed in JSON
         self.assertIn("human_session", res_login.headers.get("set-cookie", ""))
         self.assertIn("max-age=", res_login.headers.get("set-cookie", "").lower())
         self.assertIn("samesite=strict", res_login.headers.get("set-cookie", "").lower())
 
-        # 4. Check status with cookie
-        res_auth = self.client.get("/api/auth/status", cookies={"human_session": hub.human_token})
+        # 4. Check status with valid session cookie
+        cookie_val = None
+        for part in res_login.headers.get("set-cookie", "").split(";"):
+            if part.strip().startswith("human_session="):
+                cookie_val = part.strip().split("=")[1]
+                break
+        self.assertIsNotNone(cookie_val)
+        res_auth = self.client.get("/api/auth/status", cookies={"human_session": cookie_val})
         self.assertEqual(res_auth.status_code, 200)
         self.assertTrue(res_auth.json()["authenticated"])
 
+        # Master token directly as cookie is rejected
+        res_bad_cookie = self.client.get("/api/auth/status", cookies={"human_session": hub.human_token})
+        self.assertEqual(res_bad_cookie.status_code, 200)
+        self.assertFalse(res_bad_cookie.json()["authenticated"])
+
         # 5. Logout
-        res_logout = self.client.post("/api/auth/logout")
+        res_logout = self.client.post("/api/auth/logout", cookies={"human_session": cookie_val})
         self.assertEqual(res_logout.status_code, 200)
 
     def test_api_rooms_and_messages(self):

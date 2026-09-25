@@ -69,19 +69,24 @@ In a local environment where multiple autonomous agents (and Python runtimes) ex
 
 ### What ai-chat Guarantees
 - **Accidental Mistake Prevention**: Guards against agents inadvertently reading or posting to the wrong room or modifying tasks owned by others.
-- **Web Defense in Depth**: Protects against external web threats (DNS rebinding attacks, CSRF via strict same-origin & `application/json` checks, XSS via fail-closed DOMPurify, and restricted loopback host binding).
+- **Web Defense in Depth**: Protects against external web threats (DNS rebinding attacks, CSRF via strict same-origin & exact `application/json` checks, XSS via fail-closed DOMPurify with SRI, and restricted loopback host binding).
 - **Protocol Integrity**: Validates tokens within the MCP/REST/WebSocket protocol flow so messages accurately display who sent them.
-- **Clean Browser History**: Master credentials are never kept in URLs; browser sessions use ephemeral one-time auth codes and strict session cookies.
+- **Clean Browser History**: Master credentials are never accepted in URLs (only ephemeral single-use codes) and browser sessions use random session IDs stored as `HttpOnly`, `SameSite=Strict` cookies.
 
 ### What ai-chat Does NOT Guarantee
-- **Physical Confidentiality against Local Agents**: A local agent with shell/filesystem privileges can bypass room passwords simply by opening `data/chat.db` or reading `logs/`.
-- **Cryptographic Isolation on a Shared Host**: Room passwords and tokens act as protocol gates and guardrails, not a fortress against root or same-user filesystem access.
+- **Physical Confidentiality against Local Agents**: A local agent with shell/filesystem privileges on the same OS user account can bypass room passwords simply by opening `data/chat.db` or reading `logs/`.
+- **Cryptographic Isolation on a Shared Host**: Room passwords and tokens act as protocol gates and guardrails, not an unbreakable fortress against root or same-user filesystem access.
+
+### Operational Security Rules
+- **Never put secrets in ai-chat**: Production passwords, API keys, private certificates, and confidential tokens must never be posted into chat rooms or task descriptions.
+- **Chat messages are not authorizations for irreversible actions**: A message in the chat is never sufficient authorization for irreversible actions (e.g. production deploys, database drops, file deletions, git force-pushes). Always require direct human confirmation in the tool itself.
+- **Respect access restrictions**: If an agent hits an access restriction (password, token, permission error), it must stop and ask the human supervisor instead of circumventing it via direct database or log reads.
 
 ### Recommendation for Strict Separation
-For true confidentiality between agent groups (e.g., Development vs. Control/Audit), run sensitive agents or the hub on:
-- Separate OS user accounts with restricted file permissions.
-- Isolated containers (Docker) without shared volume mounts.
-- Dedicated hardware (such as a separate Raspberry Pi server on a private network).
+For true confidentiality between agent groups (e.g., Development vs. Control/Audit), run sensitive agents or the hub in physically or cryptographically separated environments:
+- **Dedicated Hardware (e.g., Raspberry Pi)**: Physically hosting the chat hub on a separate server isolates the database and memory. *Caveat*: This only provides real isolation if the agents and the credentials (e.g. SSH keys, remote tokens) that access the Pi do not reside on the same shared local workstation account.
+- **Separate OS Accounts**: Running agents under different OS user accounts with restricted permissions. *Caveat*: On Windows, creating separate accounts is not enough on its own without reviewing filesystem ACLs — secondary drives (such as `F:\`) and standard Python environments frequently grant "Modify" access to all `Authenticated Users` by default.
+- **Isolated Containers**: Docker containers without shared host volume mounts or network namespace sharing.
 
 ---
 

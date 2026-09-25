@@ -166,6 +166,96 @@ class TestSecurityHardening(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("ERRO DE SEGURANÇA", result.stdout + result.stderr)
 
+    # Item 1: Master token rejected in URL ?auth= and in human_session cookie
+    def test_master_token_in_url_and_cookie_rejected(self):
+        """Master human token cannot be used in ?auth= URL or as raw human_session cookie value."""
+        # 1. URL ?auth= with master token fails to authenticate or redirect
+        resp = self.client.get(f"/?auth={global_hub.human_token}", follow_redirects=False)
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("set-cookie", resp.headers)
+
+        # 2. Cookie human_session with master token value is rejected
+        auth_status = self.client.get("/api/auth/status", cookies={"human_session": global_hub.human_token})
+        self.assertEqual(auth_status.status_code, 200)
+        self.assertFalse(auth_status.json()["authenticated"])
+
+        # 3. Master token via X-Human-Token header is accepted
+        auth_status_hdr = self.client.get("/api/auth/status", headers={"X-Human-Token": global_hub.human_token})
+        self.assertEqual(auth_status_hdr.status_code, 200)
+        self.assertTrue(auth_status_hdr.json()["authenticated"])
+
+    # Item 5: Login response JSON does NOT contain session_id (HttpOnly preservation)
+    def test_login_does_not_expose_session_id_in_json(self):
+        """POST /api/auth/login sets HttpOnly cookie but does not expose session_id in JSON payload."""
+        resp = self.client.post("/api/auth/login", json={"token": global_hub.human_token})
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertTrue(data.get("success"))
+        self.assertNotIn("session_id", data)
+        set_cookie = resp.headers.get("set-cookie", "")
+        self.assertIn("human_session=", set_cookie)
+        self.assertIn("httponly", set_cookie.lower())
+
+    # Item 3: Sessions persist in SQLite across server restarts
+    def test_sqlite_session_persistence_across_restarts(self):
+        """Sessions stored in SQLite remain valid after ChatStorage and ChatHub are re-instantiated."""
+        session_id = global_hub.create_human_session(ttl_seconds=3600)
+        self.assertTrue(global_hub.verify_human_session(session_id))
+
+        # Simulate full server restart by creating new storage and hub pointing to same SQLite DB
+        restarted_storage = ChatStorage(db_path=self.db_path, logs_dir=self.logs_dir)
+        restarted_hub = ChatHub(storage=restarted_storage)
+        self.assertTrue(restarted_hub.verify_human_session(session_id))
+
+        # Invalidate session
+        restarted_hub.invalidate_human_session(session_id)
+        self.assertFalse(restarted_hub.verify_human_session(session_id))
+        restarted_storage.close()
+
+    # Item 2: MCP SSE client disconnect does not raise AssertionError
+    def test_mcp_sse_disconnect_handled_cleanly(self):
+        """Connecting to /sse and disconnecting does not trigger AssertionError: Unexpected message: http.response.start."""
+        import asyncio
+
+        async def _test_disconnect():
+            scope = {
+                "type": "http",
+                "http_version": "1.1",
+                "method": "GET",
+                "path": "/sse",
+                "raw_path": b"/sse",
+                "query_string": b"",
+                "headers": [(b"host", b"testserver")],
+                "client": ("127.0.0.1", 12345),
+                "server": ("testserver", 80),
+                "scheme": "http",
+                "state": {},
+            }
+            sent_messages = []
+
+            async def receive():
+                return {"type": "http.disconnect"}
+
+            async def send(message):
+                sent_messages.append(message)
+
+            # Invoking ASGI app directly must not raise AssertionError
+            await self.app(scope, receive, send)
+            self.assertIn("http.response.start", [m["type"] for m in sent_messages])
+
+        asyncio.run(_test_disconnect())
+
+    # Item 6: Exact Content-Type validation
+    def test_content_type_exact_mime_matching(self):
+        """Content-Type matching is exact: text/plain; x=application/json must return 415."""
+        resp = self.client.post(
+            "/api/rooms",
+            content=b'{"name": "test"}',
+            headers={"Content-Type": "text/plain; x=application/json"},
+        )
+        self.assertEqual(resp.status_code, 415)
+        self.assertIn("expected application/json", resp.text)
+
 
 if __name__ == "__main__":
     unittest.main()

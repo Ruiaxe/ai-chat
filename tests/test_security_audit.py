@@ -65,8 +65,15 @@ class TestSecurityAuditVulnerabilities(unittest.IsolatedAsyncioTestCase):
             self.assertIn("human_session", cookie_header)
             self.assertIn("Max-Age=", cookie_header)
 
+            session_id = None
+            for part in cookie_header.split(";"):
+                if part.strip().startswith("human_session="):
+                    session_id = part.strip().split("=")[1]
+                    break
+            self.assertIsNotNone(session_id)
+
             # 5. Subsequent GET /api/auth/status with session is authenticated
-            status_auth = client.get("/api/auth/status", cookies={"human_session": global_hub.human_token})
+            status_auth = client.get("/api/auth/status", cookies={"human_session": session_id})
             self.assertEqual(status_auth.status_code, 200)
             self.assertTrue(status_auth.json()["authenticated"])
 

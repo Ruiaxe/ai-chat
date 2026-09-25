@@ -82,6 +82,7 @@ def main():
     parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1 - loopback only)")
     parser.add_argument("--port", type=int, default=None, help="Port to bind (default: automatic free port starting at 8765)")
     parser.add_argument("--allow-remote", action="store_true", help="Allow binding to non-loopback host (WARNING: exposes chat to network)")
+    parser.add_argument("--allowed-hosts", nargs="*", default=None, help="Explicit allowed hostnames/IPs for Host header validation when remote is allowed")
     parser.add_argument("--no-browser", action="store_true", help="Do not automatically open the web browser")
     args = parser.parse_args()
 
@@ -110,7 +111,16 @@ def main():
     if not args.no_browser:
         open_browser_delayed(f"http://{host}:{port}/?auth={one_time_code}")
 
-    allowed_hosts = ["*"] if (args.allow_remote and not is_loopback) else None
+    if args.allow_remote and not is_loopback:
+        if args.allowed_hosts:
+            allowed_hosts = list(args.allowed_hosts) + ["127.0.0.1", "localhost"]
+        elif host != "0.0.0.0":
+            allowed_hosts = [host, "127.0.0.1", "localhost"]
+        else:
+            allowed_hosts = ["*"]
+    else:
+        allowed_hosts = None
+
     app = create_app(allowed_hosts=allowed_hosts)
 
     uvicorn.run(
