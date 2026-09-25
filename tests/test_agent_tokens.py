@@ -199,6 +199,52 @@ class TestAgentTokensAndClosedRegistry(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ident['status'], 'success')
         self.assertEqual(ident['callsign'], 'NewDev-1')
 
+    def test_deactivated_agent_cannot_self_reactivate_and_old_token_revoked(self):
+        # 1. Register agent
+        reg = self.hub.register_agent_admin(callsign="DeactAgent", supervisor_token=self.hub.human_token)
+        orig_token = reg["token"]
+        self.hub.create_room("room-deact-test")
+        self.hub.join_room("room-deact-test", "DeactAgent", role="agent", member_token=orig_token)
+
+        # 2. Rotate token
+        new_token = self.hub.rotate_agent_token_admin("DeactAgent", supervisor_token=self.hub.human_token)
+        self.assertNotEqual(orig_token, new_token)
+
+        # Original token must be rejected immediately (not active anywhere)
+        raw_ident_orig = get_my_identity(agent_token=orig_token)
+        data_orig = json.loads(raw_ident_orig)
+        self.assertEqual(data_orig["status"], "error")
+        self.assertIn("Token de agente inválido", data_orig["error"])
+
+        # 3. Deactivate agent
+        self.hub.update_agent_status_admin("DeactAgent", "inactive", supervisor_token=self.hub.human_token)
+
+        # New token is now also rejected because agent is inactive
+        raw_ident_new = get_my_identity(agent_token=new_token)
+        data_new = json.loads(raw_ident_new)
+        self.assertEqual(data_new["status"], "error")
+        self.assertIn("desativado pelo supervisor", data_new["error"])
+
+        # 4. Deactivated agent attempts self-registration to reactivate itself -> MUST FAIL
+        raw_self_reg = register_agent(callsign="DeactAgent")
+        data_self_reg = json.loads(raw_self_reg)
+        self.assertEqual(data_self_reg["status"], "error")
+        self.assertIn("desativado pelo supervisor Rui", data_self_reg["error"])
+
+        # Verify agent is still inactive
+        agent_info = self.hub.storage.get_agent_identity_by_name("DeactAgent")
+        self.assertEqual(agent_info["status"], "inactive")
+
+        # 5. Only supervisor can reactivate
+        self.hub.update_agent_status_admin("DeactAgent", "active", supervisor_token=self.hub.human_token)
+        agent_info_after = self.hub.storage.get_agent_identity_by_name("DeactAgent")
+        self.assertEqual(agent_info_after["status"], "active")
+
+        # Now active agent can authenticate with current token
+        ident_ok = json.loads(get_my_identity(agent_token=new_token))
+        self.assertEqual(ident_ok["status"], "success")
+        self.assertEqual(ident_ok["agent_status"], "active")
+
 
 if __name__ == '__main__':
     unittest.main()

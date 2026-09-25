@@ -300,6 +300,31 @@ class ChatStorage:
                 conn.execute("ALTER TABLE rooms ADD COLUMN clear_password TEXT DEFAULT '';")
             except sqlite3.OperationalError:
                 pass
+            # Purge stale/rotated tokens from members table and synchronize with member_identities
+            try:
+                conn.execute("""
+                    UPDATE members 
+                    SET token = '' 
+                    WHERE member_name IN (SELECT member_name FROM member_identities WHERE status = 'inactive');
+                """)
+                conn.execute("""
+                    UPDATE members
+                    SET token = (
+                        SELECT mi.token FROM member_identities mi
+                        WHERE mi.member_name = members.member_name COLLATE NOCASE AND mi.status = 'active'
+                    )
+                    WHERE EXISTS (
+                        SELECT 1 FROM member_identities mi
+                        WHERE mi.member_name = members.member_name COLLATE NOCASE AND mi.status = 'active'
+                    );
+                """)
+                conn.execute("""
+                    UPDATE members
+                    SET token = ''
+                    WHERE token != '' AND token NOT IN (SELECT token FROM member_identities WHERE status = 'active');
+                """)
+            except sqlite3.OperationalError:
+                pass
 
     def create_room(
         self,
@@ -441,16 +466,27 @@ class ChatStorage:
         clean_member = member_name.strip()
         clean_role = (role or "agent").strip().lower()
 
-        # 1. Check global member identity in member_identities table
-        # Check existing member token in this room
+        # 1. Check existing member token in this room
         cursor = conn.execute(
             "SELECT token FROM members WHERE room_name = ? COLLATE NOCASE AND member_name = ? COLLATE NOCASE",
             (clean_room, clean_member),
         )
-        row = cursor.fetchone()
-        existing_token = row[0] if row and row[0] else ""
+        m_row = cursor.fetchone()
+        existing_token = m_row[0] if m_row and m_row[0] else ""
+
+        # 2. Check global member identity in member_identities table
+        id_cur = conn.execute(
+            "SELECT token, status FROM member_identities WHERE member_name = ? COLLATE NOCASE",
+            (clean_member,),
+        )
+        id_row = id_cur.fetchone()
 
         clean_token = (token or "").strip()
+
+        # If agent is deactivated globally, block joining any room
+        if id_row and id_row["status"] == "inactive":
+            raise PermissionError(f"Acesso negado: O agente '{clean_member}' está desativado pelo supervisor (status='inactive').")
+
         if existing_token:
             if clean_token:
                 if not secrets.compare_digest(clean_token, existing_token):
@@ -462,10 +498,25 @@ class ChatStorage:
                 if generate_token:
                     raise PermissionError(f"Acesso negado: O membro '{clean_member}' já está registado nesta sala. É obrigatório fornecer o respetivo member_token.")
                 final_token = ""
+        elif id_row:
+            # Member exists globally in member_identities
+            if clean_token and not secrets.compare_digest(clean_token, id_row["token"]):
+                raise PermissionError(f"Acesso negado: O membro '{clean_member}' já está registado com outro token.")
+            final_token = id_row["token"]
         elif clean_token:
             final_token = clean_token
+            with conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO member_identities (member_name, token, role, status, is_system, created_at) VALUES (?, ?, ?, 'active', 0, ?)",
+                    (clean_member, final_token, clean_role, now),
+                )
         elif clean_role == "agent" and generate_token:
             final_token = secrets.token_hex(16)
+            with conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO member_identities (member_name, token, role, status, is_system, created_at) VALUES (?, ?, ?, 'active', 0, ?)",
+                    (clean_member, final_token, clean_role, now),
+                )
         else:
             final_token = ""
 
@@ -547,10 +598,9 @@ class ChatStorage:
             )
 
     def rotate_member_token(self, room_name: str, member_name: str) -> str:
-        """Generates a new secure token for a member, updating members and member_identities."""
+        """Generates a new secure token for a member, updating members and member_identities across all rooms."""
         import secrets
         conn = self._get_connection()
-        clean_room = room_name.strip()
         clean_member = member_name.strip()
         new_token = secrets.token_hex(16)
         now = datetime.now().isoformat()
@@ -560,12 +610,16 @@ class ChatStorage:
                 """
                 UPDATE members
                 SET token = ?, last_seen_at = ?
-                WHERE room_name = ? COLLATE NOCASE AND member_name = ? COLLATE NOCASE
+                WHERE member_name = ? COLLATE NOCASE
                 """,
-                (new_token, now, clean_room, clean_member),
+                (new_token, now, clean_member),
             )
-            if cursor.rowcount == 0:
-                raise ValueError(f"Membro '{clean_member}' não está registado na sala '{clean_room}'.")
+            id_cur = conn.execute(
+                "SELECT member_name FROM member_identities WHERE member_name = ? COLLATE NOCASE",
+                (clean_member,),
+            )
+            if cursor.rowcount == 0 and not id_cur.fetchone():
+                raise ValueError(f"Membro '{clean_member}' não está registado no servidor.")
 
             conn.execute(
                 """
@@ -598,21 +652,6 @@ class ChatStorage:
                 "status": row["status"],
                 "is_system": bool(row["is_system"]),
                 "created_at": row["created_at"],
-            }
-        # Fallback check on room members table for test environments
-        cursor = conn.execute(
-            "SELECT member_name, token, role, joined_at FROM members WHERE token = ? LIMIT 1",
-            (clean_token,),
-        )
-        r_row = cursor.fetchone()
-        if r_row:
-            return {
-                "callsign": r_row["member_name"],
-                "token": r_row["token"],
-                "role": r_row["role"],
-                "status": "active",
-                "is_system": False,
-                "created_at": r_row["joined_at"],
             }
         return None
 
@@ -666,6 +705,8 @@ class ChatStorage:
         token: str | None = None,
         role: str = "agent",
         is_system: bool = False,
+        status: str = "active",
+        is_self_registration: bool = False,
     ) -> dict[str, Any]:
         """Provisions or activates a unique agent in the closed registry. Fails on duplicate callsigns."""
         import secrets
@@ -682,20 +723,22 @@ class ChatStorage:
         )
         row = cursor.fetchone()
         if row:
-            if row["status"] == "active":
+            if row["status"] == "inactive":
+                raise PermissionError(f"Acesso negado: O agente '{clean_callsign}' está desativado pelo supervisor Rui. Apenas o supervisor pode reativar.")
+            if is_self_registration or row["status"] == "active":
                 raise ValueError(f"Callsign '{clean_callsign}' já está em uso no servidor. Duplicados não são permitidos.")
             final_token = token.strip() if token else row["token"]
             now = datetime.now().isoformat()
             with conn:
                 conn.execute(
-                    "UPDATE member_identities SET token = ?, status = 'active', role = ? WHERE member_name = ? COLLATE NOCASE",
-                    (final_token, role, clean_callsign),
+                    "UPDATE member_identities SET token = ?, status = ?, role = ? WHERE member_name = ? COLLATE NOCASE",
+                    (final_token, status, role, clean_callsign),
                 )
             return {
                 "callsign": clean_callsign,
                 "token": final_token,
                 "role": role,
-                "status": "active",
+                "status": status,
                 "is_system": is_system,
                 "created_at": now,
             }
@@ -706,15 +749,15 @@ class ChatStorage:
             conn.execute(
                 """
                 INSERT INTO member_identities (member_name, token, role, status, is_system, created_at)
-                VALUES (?, ?, ?, 'active', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (clean_callsign, final_token, role, 1 if is_system else 0, now),
+                (clean_callsign, final_token, role, status, 1 if is_system else 0, now),
             )
         return {
             "callsign": clean_callsign,
             "token": final_token,
             "role": role,
-            "status": "active",
+            "status": status,
             "is_system": is_system,
             "created_at": now,
         }
@@ -745,14 +788,25 @@ class ChatStorage:
     def update_agent_status_admin(self, callsign: str, status: str) -> None:
         """Updates agent status (e.g. 'active', 'inactive', 'pending')."""
         clean_callsign = (callsign or "").strip()
+        target_status = status.strip()
         conn = self._get_connection()
         with conn:
             cursor = conn.execute(
                 "UPDATE member_identities SET status = ? WHERE member_name = ? COLLATE NOCASE",
-                (status.strip(), clean_callsign),
+                (target_status, clean_callsign),
             )
             if cursor.rowcount == 0:
                 raise ValueError(f"Agente com callsign '{clean_callsign}' não encontrado no registo.")
+            if target_status == "inactive":
+                conn.execute(
+                    "UPDATE members SET token = '' WHERE member_name = ? COLLATE NOCASE",
+                    (clean_callsign,),
+                )
+            elif target_status == "active":
+                id_cur = conn.execute("SELECT token FROM member_identities WHERE member_name = ? COLLATE NOCASE", (clean_callsign,))
+                id_row = id_cur.fetchone()
+                if id_row and id_row["token"]:
+                    conn.execute("UPDATE members SET token = ? WHERE member_name = ? COLLATE NOCASE", (id_row["token"], clean_callsign))
 
     def delete_agent_admin(self, callsign: str) -> None:
         """Deletes an agent from member_identities and room memberships."""

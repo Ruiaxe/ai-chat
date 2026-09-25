@@ -380,7 +380,7 @@ class ChatHub:
         if clean_callsign.lower() in self.RESERVED_HUMAN_NAMES:
             raise ValueError(f"O nome '{clean_callsign}' está reservado para o utilizador humano. Agentes devem usar outro nome.")
 
-        res = self.storage.register_agent_admin(callsign=clean_callsign, role="agent", is_system=False)
+        res = self.storage.register_agent_admin(callsign=clean_callsign, role="agent", is_system=False, is_self_registration=True)
         self.storage.log_audit_event("system", clean_callsign, "agent_self_register", "success", f"Self-registered agent '{clean_callsign}' (token held for supervisor delivery)")
         return {
             "status": "registered_pending_token",
