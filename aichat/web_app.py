@@ -148,6 +148,9 @@ async def endpoint_get_messages(request: Request) -> Response:
     limit = safe_int(request.query_params.get("limit"), default=50, min_val=1, max_val=1000)
 
     try:
+        is_human = is_authenticated_human(request)
+        effective_ht = hub.human_token if is_human else ""
+
         # Record presence only for verified tokens or authenticated human session
         agent_tok = (
             request.headers.get("x-agent-token", "") or
@@ -161,7 +164,7 @@ async def endpoint_get_messages(request: Request) -> Response:
                 hub.record_presence(room_name, ident["callsign"], client="http_poll", is_human=ident.get("is_human", False))
             except Exception:
                 pass
-        elif is_authenticated_human(request):
+        elif is_human:
             hub.record_presence(room_name, hub.human_name, client="web_ui", is_human=True)
 
         messages = hub.read_messages(
@@ -170,6 +173,7 @@ async def endpoint_get_messages(request: Request) -> Response:
             since_id=since_id,
             before_id=before_id,
             limit=limit,
+            requester_token=effective_ht,
         )
         return JSONResponse(messages)
     except PermissionError as pe:
@@ -241,9 +245,11 @@ async def endpoint_download_log(request: Request) -> Response:
     """Downloads the text log of a room."""
     room_name = request.path_params["room_name"]
     password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
+    is_human = is_authenticated_human(request)
+    effective_ht = hub.human_token if is_human else ""
 
     try:
-        if not hub.verify_room_access(room_name, password):
+        if not hub.verify_room_access(room_name, password, requester_token=effective_ht):
             return JSONResponse({"error": "Access denied: incorrect password"}, status_code=403)
 
         log_path = hub.storage.get_room_log_file(room_name)
@@ -263,9 +269,11 @@ async def endpoint_download_jsonl(request: Request) -> Response:
     """Downloads the structured JSONL log of a room."""
     room_name = request.path_params["room_name"]
     password = request.query_params.get("password", "")
+    is_human = is_authenticated_human(request)
+    effective_ht = hub.human_token if is_human else ""
 
     try:
-        if not hub.verify_room_access(room_name, password):
+        if not hub.verify_room_access(room_name, password, requester_token=effective_ht):
             return JSONResponse({"error": "Access denied: incorrect password"}, status_code=403)
 
         jsonl_path = hub.storage.get_room_jsonl_file(room_name)
@@ -285,9 +293,11 @@ async def endpoint_room_sse_stream(request: Request) -> Response:
     """Server-Sent Events (SSE) stream for a room to allow live event consumption."""
     room_name = request.path_params["room_name"]
     password = request.query_params.get("password", "")
+    is_human = is_authenticated_human(request)
+    effective_ht = hub.human_token if is_human else ""
 
     try:
-        if not hub.verify_room_access(room_name, password):
+        if not hub.verify_room_access(room_name, password, requester_token=effective_ht):
             return JSONResponse({"error": "Access denied"}, status_code=403)
     except ValueError:
         return JSONResponse({"error": "Room not found"}, status_code=404)
@@ -655,8 +665,10 @@ async def endpoint_get_presence(request: Request) -> Response:
     """Returns real-time active listeners in a room."""
     room_name = request.path_params["room_name"]
     password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
+    is_human = is_authenticated_human(request)
+    effective_ht = hub.human_token if is_human else ""
     try:
-        presence = hub.who_is_listening(room_name=room_name, password=password)
+        presence = hub.who_is_listening(room_name=room_name, password=password, requester_token=effective_ht)
         return JSONResponse(presence)
     except PermissionError as pe:
         return JSONResponse({"error": str(pe)}, status_code=403)
@@ -673,6 +685,8 @@ async def endpoint_get_tasks(request: Request) -> Response:
     status = request.query_params.get("status")
     assignee = request.query_params.get("assignee")
     hide_completed = request.query_params.get("hide_completed", "").lower() in ("true", "1", "yes")
+    is_human = is_authenticated_human(request)
+    effective_ht = hub.human_token if is_human else ""
 
     try:
         tasks = hub.list_tasks(
@@ -681,6 +695,7 @@ async def endpoint_get_tasks(request: Request) -> Response:
             assignee=assignee,
             hide_completed=hide_completed,
             password=password,
+            requester_token=effective_ht,
         )
         return JSONResponse({"status": "success", "tasks": tasks, "count": len(tasks)})
     except PermissionError as pe:
@@ -892,9 +907,13 @@ async def websocket_room_endpoint(websocket: WebSocket) -> None:
     room_name = websocket.path_params["room_name"]
     password = websocket.query_params.get("password", "")
 
-    # Check if human is authenticated via cookie
+    # Check if human is authenticated via cookie or query param
     cookie_token = websocket.cookies.get("human_session", "").strip()
-    is_human = bool(cookie_token and secrets.compare_digest(cookie_token, hub.human_token))
+    param_token = websocket.query_params.get("human_token", "").strip()
+    is_human = bool(
+        (cookie_token and secrets.compare_digest(cookie_token, hub.human_token)) or
+        (param_token and secrets.compare_digest(param_token, hub.human_token))
+    )
 
     if not is_human:
         try:
@@ -911,7 +930,7 @@ async def websocket_room_endpoint(websocket: WebSocket) -> None:
 
     # Broadcast presence update on join
     try:
-        p_info = hub.who_is_listening(room_name)
+        p_info = hub.who_is_listening(room_name, requester_token=hub.human_token if is_human else "")
         await hub._broadcast_to_websockets(room_name, {"type": "presence_updated", "room": room_name, "presence": p_info})
     except Exception:
         pass

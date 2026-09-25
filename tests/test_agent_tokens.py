@@ -124,6 +124,48 @@ class TestAgentTokensAndClosedRegistry(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ident_res['role'], 'agent')
         self.assertFalse(ident_res['is_human'])
 
+    def test_env_var_agent_token(self):
+        import os
+        reg = self.hub.register_agent_admin(callsign='Claude-1.5', supervisor_token=self.hub.human_token)
+        claude_tok = reg['token']
+
+        # Without token or env var -> error
+        err_res = json.loads(list_rooms())
+        self.assertEqual(err_res['status'], 'error')
+
+        # With env var set -> success
+        os.environ['AI_CHAT_AGENT_TOKEN'] = claude_tok
+        try:
+            ok_res = json.loads(list_rooms())
+            self.assertEqual(ok_res['status'], 'success')
+            ident_res = json.loads(get_my_identity())
+            self.assertEqual(ident_res['status'], 'success')
+            self.assertEqual(ident_res['callsign'], 'Claude-1.5')
+        finally:
+            os.environ.pop('AI_CHAT_AGENT_TOKEN', None)
+
+    async def test_human_supervisor_master_room_access(self):
+        # Create a protected room with a strict room password
+        self.hub.create_room('vault-room', password='SuperSecretPassword!')
+
+        # Unauthenticated / empty token cannot verify access
+        self.assertFalse(self.hub.verify_room_access('vault-room', password='wrong'))
+        self.assertFalse(self.hub.verify_room_access('vault-room', password=''))
+
+        # Human supervisor token grants master access without room password
+        self.assertTrue(self.hub.verify_room_access('vault-room', requester_token=self.hub.human_token))
+
+        # Supervisor can read messages without room password
+        msgs = self.hub.read_messages('vault-room', requester_token=self.hub.human_token)
+        self.assertEqual(msgs, [])
+
+        # Supervisor can list tasks and check presence without room password
+        tasks = self.hub.list_tasks('vault-room', requester_token=self.hub.human_token)
+        self.assertEqual(tasks, [])
+        presence = self.hub.who_is_listening('vault-room', requester_token=self.hub.human_token)
+        self.assertIn('total_listening', presence)
+
 
 if __name__ == '__main__':
     unittest.main()
+

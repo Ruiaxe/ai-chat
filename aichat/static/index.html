@@ -753,15 +753,19 @@
     }
 
     function getSavedPassword(roomName) {
-      return sessionStorage.getItem('room_pwd_' + roomName) || '';
+      return sessionStorage.getItem('room_pwd_' + roomName) || localStorage.getItem('room_pwd_' + roomName) || '';
     }
 
     function savePassword(roomName, pwd) {
-      sessionStorage.setItem('room_pwd_' + roomName, pwd);
+      if (pwd) {
+        sessionStorage.setItem('room_pwd_' + roomName, pwd);
+        localStorage.setItem('room_pwd_' + roomName, pwd);
+      }
     }
 
     function clearSavedPassword(roomName) {
       sessionStorage.removeItem('room_pwd_' + roomName);
+      localStorage.removeItem('room_pwd_' + roomName);
     }
 
     function getMyUsername() {
@@ -783,6 +787,22 @@
         if (res.ok) {
           const data = await res.json();
           isHumanAuthenticated = !!data.authenticated;
+          if (!isHumanAuthenticated) {
+            // Check if we have a saved token in localStorage to auto-restore human session
+            const savedToken = localStorage.getItem('ai_chat_human_token');
+            if (savedToken) {
+              const loginRes = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ token: savedToken })
+              });
+              if (loginRes.ok) {
+                isHumanAuthenticated = true;
+              } else {
+                localStorage.removeItem('ai_chat_human_token');
+              }
+            }
+          }
           updateAuthUI(isHumanAuthenticated);
         }
       } catch (err) {
@@ -870,6 +890,7 @@
         const data = await res.json();
         if (res.ok) {
           isHumanAuthenticated = true;
+          localStorage.setItem('ai_chat_human_token', token);
           updateAuthUI(true);
           closeAuthModal();
           if (pendingActionCallback) {
@@ -895,6 +916,7 @@
       try {
         await fetch('/api/auth/logout', { method: 'POST' });
       } catch(e) {}
+      localStorage.removeItem('ai_chat_human_token');
       isHumanAuthenticated = false;
       updateAuthUI(false);
     }
@@ -1035,14 +1057,14 @@
 
       const savedPwd = getSavedPassword(roomName);
 
-      // If protected and no password saved in session, prompt
-      if (room.is_protected && !savedPwd) {
+      // If protected, no password saved, and not authenticated as human supervisor, prompt
+      if (room.is_protected && !savedPwd && !isHumanAuthenticated) {
         promptPasswordModal(room, `Token ou Senha necessária para #${room.name}`);
         return;
       }
 
       const success = await loadRoomMessages(room, savedPwd);
-      if (!success && room.is_protected) {
+      if (!success && room.is_protected && !isHumanAuthenticated) {
         // Saved token/password was rejected (expired, rotated, or invalid)
         clearSavedPassword(roomName);
         promptPasswordModal(room, `Token de acesso alterado para #${room.name}. Introduza o novo token:`, 'Acesso recusado (403): O token anterior é inválido ou foi alterado.');
@@ -1773,6 +1795,8 @@
       const pwd = getSavedPassword(roomName);
       const params = new URLSearchParams();
       if (pwd) params.set('password', pwd);
+      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+      if (savedAuthToken) params.set('human_token', savedAuthToken);
       params.set('username', getMyUsername());
       const wsUrl = `${protocol}//${window.location.host}/ws/${encodeURIComponent(roomName)}?${params.toString()}`;
 
@@ -1907,7 +1931,7 @@
         const pwd = getSavedPassword(currentRoom.name);
         const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/messages?password=${encodeURIComponent(pwd)}&since_id=${lastSeenId}`);
         if (!res.ok) {
-          if ((res.status === 403 || res.status === 401) && currentRoom.is_protected) {
+          if ((res.status === 403 || res.status === 401) && currentRoom.is_protected && !isHumanAuthenticated) {
             clearSavedPassword(currentRoom.name);
             const modal = document.getElementById('password-modal');
             if (modal && modal.classList.contains('hidden')) {
@@ -2433,7 +2457,7 @@
             openAuthModal(() => handleSendMessage());
             return;
           }
-          if (res.status === 403 && currentRoom.is_protected && (err.error || '').toLowerCase().includes('password')) {
+          if (res.status === 403 && currentRoom.is_protected && !isHumanAuthenticated && (err.error || '').toLowerCase().includes('password')) {
             clearSavedPassword(currentRoom.name);
             promptPasswordModal(currentRoom, `Token ou senha necessária para enviar mensagens em #${currentRoom.name}:`, 'Token inválido ou alterado');
             return;

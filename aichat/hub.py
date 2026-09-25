@@ -96,8 +96,8 @@ class ChatHub:
         )
         return room
 
-    def verify_room_access(self, room_name: str, password: str = "") -> bool:
-        """Checks if access to the room is granted."""
+    def verify_room_access(self, room_name: str, password: str = "", requester_token: str = "") -> bool:
+        """Checks if access to the room is granted. Authenticated human supervisor has master access."""
         room = self.storage.get_room(room_name)
         if not room:
             raise ValueError(f"Room '{room_name}' does not exist.")
@@ -105,17 +105,27 @@ class ChatHub:
         if not room["is_protected"]:
             return True
 
-        # Room is protected, verify password
-        if not password:
-            return False
-        return self._verify_password(password, room["password_hash"], room["salt"])
+        # Verified human supervisor has master access to all rooms
+        clean_req = (requester_token or "").strip()
+        if clean_req and secrets.compare_digest(clean_req, self.human_token):
+            return True
 
-    def get_canonical_room_name(self, room_name: str, password: str = "") -> str:
+        # Supervisor master key provided as room password
+        clean_pwd = (password or "").strip()
+        if clean_pwd and secrets.compare_digest(clean_pwd, self.human_token):
+            return True
+
+        # Room is protected, verify password
+        if not clean_pwd:
+            return False
+        return self._verify_password(clean_pwd, room["password_hash"], room["salt"])
+
+    def get_canonical_room_name(self, room_name: str, password: str = "", requester_token: str = "") -> str:
         """Resolves room, checks existence and password access, and returns canonical name."""
         room = self.storage.get_room(room_name)
         if not room:
             raise ValueError(f"Room '{room_name}' does not exist.")
-        if not self.verify_room_access(room_name, password):
+        if not self.verify_room_access(room_name, password, requester_token=requester_token):
             raise PermissionError(f"Access denied to room '{room_name}': Invalid or missing password.")
         return room["name"]
 
@@ -123,13 +133,13 @@ class ChatHub:
         """Lists all existing rooms with metadata."""
         return self.storage.list_rooms(include_archived=include_archived)
 
-    def get_room_info(self, room_name: str, password: str = "") -> dict[str, Any]:
+    def get_room_info(self, room_name: str, password: str = "", requester_token: str = "") -> dict[str, Any]:
         """Gets room information, verifying password if protected."""
         room = self.storage.get_room(room_name)
         if not room:
             raise ValueError(f"Room '{room_name}' does not exist.")
 
-        if room["is_protected"] and not self.verify_room_access(room_name, password):
+        if room["is_protected"] and not self.verify_room_access(room_name, password, requester_token=requester_token):
             raise PermissionError(f"Room '{room_name}' is password protected. Correct password is required.")
 
         members = self.storage.list_members(room_name)
@@ -483,7 +493,7 @@ class ChatHub:
         if room.get("is_archived", False):
             raise ValueError(f"A sala '{canonical_name}' foi arquivada pelo utilizador humano e está em modo apenas de leitura.")
 
-        if not self.verify_room_access(canonical_name, password):
+        if not self.verify_room_access(canonical_name, password, requester_token=human_token):
             raise PermissionError(f"Access denied to room '{canonical_name}': Invalid or missing password.")
 
         # Sender Authentication: verify token or human authorization
@@ -852,9 +862,10 @@ class ChatHub:
         before_id: int = 0,
         limit: int = 50,
         message_id: int | None = None,
+        requester_token: str = "",
     ) -> list[dict[str, Any]]:
         """Reads recent messages from room, or fetches a single message by message_id."""
-        if not self.verify_room_access(room_name, password):
+        if not self.verify_room_access(room_name, password, requester_token=requester_token):
             raise PermissionError(f"Access denied to room '{room_name}': Invalid or missing password.")
 
         if message_id is not None and message_id > 0:
@@ -1224,12 +1235,12 @@ class ChatHub:
         except Exception:
             pass
 
-    def who_is_listening(self, room_name: str, password: str = "") -> dict[str, Any]:
+    def who_is_listening(self, room_name: str, password: str = "", requester_token: str = "") -> dict[str, Any]:
         """
         Returns all active listeners in the room within the active threshold (60s).
         Enforces room password check for protected rooms.
         """
-        canonical_name = self.get_canonical_room_name(room_name, password)
+        canonical_name = self.get_canonical_room_name(room_name, password, requester_token=requester_token)
         room_key = canonical_name.lower()
         now_ts = time.time()
         now_iso = datetime.now().isoformat()
@@ -1315,7 +1326,7 @@ class ChatHub:
         created_by: str = "",
     ) -> dict[str, Any]:
         """Creates a task in a room and broadcasts the event."""
-        canonical_name = self.get_canonical_room_name(room_name, password)
+        canonical_name = self.get_canonical_room_name(room_name, password, requester_token=human_token)
         clean_created_by = created_by.strip()
         clean_ht = (human_token or "").strip()
         is_human = bool(clean_ht and secrets.compare_digest(clean_ht, self.human_token))
@@ -1366,7 +1377,7 @@ class ChatHub:
             raise ValueError(f"Tarefa #{task_id} não encontrada.")
 
         room_name = existing["room_name"]
-        canonical_name = self.get_canonical_room_name(room_name, password)
+        canonical_name = self.get_canonical_room_name(room_name, password, requester_token=human_token)
 
         clean_ht = (human_token or "").strip()
         is_human = bool(clean_ht and secrets.compare_digest(clean_ht, self.human_token))
@@ -1427,7 +1438,7 @@ class ChatHub:
             raise ValueError(f"Tarefa #{task_id} não encontrada.")
 
         room_name = existing["room_name"]
-        canonical_name = self.get_canonical_room_name(room_name, password)
+        canonical_name = self.get_canonical_room_name(room_name, password, requester_token=human_token)
 
         clean_ht = (human_token or "").strip()
         is_human = bool(clean_ht and secrets.compare_digest(clean_ht, self.human_token))
@@ -1467,9 +1478,10 @@ class ChatHub:
         assignee: str | None = None,
         hide_completed: bool = False,
         password: str = "",
+        requester_token: str = "",
     ) -> list[dict[str, Any]]:
         """Lists tasks for a room, checking room password and supporting hide_completed."""
-        canonical_name = self.get_canonical_room_name(room_name, password)
+        canonical_name = self.get_canonical_room_name(room_name, password, requester_token=requester_token)
         return self.storage.list_tasks(
             canonical_name,
             status=status,
@@ -1486,7 +1498,7 @@ class ChatHub:
         password: str = "",
     ) -> list[dict[str, Any]]:
         """Reorders tasks in a room and broadcasts the update."""
-        canonical_name = self.get_canonical_room_name(room_name, password)
+        canonical_name = self.get_canonical_room_name(room_name, password, requester_token=human_token)
         tasks = self.storage.reorder_tasks(canonical_name, task_ids)
         await self._broadcast_to_websockets(canonical_name, {
             "type": "tasks_reordered",

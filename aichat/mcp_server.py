@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP, Context
@@ -13,10 +14,10 @@ hub = ChatHub()
 
 def _authenticate(agent_token: str = "", member_token: str = "", expected_callsign: str = "") -> tuple[dict[str, Any] | None, str | None]:
     """
-    Validates agent_token (or member_token alias) against closed registry.
+    Validates agent_token (or member_token alias, or AI_CHAT_AGENT_TOKEN env var) against closed registry.
     Returns (agent_info, error_json_str).
     """
-    token = (agent_token or member_token).strip()
+    token = (agent_token or member_token or os.environ.get("AI_CHAT_AGENT_TOKEN", "")).strip()
     if not token:
         return None, json.dumps({
             "status": "error",
