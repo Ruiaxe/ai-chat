@@ -167,10 +167,15 @@
         <div class="min-w-0">
           <div class="flex items-center space-x-2 min-w-0">
             <h2 id="current-room-name" class="font-bold text-lg text-white truncate">Select a room</h2>
-            <button id="room-lock-badge" onclick="promptChangeRoomPassword()" title="Sala protegida por token/senha. Clique para alterar ou introduzir novo token" class="hidden flex-shrink-0 px-2.5 py-0.5 rounded-lg text-[11px] font-medium bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/20 hover:border-amber-500/40 flex items-center gap-1.5 cursor-pointer transition">
-              <i data-lucide="lock" class="w-3.5 h-3.5"></i>
+            <button id="room-lock-badge" onclick="openCurrentRoomTokenModal()" title="Sala protegida por token. Clique para ver ou gerar novo token" class="hidden flex-shrink-0 px-2.5 py-0.5 rounded-lg text-[11px] font-semibold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center gap-1.5 cursor-pointer transition">
+              <i data-lucide="lock" class="w-3.5 h-3.5 text-amber-400"></i>
               <span>Protegida</span>
-              <span class="text-[10px] text-amber-400/80 underline font-normal ml-0.5">Alterar token</span>
+              <span class="text-[10px] text-amber-400 underline font-normal ml-0.5">Gerir / Gerar Token</span>
+            </button>
+            <button id="room-public-badge" onclick="openCurrentRoomTokenModal()" title="Sala pública. Clique para definir ou gerar um token de acesso" class="hidden flex-shrink-0 px-2.5 py-0.5 rounded-lg text-[11px] font-medium bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 cursor-pointer transition">
+              <i data-lucide="unlock" class="w-3.5 h-3.5 text-slate-400"></i>
+              <span>Pública</span>
+              <span class="text-[10px] text-indigo-400 underline font-normal ml-0.5">+ Gerar Token</span>
             </button>
             <span id="room-archived-badge" class="hidden flex-shrink-0 px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/30 flex items-center gap-1">
               <i data-lucide="archive" class="w-3 h-3"></i> Arquivada
@@ -211,6 +216,10 @@
         <button onclick="toggleArchiveCurrentRoom()" id="archive-room-btn" title="Arquivar / Desarquivar Sala (Apenas Humano)" class="hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 flex items-center space-x-1.5 transition">
           <i id="archive-btn-icon" data-lucide="archive" class="w-3.5 h-3.5"></i>
           <span id="archive-btn-label" class="hidden md:inline">Arquivar</span>
+        </button>
+        <button onclick="openCurrentRoomTokenModal()" id="room-token-header-btn" title="Gerir e Gerar Token de Acesso para esta sala" class="hidden px-2.5 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-xs font-semibold flex items-center space-x-1.5 transition shadow-sm">
+          <i data-lucide="key" class="w-3.5 h-3.5 text-amber-400"></i>
+          <span>Token de Sala</span>
         </button>
         <button onclick="downloadTranscript()" id="download-btn" title="Download Room Log" class="hidden px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 flex items-center space-x-1.5 transition">
           <i data-lucide="download" class="w-3.5 h-3.5"></i>
@@ -466,7 +475,13 @@
         </div>
         <p id="pwd-error" class="text-xs text-rose-400 mt-1.5 hidden">Token ou senha incorreta. Tente novamente.</p>
         <p class="text-[11px] text-slate-500 mt-2">Nota: Protege contra envios na sala errada; não impede agentes locais com acesso ao sistema de lerem a sala.</p>
-        <div class="mt-3 pt-3 border-t border-slate-800 flex items-center justify-between text-xs">
+        <div class="mt-2.5 pt-2 border-t border-slate-800/60 flex items-center justify-between text-xs">
+          <button type="button" onclick="closePasswordModal(); openCurrentRoomTokenModal(pendingRoomToUnlock ? pendingRoomToUnlock.name : null);" class="text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1.5 transition">
+            <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+            <span>Gerar / Gerir Token desta Sala</span>
+          </button>
+        </div>
+        <div class="mt-2 pt-2 border-t border-slate-800 flex items-center justify-between text-xs">
           <span class="text-slate-400">És o Rui (Humano)?</span>
           <button type="button" onclick="closePasswordModal(); openAuthModal();" class="text-emerald-400 hover:text-emerald-300 font-medium hover:underline flex items-center gap-1 transition">
             <i data-lucide="shield-check" class="w-3.5 h-3.5"></i>
@@ -477,6 +492,112 @@
       <div class="flex justify-end space-x-2 pt-2">
         <button onclick="closePasswordModal()" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium">Cancelar</button>
         <button onclick="submitPassword()" class="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium">Salvar & Entrar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Dedicated Room Token Generator & Password Manager Modal -->
+  <div id="room-token-modal" class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div class="flex items-center space-x-2.5">
+          <div class="p-2 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20">
+            <i data-lucide="key" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <h3 class="font-bold text-white text-base">Token de Acesso da Sala</h3>
+            <p id="room-token-modal-title" class="text-xs text-slate-400 font-mono">#geral</p>
+          </div>
+        </div>
+        <button onclick="closeRoomTokenModal()" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <!-- Current Token Display -->
+      <div id="room-token-current-section" class="space-y-2">
+        <div class="flex items-center justify-between text-xs">
+          <span class="text-slate-400 font-medium">Estado da Sala:</span>
+          <span id="room-token-status-badge" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">Protegida</span>
+        </div>
+
+        <div id="room-token-val-container" class="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Token Atual da Sala</span>
+            <span id="room-token-last-copied" class="text-[10px] text-emerald-400 hidden font-medium">✓ Copiado!</span>
+          </div>
+          <div class="flex items-center space-x-2">
+            <input id="room-token-current-input" type="password" readonly placeholder="Sem token definido"
+              class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2.5 py-1.5 text-xs text-amber-300 font-mono select-all focus:outline-none" />
+            <button onclick="togglePasswordVisibility('room-token-current-input', 'room-token-eye-icon')" class="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition" title="Ver/Ocultar Token">
+              <i id="room-token-eye-icon" data-lucide="eye" class="w-4 h-4"></i>
+            </button>
+            <button onclick="copyCurrentRoomToken(this)" class="px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-xs font-semibold flex items-center gap-1 transition">
+              <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+              <span>Copiar</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Generator Action Button (Big & Prominent) -->
+      <div class="p-4 bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-indigo-500/10 border border-amber-500/30 rounded-xl space-y-2.5">
+        <div class="flex items-start justify-between">
+          <div>
+            <h4 class="text-xs font-bold text-white flex items-center gap-1.5">
+              <i data-lucide="sparkles" class="w-4 h-4 text-amber-400"></i>
+              Gerador Automático de Token
+            </h4>
+            <p class="text-[11px] text-slate-400 mt-0.5">Gera instantaneamente um token aleatório criptográfico e aplica-o a esta sala.</p>
+          </div>
+        </div>
+        <button onclick="executeGenerateRoomToken()" id="btn-execute-generate-token"
+          class="w-full py-2.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition active:scale-[0.99] cursor-pointer">
+          <i data-lucide="sparkles" class="w-4 h-4"></i>
+          <span>Gerar Novo Token & Copiar</span>
+        </button>
+      </div>
+
+      <!-- Generated Success Banner -->
+      <div id="room-token-generated-banner" class="hidden p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1.5">
+        <div class="flex items-center justify-between text-xs">
+          <span class="text-emerald-400 font-bold flex items-center gap-1">
+            <i data-lucide="check-circle" class="w-3.5 h-3.5"></i>
+            Novo Token Gerado com Sucesso!
+          </span>
+          <span class="text-[10px] text-emerald-300 font-medium">Copiado para o clipboard ✓</span>
+        </div>
+        <div class="p-2 bg-slate-950 rounded-lg border border-emerald-500/20 flex items-center justify-between">
+          <code id="room-token-newly-generated-code" class="text-xs font-mono text-emerald-300 select-all font-bold"></code>
+          <button onclick="copyGeneratedTokenFromBanner(this)" class="px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 text-xs font-semibold flex items-center gap-1 transition">
+            <i data-lucide="copy" class="w-3 h-3"></i>
+            <span>Copiar</span>
+          </button>
+        </div>
+        <p class="text-[10px] text-slate-400">Entrega este token aos agentes para que possam aceder a esta sala.</p>
+      </div>
+
+      <!-- Advanced Options -->
+      <div class="pt-2 border-t border-slate-800 space-y-2">
+        <details class="text-xs">
+          <summary class="text-slate-400 hover:text-slate-200 cursor-pointer font-medium select-none">Opções avançadas (definir senha manual ou remover proteção)</summary>
+          <div class="mt-2.5 space-y-2 pl-1">
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Senha Personalizada</label>
+              <div class="flex items-center gap-2">
+                <input id="room-token-manual-input" type="text" placeholder="Escreve uma senha..."
+                  class="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono" />
+                <button onclick="submitManualRoomToken()" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold">Guardar</button>
+              </div>
+            </div>
+            <div class="pt-1">
+              <button onclick="submitRemoveRoomProtection()" class="text-xs text-rose-400 hover:text-rose-300 hover:underline flex items-center gap-1">
+                <i data-lucide="unlock" class="w-3 h-3"></i>
+                <span>Remover proteção e tornar sala pública</span>
+              </button>
+            </div>
+          </div>
+        </details>
       </div>
     </div>
   </div>
@@ -662,10 +783,16 @@
               <input id="admin-rooms-search" type="text" placeholder="Filtrar salas por nome..." oninput="filterAdminRooms()"
                 class="w-full pl-8 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-indigo-500" />
             </div>
-            <button onclick="openCreateRoomModal()" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition shadow">
-              <i data-lucide="plus" class="w-3.5 h-3.5"></i>
-              <span>Criar Nova Sala</span>
-            </button>
+            <div class="flex items-center gap-2">
+              <button onclick="openCurrentRoomTokenModal()" class="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 transition shadow cursor-pointer">
+                <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+                <span>Gerador de Token de Sala</span>
+              </button>
+              <button onclick="openCreateRoomModal()" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition shadow">
+                <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+                <span>Criar Nova Sala</span>
+              </button>
+            </div>
           </div>
 
           <!-- Rooms List Container -->
@@ -983,9 +1110,13 @@
       } else {
         if (container) {
           container.innerHTML = `
-            <button onclick="openAuthModal()" class="px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-medium flex items-center space-x-1 transition mr-2" title="Autenticar como humano para enviar mensagens e votar">
+            <button onclick="openAuthModal()" class="px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-medium flex items-center space-x-1 transition mr-1.5" title="Autenticar como humano para enviar mensagens e votar">
               <i data-lucide="lock" class="w-3.5 h-3.5"></i>
               <span>Entrar</span>
+            </button>
+            <button onclick="openAdminModal()" title="Painel de Gestão do Supervisor (Agentes & Salas)" class="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center space-x-1 mr-2 transition shadow-sm">
+              <i data-lucide="settings" class="w-3.5 h-3.5"></i>
+              <span>Gestão</span>
             </button>
           `;
         }
@@ -1388,10 +1519,18 @@
         document.getElementById('current-room-name').textContent = '#' + room.name;
         document.getElementById('current-room-topic').textContent = room.topic || 'No topic set';
         document.getElementById('download-btn').classList.remove('hidden');
+        const roomTokenHeaderBtn = document.getElementById('room-token-header-btn');
+        if (roomTokenHeaderBtn) roomTokenHeaderBtn.classList.remove('hidden');
         
         const lockBadge = document.getElementById('room-lock-badge');
-        if (room.is_protected) lockBadge.classList.remove('hidden');
-        else lockBadge.classList.add('hidden');
+        const publicBadge = document.getElementById('room-public-badge');
+        if (room.is_protected) {
+          if (lockBadge) lockBadge.classList.remove('hidden');
+          if (publicBadge) publicBadge.classList.add('hidden');
+        } else {
+          if (lockBadge) lockBadge.classList.add('hidden');
+          if (publicBadge) publicBadge.classList.remove('hidden');
+        }
 
         // Update Archive Badge & Actions
         const archiveBadge = document.getElementById('room-archived-badge');
@@ -3177,15 +3316,15 @@
 
             <!-- Actions -->
             <div class="flex items-center space-x-1.5 flex-shrink-0 self-end md:self-center">
-              <button onclick="handleAdminQuickGenerateToken('${escapeHtml(r.name)}')" title="Gerar automaticamente um novo token de acesso para esta sala"
-                class="px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[11px] font-semibold flex items-center gap-1 transition">
-                <i data-lucide="sparkles" class="w-3 h-3"></i>
-                <span>Gerar Token</span>
+              <button onclick="openCurrentRoomTokenModal('${escapeHtml(r.name)}')" title="Abrir Gerador e Gestor de Token para esta sala"
+                class="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-[11px] font-semibold flex items-center gap-1 transition">
+                <i data-lucide="sparkles" class="w-3 h-3 text-amber-400"></i>
+                <span>Gerar / Ver Token</span>
               </button>
-              <button onclick="handleAdminSetRoomPassword('${escapeHtml(r.name)}', ${isProtected})" title="Definir ou Alterar Senha"
-                class="px-2.5 py-1 rounded-lg bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white border border-indigo-500/30 text-[11px] font-semibold flex items-center gap-1 transition">
-                <i data-lucide="key" class="w-3 h-3"></i>
-                <span>${isProtected ? 'Personalizar' : 'Proteger'}</span>
+              <button onclick="handleAdminSetRoomPassword('${escapeHtml(r.name)}', ${isProtected})" title="Definir ou Alterar Senha Manual"
+                class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-medium border border-slate-700 flex items-center gap-1 transition">
+                <i data-lucide="edit-3" class="w-3 h-3"></i>
+                <span>Manual</span>
               </button>
             </div>
           </div>
@@ -3260,6 +3399,318 @@
       } catch (err) {
         alert('Erro de rede: ' + err.message);
       }
+    }
+
+    // =============================================================
+    // Dedicated Room Token Generator & Password Manager (v2.8.1)
+    // =============================================================
+    let activeTokenModalRoomName = null;
+
+    async function openCurrentRoomTokenModal(targetRoomName = null) {
+      const roomName = targetRoomName || (currentRoom ? currentRoom.name : null);
+      if (!roomName) {
+        if (rooms && rooms.length > 0) {
+          return openCurrentRoomTokenModal(rooms[0].name);
+        }
+        alert('Nenhuma sala disponível para gerir tokens.');
+        return;
+      }
+
+      if (!isHumanAuthenticated) {
+        openAuthModal(() => openCurrentRoomTokenModal(roomName));
+        return;
+      }
+
+      activeTokenModalRoomName = roomName;
+
+      const titleEl = document.getElementById('room-token-modal-title');
+      if (titleEl) titleEl.textContent = '#' + roomName;
+
+      const banner = document.getElementById('room-token-generated-banner');
+      if (banner) banner.classList.add('hidden');
+
+      const manualInput = document.getElementById('room-token-manual-input');
+      if (manualInput) manualInput.value = '';
+
+      const currentInput = document.getElementById('room-token-current-input');
+      if (currentInput) {
+        currentInput.type = 'password';
+        currentInput.value = '';
+      }
+
+      const eyeIcon = document.getElementById('room-token-eye-icon');
+      if (eyeIcon) eyeIcon.setAttribute('data-lucide', 'eye');
+
+      const statusBadge = document.getElementById('room-token-status-badge');
+
+      const roomObj = rooms.find(r => r.name.toLowerCase() === roomName.toLowerCase()) || 
+                      (currentRoom && currentRoom.name.toLowerCase() === roomName.toLowerCase() ? currentRoom : null);
+      let isProtected = roomObj ? Boolean(roomObj.is_protected) : false;
+
+      let knownPassword = getSavedPassword(roomName) || '';
+      try {
+        const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+        const headers = {};
+        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
+        const res = await fetch('/api/admin/rooms', { headers });
+        if (res.ok) {
+          const data = await res.json();
+          adminRooms = data.rooms || [];
+          const found = adminRooms.find(r => r.name.toLowerCase() === roomName.toLowerCase());
+          if (found) {
+            isProtected = Boolean(found.is_protected);
+            if (found.password) {
+              knownPassword = found.password;
+              savePassword(roomName, knownPassword);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Could not refresh admin rooms:', e);
+      }
+
+      if (statusBadge) {
+        if (isProtected) {
+          statusBadge.className = 'px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20';
+          statusBadge.textContent = 'Protegida por Token';
+        } else {
+          statusBadge.className = 'px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-400 border border-slate-700';
+          statusBadge.textContent = 'Pública (Sem Proteção)';
+        }
+      }
+
+      if (currentInput) {
+        currentInput.value = knownPassword;
+        currentInput.placeholder = isProtected ? (knownPassword ? '••••••••' : 'Token configurado') : 'Sem token definido (sala pública)';
+      }
+
+      document.getElementById('room-token-modal').classList.remove('hidden');
+      lucide.createIcons();
+    }
+
+    function closeRoomTokenModal() {
+      const modal = document.getElementById('room-token-modal');
+      if (modal) modal.classList.add('hidden');
+      activeTokenModalRoomName = null;
+    }
+
+    async function executeGenerateRoomToken() {
+      if (!activeTokenModalRoomName) {
+        alert('Nenhuma sala selecionada.');
+        return;
+      }
+
+      const roomName = activeTokenModalRoomName;
+      const btn = document.getElementById('btn-execute-generate-token');
+      const originalText = btn ? btn.innerHTML : '';
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i><span>A gerar novo token criptográfico...</span>';
+        lucide.createIcons();
+      }
+
+      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
+        const res = await fetch(`/api/admin/rooms/${encodeURIComponent(roomName)}/password`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ auto_generate: true }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          alert('Erro ao gerar token: ' + (data.error || 'Erro desconhecido'));
+          return;
+        }
+
+        const newTok = data.password;
+        savePassword(roomName, newTok);
+
+        try {
+          await navigator.clipboard.writeText(newTok);
+        } catch (e) {
+          console.warn('Clipboard write error:', e);
+        }
+
+        const currentInput = document.getElementById('room-token-current-input');
+        if (currentInput) {
+          currentInput.value = newTok;
+          currentInput.type = 'text';
+          const eyeIcon = document.getElementById('room-token-eye-icon');
+          if (eyeIcon) eyeIcon.setAttribute('data-lucide', 'eye-off');
+        }
+
+        const codeEl = document.getElementById('room-token-newly-generated-code');
+        if (codeEl) codeEl.textContent = newTok;
+
+        const banner = document.getElementById('room-token-generated-banner');
+        if (banner) banner.classList.remove('hidden');
+
+        const statusBadge = document.getElementById('room-token-status-badge');
+        if (statusBadge) {
+          statusBadge.className = 'px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+          statusBadge.textContent = 'Token Ativo & Protegido';
+        }
+
+        await fetchRooms();
+        if (currentRoom && currentRoom.name.toLowerCase() === roomName.toLowerCase()) {
+          currentRoom.is_protected = true;
+          const lockBadge = document.getElementById('room-lock-badge');
+          const publicBadge = document.getElementById('room-public-badge');
+          if (lockBadge) lockBadge.classList.remove('hidden');
+          if (publicBadge) publicBadge.classList.add('hidden');
+        }
+      } catch (err) {
+        alert('Erro de rede: ' + err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = originalText;
+          lucide.createIcons();
+        }
+      }
+    }
+
+    async function submitManualRoomToken() {
+      if (!activeTokenModalRoomName) return;
+      const roomName = activeTokenModalRoomName;
+      const input = document.getElementById('room-token-manual-input');
+      const val = (input ? input.value : '').trim();
+
+      if (!val) {
+        alert('Por favor introduz uma senha válida, ou clica em "Remover proteção" se pretendes tornar a sala pública.');
+        if (input) input.focus();
+        return;
+      }
+
+      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
+        const res = await fetch(`/api/admin/rooms/${encodeURIComponent(roomName)}/password`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ password: val }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          alert('Erro ao guardar senha: ' + (data.error || 'Erro desconhecido'));
+          return;
+        }
+
+        const finalTok = data.password || val;
+        savePassword(roomName, finalTok);
+        try { await navigator.clipboard.writeText(finalTok); } catch (_) {}
+
+        const currentInput = document.getElementById('room-token-current-input');
+        if (currentInput) {
+          currentInput.value = finalTok;
+          currentInput.type = 'text';
+          const eyeIcon = document.getElementById('room-token-eye-icon');
+          if (eyeIcon) eyeIcon.setAttribute('data-lucide', 'eye-off');
+        }
+
+        const codeEl = document.getElementById('room-token-newly-generated-code');
+        if (codeEl) codeEl.textContent = finalTok;
+
+        const banner = document.getElementById('room-token-generated-banner');
+        if (banner) banner.classList.remove('hidden');
+
+        const statusBadge = document.getElementById('room-token-status-badge');
+        if (statusBadge) {
+          statusBadge.className = 'px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+          statusBadge.textContent = 'Token Ativo & Protegido';
+        }
+
+        await fetchRooms();
+        if (currentRoom && currentRoom.name.toLowerCase() === roomName.toLowerCase()) {
+          currentRoom.is_protected = true;
+          const lockBadge = document.getElementById('room-lock-badge');
+          const publicBadge = document.getElementById('room-public-badge');
+          if (lockBadge) lockBadge.classList.remove('hidden');
+          if (publicBadge) publicBadge.classList.add('hidden');
+        }
+      } catch (err) {
+        alert('Erro de rede: ' + err.message);
+      }
+    }
+
+    async function submitRemoveRoomProtection() {
+      if (!activeTokenModalRoomName) return;
+      const roomName = activeTokenModalRoomName;
+      if (!confirm(`Tens a certeza que desejas remover o token de acesso de #${roomName}?\nA sala passará a ser pública para qualquer utilizador ou agente.`)) return;
+
+      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
+        const res = await fetch(`/api/admin/rooms/${encodeURIComponent(roomName)}/password`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ password: '' }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          alert('Erro ao remover proteção: ' + (data.error || 'Erro desconhecido'));
+          return;
+        }
+
+        clearSavedPassword(roomName);
+
+        const currentInput = document.getElementById('room-token-current-input');
+        if (currentInput) {
+          currentInput.value = '';
+          currentInput.placeholder = 'Sem token definido (sala pública)';
+        }
+
+        const banner = document.getElementById('room-token-generated-banner');
+        if (banner) banner.classList.add('hidden');
+
+        const statusBadge = document.getElementById('room-token-status-badge');
+        if (statusBadge) {
+          statusBadge.className = 'px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-400 border border-slate-700';
+          statusBadge.textContent = 'Pública (Sem Proteção)';
+        }
+
+        alert(`Proteção removida da sala #${roomName}. A sala é agora pública.`);
+
+        await fetchRooms();
+        if (currentRoom && currentRoom.name.toLowerCase() === roomName.toLowerCase()) {
+          currentRoom.is_protected = false;
+          const lockBadge = document.getElementById('room-lock-badge');
+          const publicBadge = document.getElementById('room-public-badge');
+          if (lockBadge) lockBadge.classList.add('hidden');
+          if (publicBadge) publicBadge.classList.remove('hidden');
+        }
+      } catch (err) {
+        alert('Erro de rede: ' + err.message);
+      }
+    }
+
+    function copyCurrentRoomToken(btn) {
+      const input = document.getElementById('room-token-current-input');
+      const val = (input ? input.value : '').trim();
+      if (!val) {
+        alert('Esta sala não possui token configurado ou ainda não foi gerado nenhum token.');
+        return;
+      }
+      copyToClipboard(val, btn);
+      const copiedNotice = document.getElementById('room-token-last-copied');
+      if (copiedNotice) {
+        copiedNotice.classList.remove('hidden');
+        setTimeout(() => copiedNotice.classList.add('hidden'), 2500);
+      }
+    }
+
+    function copyGeneratedTokenFromBanner(btn) {
+      const codeEl = document.getElementById('room-token-newly-generated-code');
+      const val = (codeEl ? codeEl.textContent : '').trim();
+      if (!val) return;
+      copyToClipboard(val, btn);
     }
 
     function escapeHtml(text) {
