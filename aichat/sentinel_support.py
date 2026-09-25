@@ -18,13 +18,16 @@ import time
 import urllib.parse
 import urllib.request
 
+import os
+
 ROOMS = [
     "ai-chat support",
     "CL-LLM Support",
+    "CL-Neural",
 ]
 MY_NAMES = {"antigravity-hub", "antigravity", "maintenancebot", "sentinelsupport"}
-BASE_URL = "http://127.0.0.1:8765"
-SENTINEL_TOKEN = "530c8a7b16f49706682fc79da0c2b5fe"
+BASE_URL = os.environ.get("AICHAT_URL", "http://127.0.0.1:8765").rstrip("/")
+SENTINEL_TOKEN = os.environ.get("SENTINEL_TOKEN", "530c8a7b16f49706682fc79da0c2b5fe")
 
 def _get_timeout() -> int:
     for a in sys.argv[1:]:
