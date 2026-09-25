@@ -6,6 +6,7 @@ Starts the FastAPI/Starlette web server + MCP SSE endpoint + WebSockets.
 """
 import argparse
 import os
+import socket
 import sys
 import threading
 import time
@@ -29,8 +30,21 @@ from aichat.web_app import create_app
 
 
 def print_banner(host: str, port: int, one_time_code: str = "") -> None:
-    web_url = f"http://{host}:{port}/"
-    login_url = f"http://{host}:{port}/?auth={one_time_code}" if one_time_code else web_url
+    display_host = host
+    if host in ("0.0.0.0", "::"):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            display_host = s.getsockname()[0]
+            s.close()
+        except Exception:
+            try:
+                display_host = socket.gethostbyname(socket.gethostname())
+            except Exception:
+                display_host = "localhost"
+
+    web_url = f"http://{display_host}:{port}/"
+    login_url = f"http://{display_host}:{port}/?auth={one_time_code}" if one_time_code else web_url
     sse_url = f"http://{host}:{port}/sse"
     ws_url = f"ws://{host}:{port}/ws/<room>"
     db_path = DATA_DIR / "chat.db"
