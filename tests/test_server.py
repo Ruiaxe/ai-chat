@@ -1148,6 +1148,83 @@ class TestWebAppAndApi(unittest.TestCase):
         self.assertEqual(del_ok.status_code, 200)
         self.assertEqual(del_ok.json()["deleted"], callsign)
 
+    def test_agent_deactivation_and_auto_room_token(self):
+        """Tests agent deactivation/reactivation and room token auto-generation."""
+        import uuid
+        callsign = f"AgentToggle-{uuid.uuid4().hex[:4]}"
+        reg = hub.storage.register_agent_admin(callsign=callsign)
+        token = reg["token"]
+
+        # Initially active: authentication succeeds
+        ident = hub.authenticate_agent(token)
+        self.assertEqual(ident["status"], "active")
+
+        # 1. Non-supervisor cannot change agent status -> 403
+        fail_res = self.client.post(f"/api/agents/{callsign}/status", json={"status": "inactive"})
+        self.assertEqual(fail_res.status_code, 403)
+
+        # 2. Supervisor deactivates agent -> 200
+        ok_res = self.client.post(
+            f"/api/agents/{callsign}/status",
+            headers={"x-human-token": hub.human_token},
+            json={"status": "inactive"},
+        )
+        self.assertEqual(ok_res.status_code, 200)
+        self.assertEqual(ok_res.json()["agent_status"], "inactive")
+
+        # Deactivated agent cannot authenticate -> PermissionError
+        with self.assertRaises(PermissionError) as ctx:
+            hub.authenticate_agent(token)
+        self.assertIn("desativado", str(ctx.exception).lower())
+
+        # Deactivated agent sending message via REST API is blocked
+        room_name = f"deact-room-{uuid.uuid4().hex[:6]}"
+        hub.create_room(room_name)
+        msg_res = self.client.post(
+            f"/api/rooms/{room_name}/messages",
+            headers={"X-Agent-Token": token},
+            json={"content": "Should be blocked", "sender": callsign},
+        )
+        self.assertIn(msg_res.status_code, (400, 403))
+
+        # 3. Supervisor reactivates agent -> 200
+        react_res = self.client.post(
+            f"/api/agents/{callsign}/status",
+            headers={"x-human-token": hub.human_token},
+            json={"status": "active"},
+        )
+        self.assertEqual(react_res.status_code, 200)
+        self.assertEqual(react_res.json()["agent_status"], "active")
+
+        # Reactivated agent can authenticate again
+        react_ident = hub.authenticate_agent(token)
+        self.assertEqual(react_ident["status"], "active")
+
+        # 4. Auto-generate room password via /api/admin/rooms/{room}/password
+        auto_pwd_res = self.client.post(
+            f"/api/admin/rooms/{room_name}/password",
+            headers={"x-human-token": hub.human_token},
+            json={"auto_generate": True},
+        )
+        self.assertEqual(auto_pwd_res.status_code, 200)
+        auto_pwd_data = auto_pwd_res.json()
+        self.assertTrue(auto_pwd_data["auto_generated"])
+        generated_token = auto_pwd_data["password"]
+        self.assertEqual(len(generated_token), 16)
+        self.assertTrue(hub.verify_room_access(room_name, generated_token))
+
+        # 5. Auto-generate room password on room creation via /api/rooms
+        new_room_name = f"auto-room-{uuid.uuid4().hex[:6]}"
+        create_res = self.client.post(
+            "/api/rooms",
+            json={"name": new_room_name, "auto_generate_password": True},
+        )
+        self.assertEqual(create_res.status_code, 201)
+        created_data = create_res.json()
+        self.assertTrue(created_data["is_protected"])
+        self.assertEqual(len(created_data["password"]), 16)
+        self.assertTrue(hub.verify_room_access(new_room_name, created_data["password"]))
+
 
 class TestMCPTools(unittest.IsolatedAsyncioTestCase):
     """Tests for FastMCP tool functions directly."""

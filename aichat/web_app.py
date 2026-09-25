@@ -234,12 +234,18 @@ async def endpoint_create_room(request: Request) -> Response:
     name = data.get("name", "").strip()
     topic = data.get("topic", "").strip()
     password = data.get("password", "")
+    auto_generate_password = bool(data.get("auto_generate_password") or data.get("generate_token"))
+    if auto_generate_password and not password:
+        password = secrets.token_hex(8)
 
     if not name:
         return JSONResponse({"error": "Room name is required"}, status_code=400)
 
     try:
         room = hub.create_room(name=name, password=password, topic=topic)
+        if password:
+            room["password"] = password
+            room["auto_generated"] = auto_generate_password
         return JSONResponse(room, status_code=201)
     except ValueError as ve:
         return JSONResponse({"error": str(ve)}, status_code=400)
@@ -1045,6 +1051,27 @@ async def endpoint_delete_agent(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+async def endpoint_update_agent_status(request: Request) -> Response:
+    """Allows authenticated supervisor Rui to activate or deactivate an agent."""
+    if not is_authenticated_human(request):
+        return JSONResponse({"error": "Acesso negado: Apenas o supervisor humano Rui pode alterar o estado de agentes."}, status_code=403)
+    callsign = request.path_params["callsign"]
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    status = data.get("status", "").strip().lower()
+    if not status:
+        return JSONResponse({"error": "Campo 'status' é obrigatório ('active' ou 'inactive')."}, status_code=400)
+    try:
+        hub.update_agent_status_admin(callsign=callsign, status=status, supervisor_token=hub.human_token)
+        return JSONResponse({"status": "success", "callsign": callsign, "agent_status": status})
+    except (ValueError, PermissionError) as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 async def endpoint_list_admin_rooms(request: Request) -> Response:
     """Lists all rooms including passwords for the authenticated supervisor."""
     if not is_authenticated_human(request):
@@ -1065,7 +1092,11 @@ async def endpoint_admin_set_room_password(request: Request) -> Response:
         data = await request.json()
     except Exception:
         data = {}
-    password = data.get("password", "")
+    auto_generate = bool(data.get("auto_generate") or data.get("generate_token"))
+    if auto_generate:
+        password = secrets.token_hex(8)
+    else:
+        password = data.get("password", "")
     try:
         res = hub.change_room_password(
             room_name=room_name,
@@ -1074,6 +1105,8 @@ async def endpoint_admin_set_room_password(request: Request) -> Response:
             actor_name="Rui",
             supervisor_token=hub.human_token,
         )
+        res["password"] = password
+        res["auto_generated"] = auto_generate
         return JSONResponse(res, status_code=200)
     except PermissionError as pe:
         return JSONResponse({"error": str(pe)}, status_code=403)
@@ -1200,6 +1233,7 @@ def create_app(allowed_hosts: list[str] | None = None) -> Starlette:
         Route("/api/agents", endpoint=endpoint_register_agent, methods=["POST"]),
         Route("/api/agents/{callsign}", endpoint=endpoint_delete_agent, methods=["DELETE"]),
         Route("/api/agents/{callsign}/rotate", endpoint=endpoint_rotate_agent_token, methods=["POST"]),
+        Route("/api/agents/{callsign}/status", endpoint=endpoint_update_agent_status, methods=["POST", "PATCH"]),
         Route("/api/admin/rooms", endpoint=endpoint_list_admin_rooms, methods=["GET"]),
         Route("/api/admin/rooms/{room_name}/password", endpoint=endpoint_admin_set_room_password, methods=["POST"]),
         Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_get_tasks, methods=["GET"]),

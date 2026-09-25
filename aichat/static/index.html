@@ -405,10 +405,36 @@
             class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500" />
         </div>
         <div>
-          <label class="block text-slate-400 mb-1 font-medium">Password (optional)</label>
-          <input id="new-room-password" type="password" placeholder="Leave empty for open room"
-            class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500" />
-          <p class="text-[11px] text-slate-500 mt-1">If set, participants must enter this password to read or send messages.</p>
+          <div class="flex items-center justify-between mb-1">
+            <label class="block text-slate-400 font-medium">Token / Senha da Sala (opcional)</label>
+            <button type="button" onclick="generateAutoRoomTokenForNewRoom()" 
+              class="text-xs text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1 transition">
+              <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
+              <span>Gerar Automático</span>
+            </button>
+          </div>
+          <div class="relative">
+            <input id="new-room-password" type="password" placeholder="Deixa vazio para sala pública ou gera token..."
+              oninput="handleNewRoomPasswordInput()"
+              class="w-full pl-3 pr-9 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-amber-500 font-mono" />
+            <button type="button" onclick="togglePasswordVisibility('new-room-password', 'new-room-pwd-toggle-icon')" 
+              class="absolute right-2.5 top-2.5 text-slate-400 hover:text-white" title="Mostrar/Ocultar Token">
+              <i id="new-room-pwd-toggle-icon" data-lucide="eye" class="w-4 h-4"></i>
+            </button>
+          </div>
+          <!-- Revealed Token Card with One-Click Copy -->
+          <div id="new-room-token-preview" class="hidden mt-2 p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg flex items-center justify-between gap-2 text-xs">
+            <div class="min-w-0 flex-1 flex items-center gap-1.5">
+              <span class="text-amber-400 font-semibold">Novo Token:</span>
+              <code id="new-room-token-display" class="font-mono text-amber-300 text-[11px] truncate select-all"></code>
+            </div>
+            <button type="button" onclick="copyNewRoomToken(this)" 
+              class="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/40 text-amber-300 font-medium border border-amber-500/30 flex items-center gap-1 flex-shrink-0 transition">
+              <i data-lucide="copy" class="w-3 h-3"></i>
+              <span>Copiar</span>
+            </button>
+          </div>
+          <p class="text-[11px] text-slate-500 mt-1">Se definido, os agentes e membros devem fornecer este token para ler ou enviar mensagens.</p>
         </div>
       </div>
       <div class="flex justify-end space-x-2 pt-2">
@@ -2636,13 +2662,60 @@
       textarea.style.height = (textarea.scrollHeight) + 'px';
     }
 
+    function generateRandomTokenHex(bytes = 8) {
+      const arr = new Uint8Array(bytes);
+      crypto.getRandomValues(arr);
+      return Array.from(arr, b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    function generateAutoRoomTokenForNewRoom() {
+      const token = generateRandomTokenHex(8);
+      const input = document.getElementById('new-room-password');
+      const preview = document.getElementById('new-room-token-preview');
+      const display = document.getElementById('new-room-token-display');
+      if (input) {
+        input.value = token;
+        input.type = 'text';
+      }
+      if (display) display.textContent = token;
+      if (preview) preview.classList.remove('hidden');
+      if (window.lucide) lucide.createIcons();
+    }
+
+    function handleNewRoomPasswordInput() {
+      const input = document.getElementById('new-room-password');
+      const preview = document.getElementById('new-room-token-preview');
+      const display = document.getElementById('new-room-token-display');
+      const val = (input ? input.value : '').trim();
+      if (val && display && preview) {
+        display.textContent = val;
+        preview.classList.remove('hidden');
+      } else if (preview) {
+        preview.classList.add('hidden');
+      }
+    }
+
+    function copyNewRoomToken(btn) {
+      const display = document.getElementById('new-room-token-display');
+      const val = (display ? display.textContent : '').trim();
+      if (!val) return;
+      copyToClipboard(val, btn);
+    }
+
     // Modal Create Room
     function openCreateRoomModal() {
       document.getElementById('new-room-name').value = '';
       document.getElementById('new-room-topic').value = '';
-      document.getElementById('new-room-password').value = '';
+      const pwdInput = document.getElementById('new-room-password');
+      if (pwdInput) {
+        pwdInput.value = '';
+        pwdInput.type = 'password';
+      }
+      const preview = document.getElementById('new-room-token-preview');
+      if (preview) preview.classList.add('hidden');
       document.getElementById('create-room-modal').classList.remove('hidden');
       document.getElementById('new-room-name').focus();
+      if (window.lucide) lucide.createIcons();
     }
 
     function closeCreateRoomModal() {
@@ -2672,7 +2745,12 @@
           return;
         }
 
-        if (password) savePassword(name, password);
+        const effectivePassword = data.password || password;
+        if (effectivePassword) {
+          savePassword(name, effectivePassword);
+          try { await navigator.clipboard.writeText(effectivePassword); } catch (_) {}
+          alert(`Sala #${name} criada com sucesso!\n\nToken de Acesso: ${effectivePassword}\n\n(Copiado automaticamente para a área de transferência para poderes fornecer aos agentes!)`);
+        }
         closeCreateRoomModal();
         await fetchRooms();
         selectRoom(name);
@@ -2827,7 +2905,9 @@
         const tokenInputId = `agent-token-input-${idx}`;
         const statusBadge = a.status === 'active' 
           ? '<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Ativo</span>'
-          : '<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">Pendente</span>';
+          : (a.status === 'inactive'
+              ? '<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20">Desativado</span>'
+              : '<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">Pendente</span>');
 
         return `
           <div class="p-3 bg-slate-950/70 border border-slate-800 rounded-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
@@ -2862,14 +2942,27 @@
             </div>
 
             <!-- Actions -->
-            <div class="flex items-center space-x-1 flex-shrink-0 self-end md:self-center">
+            <div class="flex items-center space-x-1.5 flex-shrink-0 self-end md:self-center">
               <button onclick="handleRotateAgentToken('${escapeHtml(a.callsign)}')" title="Rodar Token (invalida token antigo imediatamente)"
-                class="px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[11px] font-semibold flex items-center gap-1 transition">
+                class="px-2 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[11px] font-semibold flex items-center gap-1 transition">
                 <i data-lucide="rotate-cw" class="w-3 h-3"></i>
                 <span>Rodar</span>
               </button>
               ${!isSystem && !isHuman ? `
-                <button onclick="handleDeleteAgent('${escapeHtml(a.callsign)}')" title="Eliminar Agente"
+                ${a.status === 'active' ? `
+                  <button onclick="handleToggleAgentStatus('${escapeHtml(a.callsign)}', 'inactive')" title="Desativar Agente (bloqueia o acesso imediatamente)"
+                    class="px-2 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[11px] font-semibold flex items-center gap-1 transition">
+                    <i data-lucide="user-x" class="w-3 h-3"></i>
+                    <span>Desativar</span>
+                  </button>
+                ` : `
+                  <button onclick="handleToggleAgentStatus('${escapeHtml(a.callsign)}', 'active')" title="Ativar Agente"
+                    class="px-2 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[11px] font-semibold flex items-center gap-1 transition">
+                    <i data-lucide="user-check" class="w-3 h-3"></i>
+                    <span>Ativar</span>
+                  </button>
+                `}
+                <button onclick="handleDeleteAgent('${escapeHtml(a.callsign)}')" title="Eliminar Agente Permanentemente"
                   class="p-1 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition">
                   <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
                 </button>
@@ -2916,6 +3009,29 @@
         const data = await res.json();
         if (!res.ok) {
           alert('Erro ao eliminar agente: ' + (data.error || 'Erro'));
+          return;
+        }
+        await fetchAdminAgents();
+      } catch (err) {
+        alert('Erro de rede: ' + err.message);
+      }
+    }
+
+    async function handleToggleAgentStatus(callsign, targetStatus) {
+      const actionDesc = targetStatus === 'inactive' ? 'desativar' : 'reativar';
+      if (!confirm(`Tens a certeza que desejas ${actionDesc} o agente @${callsign}?`)) return;
+      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
+        const res = await fetch(`/api/agents/${encodeURIComponent(callsign)}/status`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ status: targetStatus }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(`Erro ao ${actionDesc} agente: ` + (data.error || 'Erro'));
           return;
         }
         await fetchAdminAgents();
@@ -3061,10 +3177,15 @@
 
             <!-- Actions -->
             <div class="flex items-center space-x-1.5 flex-shrink-0 self-end md:self-center">
+              <button onclick="handleAdminQuickGenerateToken('${escapeHtml(r.name)}')" title="Gerar automaticamente um novo token de acesso para esta sala"
+                class="px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[11px] font-semibold flex items-center gap-1 transition">
+                <i data-lucide="sparkles" class="w-3 h-3"></i>
+                <span>Gerar Token</span>
+              </button>
               <button onclick="handleAdminSetRoomPassword('${escapeHtml(r.name)}', ${isProtected})" title="Definir ou Alterar Senha"
                 class="px-2.5 py-1 rounded-lg bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white border border-indigo-500/30 text-[11px] font-semibold flex items-center gap-1 transition">
                 <i data-lucide="key" class="w-3 h-3"></i>
-                <span>${isProtected ? 'Alterar' : 'Proteger'}</span>
+                <span>${isProtected ? 'Personalizar' : 'Proteger'}</span>
               </button>
             </div>
           </div>
@@ -3073,13 +3194,8 @@
       lucide.createIcons();
     }
 
-    async function handleAdminSetRoomPassword(roomName, currentlyProtected) {
-      const promptMsg = currentlyProtected 
-        ? `Introduz a NOVA senha para #${roomName} (ou deixa vazio para REMOVER a proteção e tornar pública):`
-        : `Introduz a senha de acesso para proteger #${roomName}:`;
-      const newPwd = prompt(promptMsg);
-      if (newPwd === null) return; // Cancelled
-
+    async function handleAdminQuickGenerateToken(roomName) {
+      if (!confirm(`Gerar automaticamente um novo token para a sala #${roomName}?\n(O token anterior deixará de funcionar imediatamente).`)) return;
       const savedAuthToken = localStorage.getItem('ai_chat_human_token');
       try {
         const headers = { 'Content-Type': 'application/json' };
@@ -3087,16 +3203,54 @@
         const res = await fetch(`/api/admin/rooms/${encodeURIComponent(roomName)}/password`, {
           method: 'POST',
           headers,
-          body: JSON.stringify({ password: newPwd.trim() }),
+          body: JSON.stringify({ auto_generate: true }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert('Erro ao gerar token: ' + (data.error || 'Erro'));
+          return;
+        }
+        const newTok = data.password;
+        savePassword(roomName, newTok);
+        try { await navigator.clipboard.writeText(newTok); } catch (_) {}
+        alert(`Novo token gerado para a sala #${roomName}!\n\nToken: ${newTok}\n\n(Copiado automaticamente para a área de transferência para poderes fornecer aos agentes!)`);
+        await fetchAdminRooms();
+        await fetchRooms();
+      } catch (err) {
+        alert('Erro de rede: ' + err.message);
+      }
+    }
+
+    async function handleAdminSetRoomPassword(roomName, currentlyProtected) {
+      const promptMsg = currentlyProtected 
+        ? `Definir senha/token para #${roomName}:\n- Escreve a nova senha desejada\n- OU escreve 'GERAR' para criar um token aleatório seguro\n- OU deixa vazio para REMOVER a proteção e tornar a sala pública:`
+        : `Proteger a sala #${roomName}:\n- Escreve a senha/token de acesso pretendido\n- OU escreve 'GERAR' para criar um token automático seguro:`;
+      const choice = prompt(promptMsg);
+      if (choice === null) return; // Cancelled
+
+      const isAuto = choice.trim().toUpperCase() === 'GERAR';
+      const cleanVal = choice.trim();
+
+      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
+        const body = isAuto ? { auto_generate: true } : { password: cleanVal };
+        const res = await fetch(`/api/admin/rooms/${encodeURIComponent(roomName)}/password`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
         });
         const data = await res.json();
         if (!res.ok) {
           alert('Erro ao definir senha: ' + (data.error || 'Erro'));
           return;
         }
-        if (newPwd.trim()) {
-          savePassword(roomName, newPwd.trim());
-          alert(`Senha da sala #${roomName} definida com sucesso!\nSenha: ${newPwd.trim()}\nPodes copiá-la do painel de salas para fornecer aos agentes.`);
+        const finalToken = data.password || cleanVal;
+        if (finalToken) {
+          savePassword(roomName, finalToken);
+          try { await navigator.clipboard.writeText(finalToken); } catch (_) {}
+          alert(`Senha/Token da sala #${roomName} configurada com sucesso!\n\nToken: ${finalToken}\n\n(Copiado automaticamente para a área de transferência para poderes fornecer aos agentes!)`);
         } else {
           clearSavedPassword(roomName);
           alert(`Proteção removida da sala #${roomName}. A sala é agora pública.`);

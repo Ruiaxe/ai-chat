@@ -517,7 +517,7 @@ class ChatStorage:
             status = (id_row["status"] if isinstance(id_row, sqlite3.Row) else (id_row[1] if len(id_row) > 1 else "active")) or "active"
 
         if status != "active":
-            return False, f"Acesso negado: O registo do agente '{clean_member}' está inativo ou reformado (status='{status}')."
+            return False, f"Acesso negado: O registo do agente '{clean_member}' está desativado pelo supervisor (status='{status}')."
 
         clean_token = (token or "").strip()
         if clean_token and secrets.compare_digest(clean_token, global_token):
@@ -577,42 +577,44 @@ class ChatStorage:
             )
         return new_token
 
-    def get_agent_identity_by_token(self, token: str) -> dict[str, Any] | None:
+    def get_agent_identity_by_token(self, token: str, include_inactive: bool = False) -> dict[str, Any] | None:
         """Finds an active registered agent by their secret access token."""
         clean_token = (token or "").strip()
         if not clean_token:
             return None
         conn = self._get_connection()
         cursor = conn.execute(
-            "SELECT member_name, token, role, status, is_system, created_at FROM member_identities WHERE token = ? AND status = 'active'",
+            "SELECT member_name, token, role, status, is_system, created_at FROM member_identities WHERE token = ?",
             (clean_token,),
         )
         row = cursor.fetchone()
-        if not row:
-            # Fallback check on room members table for test environments
-            cursor = conn.execute(
-                "SELECT member_name, token, role, joined_at FROM members WHERE token = ? LIMIT 1",
-                (clean_token,),
-            )
-            r_row = cursor.fetchone()
-            if r_row:
-                return {
-                    "callsign": r_row["member_name"],
-                    "token": r_row["token"],
-                    "role": r_row["role"],
-                    "status": "active",
-                    "is_system": False,
-                    "created_at": r_row["joined_at"],
-                }
-            return None
-        return {
-            "callsign": row["member_name"],
-            "token": row["token"],
-            "role": row["role"],
-            "status": row["status"],
-            "is_system": bool(row["is_system"]),
-            "created_at": row["created_at"],
-        }
+        if row:
+            if not include_inactive and row["status"] != "active":
+                return None
+            return {
+                "callsign": row["member_name"],
+                "token": row["token"],
+                "role": row["role"],
+                "status": row["status"],
+                "is_system": bool(row["is_system"]),
+                "created_at": row["created_at"],
+            }
+        # Fallback check on room members table for test environments
+        cursor = conn.execute(
+            "SELECT member_name, token, role, joined_at FROM members WHERE token = ? LIMIT 1",
+            (clean_token,),
+        )
+        r_row = cursor.fetchone()
+        if r_row:
+            return {
+                "callsign": r_row["member_name"],
+                "token": r_row["token"],
+                "role": r_row["role"],
+                "status": "active",
+                "is_system": False,
+                "created_at": r_row["joined_at"],
+            }
+        return None
 
     def get_agent_identity_by_name(self, name: str) -> dict[str, Any] | None:
         """Finds a registered agent by their callsign (case-insensitive)."""

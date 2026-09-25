@@ -324,9 +324,12 @@ class ChatHub:
             }
 
         # Check registered agent
-        agent = self.storage.get_agent_identity_by_token(clean_token)
+        agent = self.storage.get_agent_identity_by_token(clean_token, include_inactive=True)
         if not agent:
             raise PermissionError("Acesso negado: Token de agente inválido ou não autorizado. Registo fechado, consulte o supervisor Rui.")
+
+        if agent.get("status") != "active":
+            raise PermissionError(f"Acesso negado: O agente '{agent['callsign']}' está desativado pelo supervisor (status='{agent.get('status')}'). Contacte o supervisor Rui.")
 
         if expected_callsign:
             clean_expected = expected_callsign.strip().lower()
@@ -411,6 +414,18 @@ class ChatHub:
             raise PermissionError("Acesso negado: Apenas o supervisor humano Rui pode remover agentes.")
         self.storage.delete_agent_admin(callsign)
         self.storage.log_audit_event("system", "Rui", "agent_delete", "success", f"Deleted agent '{callsign}'")
+
+    def update_agent_status_admin(self, callsign: str, status: str, supervisor_token: str = "") -> None:
+        """Updates an agent's status ('active', 'inactive', 'pending'). Restricted to supervisor."""
+        import secrets
+        clean_st = (supervisor_token or "").strip()
+        if not clean_st or not secrets.compare_digest(clean_st, self.human_token):
+            raise PermissionError("Acesso negado: Apenas o supervisor humano Rui pode alterar o estado de agentes.")
+        clean_status = (status or "").strip().lower()
+        if clean_status not in ("active", "inactive", "pending"):
+            raise ValueError(f"Estado inválido '{status}'. Deve ser 'active', 'inactive' ou 'pending'.")
+        self.storage.update_agent_status_admin(callsign, clean_status)
+        self.storage.log_audit_event("system", "Rui", "agent_status_update", "success", f"Updated status of agent '{callsign}' to '{clean_status}'")
 
     def change_room_password(
         self,
