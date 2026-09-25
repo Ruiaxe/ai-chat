@@ -227,24 +227,12 @@
         </button>
         <div id="auth-status-container" class="flex items-center"></div>
 
-        <!-- Real-time Presence Badge & Popover -->
-        <div class="relative">
-          <button id="presence-btn" onclick="togglePresencePopover(event)" title="Quem está na sala à escuta"
-            class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 flex items-center space-x-1.5 transition">
-            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span id="presence-count-text">0 a escutar</span>
-          </button>
-          <!-- Popover -->
-          <div id="presence-popover" class="hidden absolute right-0 mt-2 w-72 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-3 z-50 text-xs backdrop-blur-md">
-            <div class="font-bold text-white mb-2 flex items-center justify-between pb-1.5 border-b border-slate-800">
-              <span class="flex items-center gap-1.5"><i data-lucide="radio" class="w-3.5 h-3.5 text-emerald-400"></i> À escuta nesta sala</span>
-              <span id="presence-popover-count" class="text-emerald-400 font-mono text-[11px] font-semibold">0</span>
-            </div>
-            <div id="presence-listeners-list" class="space-y-1.5 max-h-56 overflow-y-auto pr-1">
-              <div class="text-slate-500 text-center py-2 text-[11px]">Nenhum ouvinte detetado.</div>
-            </div>
-          </div>
-        </div>
+        <!-- Real-time Presence Badge & Sidebar Toggle -->
+        <button id="presence-btn" onclick="togglePresencePopover(event)" title="Quem está na sala à escuta (abre no painel lateral)"
+          class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 flex items-center space-x-1.5 transition">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span id="presence-count-text">0 a escutar</span>
+        </button>
 
         <!-- Task Planner Toggle Button -->
         <button id="tasks-toggle-btn" onclick="toggleTaskPlanner()" title="Abrir/Fechar Task Planner"
@@ -299,7 +287,7 @@
             </div>
             <div>
               <h3 class="font-bold text-sm text-white flex items-center gap-1.5">
-                Task Planner
+                Painel da Sala
                 <span id="task-count-badge" class="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 text-indigo-300 font-mono">0</span>
               </h3>
             </div>
@@ -312,6 +300,31 @@
             <button onclick="toggleTaskPlanner()" title="Fechar painel" class="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition">
               <i data-lucide="x" class="w-4 h-4"></i>
             </button>
+          </div>
+        </div>
+
+        <!-- Collapsible Room Presence Section (À Escuta) -->
+        <div id="sidebar-presence-section" class="border-b border-slate-800 bg-slate-950/70">
+          <button type="button" onclick="toggleSidebarPresence()" class="w-full px-3.5 py-2.5 flex items-center justify-between hover:bg-slate-800/40 transition select-none group">
+            <div class="flex items-center space-x-2">
+              <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span class="text-xs font-bold text-slate-200 group-hover:text-white flex items-center gap-1.5">
+                <i data-lucide="radio" class="w-3.5 h-3.5 text-emerald-400"></i>
+                À Escuta na Sala
+              </span>
+              <span id="sidebar-presence-count" class="px-1.5 py-0.2 rounded-full text-[10px] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-mono font-semibold">0</span>
+            </div>
+            <div class="flex items-center space-x-1 text-slate-400 group-hover:text-slate-200">
+              <span id="sidebar-presence-state-label" class="text-[10px] font-medium">Ocultar</span>
+              <i id="sidebar-presence-chevron" data-lucide="chevron-up" class="w-3.5 h-3.5 transition-transform duration-200"></i>
+            </div>
+          </button>
+
+          <!-- Collapsible Content -->
+          <div id="sidebar-presence-body" class="px-3 pb-3 pt-0.5 space-y-1.5">
+            <div id="sidebar-presence-list" class="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              <div class="text-slate-500 text-center py-2 text-[11px]">Nenhum ouvinte detetado.</div>
+            </div>
           </div>
         </div>
 
@@ -858,6 +871,7 @@
     let activeTaskFilter = 'all'; // 'all', 'in_progress', 'waiting', 'gpu', 'done'
     let hideCompletedTasks = localStorage.getItem('ai_chat_hide_completed') === 'true';
     let currentPresence = null;
+    let sidebarPresenceOpen = localStorage.getItem('sidebar_presence_open') !== 'false';
     let presencePopoverOpen = false;
 
     // Close floating pickers and popovers on outside click
@@ -1251,6 +1265,7 @@
       const voiceSelect = document.getElementById('tts-voice-select');
       if (voiceSelect && ttsVoice) voiceSelect.value = ttsVoice;
       updateTTSButtonUI();
+      applySidebarPresenceState();
       
       lucide.createIcons();
       await checkAuthStatus();
@@ -2382,7 +2397,9 @@
         // Restore saved hide completed checkbox state
         const hideCompletedToggle = document.getElementById('hide-completed-toggle');
         if (hideCompletedToggle) hideCompletedToggle.checked = hideCompletedTasks;
+        applySidebarPresenceState();
         fetchTasks();
+        fetchPresence();
       } else {
         panel.classList.add('hidden');
         panel.classList.remove('flex');
@@ -2734,17 +2751,45 @@
       }
     }
 
-    function togglePresencePopover(e) {
-      if (e) e.stopPropagation();
-      presencePopoverOpen = !presencePopoverOpen;
-      const popover = document.getElementById('presence-popover');
-      if (presencePopoverOpen) {
-        popover.classList.remove('hidden');
-        fetchPresence();
+    function toggleSidebarPresence() {
+      sidebarPresenceOpen = !sidebarPresenceOpen;
+      localStorage.setItem('sidebar_presence_open', sidebarPresenceOpen ? 'true' : 'false');
+      applySidebarPresenceState();
+    }
+
+    function applySidebarPresenceState() {
+      const body = document.getElementById('sidebar-presence-body');
+      const chevron = document.getElementById('sidebar-presence-chevron');
+      const label = document.getElementById('sidebar-presence-state-label');
+      if (!body) return;
+
+      if (sidebarPresenceOpen) {
+        body.classList.remove('hidden');
+        if (chevron) {
+          chevron.setAttribute('data-lucide', 'chevron-up');
+        }
+        if (label) label.textContent = 'Ocultar';
       } else {
-        popover.classList.add('hidden');
+        body.classList.add('hidden');
+        if (chevron) {
+          chevron.setAttribute('data-lucide', 'chevron-down');
+        }
+        if (label) label.textContent = 'Expandir';
       }
       lucide.createIcons();
+    }
+
+    function togglePresencePopover(e) {
+      if (e) e.stopPropagation();
+      if (!taskPlannerOpen) {
+        toggleTaskPlanner();
+        if (!sidebarPresenceOpen) {
+          toggleSidebarPresence();
+        }
+      } else {
+        toggleSidebarPresence();
+      }
+      fetchPresence();
     }
 
     async function fetchPresence() {
@@ -2765,44 +2810,54 @@
       if (!presence) return;
       const total = presence.total_listening || 0;
       const countText = document.getElementById('presence-count-text');
+      const sidebarCount = document.getElementById('sidebar-presence-count');
+      const sidebarList = document.getElementById('sidebar-presence-list');
       const popoverCount = document.getElementById('presence-popover-count');
       const listContainer = document.getElementById('presence-listeners-list');
 
       if (countText) countText.textContent = `${total} a escutar`;
+      if (sidebarCount) sidebarCount.textContent = total;
       if (popoverCount) popoverCount.textContent = total;
 
-      if (!listContainer) return;
       const listeners = presence.listeners || [];
-      if (listeners.length === 0) {
-        listContainer.innerHTML = '<div class="text-slate-500 text-center py-2 text-[11px]">Nenhum ouvinte detetado.</div>';
-        return;
-      }
+      const html = listeners.length === 0
+        ? '<div class="text-slate-500 text-center py-2.5 text-[11px]">Nenhum ouvinte ativo detetado.</div>'
+        : listeners.map(l => {
+            const isHuman = l.role === 'human';
+            const icon = isHuman ? '👤' : '🤖';
+            let clientBadge = 'Web UI';
+            if (l.client === 'sentinel') {
+              clientBadge = l.idle_seconds !== undefined ? `Sentinel (há ${Math.round(l.idle_seconds)}s)` : 'Sentinel';
+            } else if (l.client === 'mcp_listener') {
+              clientBadge = 'MCP Listener';
+            } else if (l.client === 'mcp_poll' || l.client === 'http_poll') {
+              clientBadge = 'Poll Ativo';
+            }
 
-      listContainer.innerHTML = listeners.map(l => {
-        const isHuman = l.role === 'human';
-        const icon = isHuman ? '👤' : '🤖';
-        let clientBadge = 'Web UI';
-        if (l.client === 'sentinel') {
-          clientBadge = l.idle_seconds !== undefined ? `Sentinel (há ${Math.round(l.idle_seconds)}s)` : 'Sentinel';
-        } else if (l.client === 'mcp_listener') {
-          clientBadge = 'MCP Listener';
-        } else if (l.client === 'mcp_poll' || l.client === 'http_poll') {
-          clientBadge = 'Poll Ativo';
-        }
-
-        return `
-          <div class="flex items-center justify-between p-1.5 rounded-lg bg-slate-950/60 border border-slate-800/80 text-[11px]">
-            <div class="flex items-center space-x-2 min-w-0">
-              <span class="text-sm">${icon}</span>
-              <div class="min-w-0">
-                <span class="font-semibold text-slate-200 truncate block">${escapeHtml(l.name)}</span>
-                <span class="text-[10px] text-slate-400 font-mono">${escapeHtml(clientBadge)}</span>
+            return `
+              <div class="flex items-center justify-between p-2 rounded-lg bg-slate-950/70 border border-slate-800/80 text-[11px] hover:border-slate-700/80 transition shadow-sm">
+                <div class="flex items-center space-x-2.5 min-w-0 flex-1">
+                  <div class="w-6 h-6 rounded-md ${isHuman ? 'bg-emerald-500/20 text-emerald-400' : 'bg-indigo-600/20 text-indigo-400'} border border-slate-800 flex items-center justify-center flex-shrink-0 text-xs">
+                    ${icon}
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center space-x-1.5">
+                      <span class="font-bold text-slate-200 truncate">@${escapeHtml(l.name)}</span>
+                      ${isHuman ? '<span class="text-[9px] px-1 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold">Humano</span>' : ''}
+                    </div>
+                    <span class="text-[10px] text-slate-400 font-mono block truncate">${escapeHtml(clientBadge)}</span>
+                  </div>
+                </div>
+                <div class="flex items-center space-x-1.5 flex-shrink-0 ml-2">
+                  <span class="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0 animate-pulse" title="Ativo agora"></span>
+                </div>
               </div>
-            </div>
-            <span class="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0 animate-pulse" title="Ativo agora"></span>
-          </div>
-        `;
-      }).join('');
+            `;
+          }).join('');
+
+      if (sidebarList) sidebarList.innerHTML = html;
+      if (listContainer) listContainer.innerHTML = html;
+      lucide.createIcons();
     }
 
     // Send Message
