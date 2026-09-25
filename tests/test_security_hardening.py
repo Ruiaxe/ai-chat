@@ -3,6 +3,8 @@ Unit and integration tests for security hardening (D1 - D7).
 Tests DNS rebinding protection, origin validation, Content-Type enforcement,
 ephemeral one-time auth code login, session invalidation, and loopback host policy.
 """
+import os
+os.environ["AICHAT_TESTING"] = "1"
 import subprocess
 import sys
 import unittest

@@ -1,3 +1,5 @@
+import os
+os.environ["AICHAT_TESTING"] = "1"
 import asyncio
 import json
 import shutil

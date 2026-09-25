@@ -24,7 +24,7 @@ from aichat.config import (
     find_free_port,
     save_server_info,
 )
-from aichat.mcp_server import hub
+from aichat.mcp_server import hub, mcp
 from aichat.web_app import create_app
 
 
@@ -117,7 +117,17 @@ def main():
         elif host != "0.0.0.0":
             allowed_hosts = [host, "127.0.0.1", "localhost"]
         else:
+            print("⚠️  Aviso: Ao utilizar --host 0.0.0.0 sem --allowed-hosts, a validação de Host é desativada (*). Recomenda-se especificar os hostnames permitidos com --allowed-hosts.\n")
             allowed_hosts = ["*"]
+
+        # Sync allowed hosts to FastMCP transport security
+        if "*" in allowed_hosts:
+            mcp.settings.transport_security.enable_dns_rebinding_protection = False
+        else:
+            for h in allowed_hosts:
+                clean_h = h.split(":")[0]
+                if clean_h not in mcp.settings.transport_security.allowed_hosts:
+                    mcp.settings.transport_security.allowed_hosts.extend([clean_h, f"{clean_h}:*"])
     else:
         allowed_hosts = None
 

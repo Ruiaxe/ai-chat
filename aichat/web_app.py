@@ -61,7 +61,7 @@ def is_same_origin_scope(origin_str: str, scope: Scope) -> bool:
             return True
 
         # Allow testserver ONLY during automated test runs
-        is_testing = "unittest" in sys.modules or "pytest" in sys.modules or os.environ.get("AICHAT_TESTING") == "1"
+        is_testing = os.environ.get("AICHAT_TESTING") == "1"
         if is_testing and origin_netloc in ("testserver", "testserver:80") and host_header in ("testserver", "testserver:80"):
             return True
 
@@ -1082,7 +1082,7 @@ async def app_lifespan(app: Starlette):
 def create_app(allowed_hosts: list[str] | None = None) -> Starlette:
     """Builds and returns the combined Starlette ASGI application with security middleware."""
     if allowed_hosts is None:
-        is_testing = "unittest" in sys.modules or "pytest" in sys.modules or os.environ.get("AICHAT_TESTING") == "1"
+        is_testing = os.environ.get("AICHAT_TESTING") == "1"
         allowed_hosts = ["127.0.0.1", "localhost"] + (["testserver"] if is_testing else [])
     else:
         allowed_hosts = [h.split(":")[0] for h in allowed_hosts]

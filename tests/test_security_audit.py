@@ -2,6 +2,8 @@
 Security Regression Test Suite for AI Chat Room MCP Server (v2.4).
 Verifies all findings from the independent QA audit report (C1-C5, A1-A4, M1-M5).
 """
+import os
+os.environ["AICHAT_TESTING"] = "1"
 import asyncio
 import json
 from pathlib import Path
