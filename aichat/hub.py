@@ -849,6 +849,7 @@ class ChatHub:
         room_name: str,
         password: str = "",
         since_id: int = 0,
+        before_id: int = 0,
         limit: int = 50,
         message_id: int | None = None,
     ) -> list[dict[str, Any]]:
@@ -862,7 +863,7 @@ class ChatHub:
                 return [msg]
             return []
 
-        return self.storage.get_messages(room_name=room_name, since_id=since_id, limit=limit)
+        return self.storage.get_messages(room_name=room_name, since_id=since_id, before_id=before_id, limit=limit)
 
     def _resolve_target_rooms(self, room_name: str, agent_name: str, password: str = "") -> list[str]:
         """Resolves target room names from input string ('subscribed', '', comma-separated, or single room)."""

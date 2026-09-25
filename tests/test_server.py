@@ -147,6 +147,35 @@ class TestChatStorage(unittest.TestCase):
         self.assertTrue(msgs[0]["is_verified"])
         self.assertFalse(msgs[1]["is_verified"])
 
+    def test_storage_pagination_with_before_id(self):
+        self.storage.create_room("pag-room")
+        for i in range(1, 71):
+            self.storage.add_message("pag-room", f"Agent{i}", "agent", f"Msg {i}")
+
+        # Default limit is 50, returns most recent 50 messages (21 to 70) ascending
+        recent = self.storage.get_messages("pag-room", limit=50)
+        self.assertEqual(len(recent), 50)
+        self.assertEqual(recent[0]["content"], "Msg 21")
+        self.assertEqual(recent[-1]["content"], "Msg 70")
+
+        # Paginating backwards with before_id = 21 returns messages 1 to 20 ascending
+        oldest_id = recent[0]["id"]
+        older = self.storage.get_messages("pag-room", before_id=oldest_id, limit=50)
+        self.assertEqual(len(older), 20)
+        self.assertEqual(older[0]["content"], "Msg 1")
+        self.assertEqual(older[-1]["content"], "Msg 20")
+
+        # Paginating before id of first message returns empty list
+        first_id = older[0]["id"]
+        none_older = self.storage.get_messages("pag-room", before_id=first_id, limit=50)
+        self.assertEqual(len(none_older), 0)
+
+        # Range pagination: since_id and before_id together
+        middle = self.storage.get_messages("pag-room", since_id=25, before_id=35, limit=50)
+        self.assertEqual(len(middle), 9)
+        self.assertEqual(middle[0]["content"], "Msg 26")
+        self.assertEqual(middle[-1]["content"], "Msg 34")
+
     def test_storage_reactions_and_decisions(self):
         self.storage.create_room("reaction-room")
         msg = self.storage.add_message("reaction-room", "AgentA", "agent", "Test message")
@@ -829,6 +858,30 @@ class TestWebAppAndApi(unittest.TestCase):
         log_res = self.client.get(f"/api/rooms/{room_name}/log")
         self.assertEqual(log_res.status_code, 200)
         self.assertIn("Hello from API!", log_res.text)
+
+    def test_api_messages_pagination_and_before_id(self):
+        import uuid
+        room_name = f"api-pag-{uuid.uuid4().hex[:6]}"
+        self.test_storage.create_room(room_name)
+        for i in range(1, 65):
+            self.test_storage.add_message(room_name, "Bot", "agent", f"API Msg {i}")
+
+        # Default limit=50 -> returns 50 most recent (15 to 64)
+        res = self.client.get(f"/api/rooms/{room_name}/messages")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(len(data), 50)
+        self.assertEqual(data[0]["content"], "API Msg 15")
+        self.assertEqual(data[-1]["content"], "API Msg 64")
+
+        # Pagination with before_id
+        oldest_id = data[0]["id"]
+        res_older = self.client.get(f"/api/rooms/{room_name}/messages?before_id={oldest_id}")
+        self.assertEqual(res_older.status_code, 200)
+        data_older = res_older.json()
+        self.assertEqual(len(data_older), 14)
+        self.assertEqual(data_older[0]["content"], "API Msg 1")
+        self.assertEqual(data_older[-1]["content"], "API Msg 14")
 
     def test_api_tts_voices(self):
         res = self.client.get("/api/tts/voices")

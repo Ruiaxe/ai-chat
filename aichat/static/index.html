@@ -560,6 +560,10 @@
     let activeReactionMsgId = null;
     let pendingDecisionMsgId = null;
 
+    // Pagination State (v2.7.1)
+    let isLoadingOlder = false;
+    let hasMoreOlder = true;
+
     // Task Planner & Presence State (v2.5)
     let taskPlannerOpen = false;
     let roomTasks = [];
@@ -922,6 +926,16 @@
       if ('Notification' in window && Notification.permission === 'default') {
         Notification.requestPermission();
       }
+
+      // Infinite scroll up listener for older messages
+      const messagesContainer = document.getElementById('messages-container');
+      if (messagesContainer) {
+        messagesContainer.addEventListener('scroll', () => {
+          if (messagesContainer.scrollTop <= 80 && !isLoadingOlder && hasMoreOlder && currentRoom && messages.length > 0) {
+            loadOlderMessages();
+          }
+        }, { passive: true });
+      }
     });
 
     // Rooms API
@@ -1098,9 +1112,69 @@
       document.getElementById('password-modal').classList.add('hidden');
     }
 
+    async function loadOlderMessages() {
+      if (isLoadingOlder || !hasMoreOlder || !currentRoom || messages.length === 0) return;
+
+      isLoadingOlder = true;
+      const container = document.getElementById('messages-container');
+      const prevScrollHeight = container.scrollHeight;
+      const prevScrollTop = container.scrollTop;
+
+      const banner = document.getElementById('load-older-banner');
+      if (banner) {
+        banner.innerHTML = `
+          <i data-lucide="loader-2" class="w-4 h-4 animate-spin text-indigo-400"></i>
+          <span>A carregar 50 mensagens anteriores...</span>
+        `;
+        lucide.createIcons();
+      }
+
+      try {
+        const oldestId = messages[0].id;
+        const pwd = getSavedPassword(currentRoom.name);
+        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/messages?password=${encodeURIComponent(pwd)}&before_id=${oldestId}&limit=50`);
+        if (!res.ok) {
+          throw new Error('Falha ao obter mensagens anteriores');
+        }
+        const olderMsgs = await res.json();
+        if (olderMsgs.length < 50) {
+          hasMoreOlder = false;
+        }
+        if (olderMsgs.length > 0) {
+          const existingIds = new Set(messages.map(m => m.id));
+          const filteredOlder = olderMsgs.filter(m => !existingIds.has(m.id));
+          if (filteredOlder.length > 0) {
+            messages = [...filteredOlder, ...messages];
+            for (const m of filteredOlder) {
+              if (m.metadata && m.metadata.poll_id && !pollsMap[m.metadata.poll_id]) {
+                fetchPollDetails(m.metadata.poll_id);
+              }
+            }
+          } else {
+            hasMoreOlder = false;
+          }
+
+          renderMessages({ shouldScrollToBottom: false, maintainScrollPosition: true });
+
+          // Preserve exact scroll position without jumping
+          const newScrollHeight = container.scrollHeight;
+          container.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+        } else {
+          hasMoreOlder = false;
+          renderMessages({ shouldScrollToBottom: false, maintainScrollPosition: true });
+        }
+      } catch (err) {
+        console.warn('Erro ao carregar mensagens anteriores:', err);
+      } finally {
+        isLoadingOlder = false;
+      }
+    }
+
     async function loadRoomMessages(room, password = '') {
       try {
-        const res = await fetch(`/api/rooms/${encodeURIComponent(room.name)}/messages?password=${encodeURIComponent(password)}&limit=500`);
+        hasMoreOlder = true;
+        isLoadingOlder = false;
+        const res = await fetch(`/api/rooms/${encodeURIComponent(room.name)}/messages?password=${encodeURIComponent(password)}&limit=50`);
         if (!res.ok) {
           if (res.status === 403 || res.status === 401) {
             clearSavedPassword(room.name);
@@ -1111,6 +1185,9 @@
         const data = await res.json();
         currentRoom = room;
         messages = data;
+        if (data.length < 50) {
+          hasMoreOlder = false;
+        }
         lastSeenId = messages.length > 0 ? messages[messages.length - 1].id : 0;
         localStorage.setItem('active_room', room.name);
         if (password) {
@@ -1168,7 +1245,7 @@
           }
         }
 
-        renderMessages();
+        renderMessages({ shouldScrollToBottom: true });
         renderRoomsList();
         connectWebSocket(room.name);
         fetchPresence();
@@ -1180,22 +1257,42 @@
       }
     }
 
-    function renderMessages() {
+    function renderMessages(options = {}) {
       const container = document.getElementById('messages-container');
       if (messages.length === 0) {
         container.innerHTML = `
           <div class="h-full flex flex-col items-center justify-center text-slate-500 space-y-2">
             <i data-lucide="message-square" class="w-10 h-10 stroke-[1.2] text-slate-600"></i>
-            <p class="text-sm">No messages yet in #${escapeHtml(currentRoom.name)}. Start the conversation!</p>
+            <p class="text-sm">No messages yet in #${escapeHtml(currentRoom ? currentRoom.name : '')}. Start the conversation!</p>
           </div>
         `;
         lucide.createIcons();
         return;
       }
 
+      const isNearBottom = (container.scrollHeight - container.scrollTop - container.clientHeight) < 150;
+
+      let topBanner = '';
+      if (hasMoreOlder) {
+        topBanner = `
+          <div id="load-older-banner" onclick="loadOlderMessages()" class="w-full py-2.5 px-4 mb-3 rounded-xl bg-slate-900/80 hover:bg-slate-800/90 border border-slate-800 hover:border-indigo-500/40 text-center text-xs text-indigo-400 hover:text-indigo-300 font-medium cursor-pointer transition flex items-center justify-center gap-2 shadow-sm select-none">
+            ${isLoadingOlder 
+              ? '<i data-lucide="loader-2" class="w-4 h-4 animate-spin text-indigo-400"></i><span>A carregar 50 mensagens anteriores...</span>' 
+              : '<i data-lucide="chevron-up" class="w-4 h-4 text-indigo-400"></i><span>Carregar mensagens anteriores (+50)</span>'}
+          </div>
+        `;
+      } else if (messages.length >= 50) {
+        topBanner = `
+          <div class="w-full py-2 mb-2 text-center text-[11px] text-slate-600 font-medium border-b border-slate-800/50 flex items-center justify-center gap-1.5 select-none">
+            <i data-lucide="history" class="w-3 h-3 text-slate-600"></i>
+            <span>Início do histórico da sala #${escapeHtml(currentRoom ? currentRoom.name : '')}</span>
+          </div>
+        `;
+      }
+
       const myName = getMyUsername().toLowerCase();
 
-      container.innerHTML = messages.map(msg => {
+      const messagesHtml = messages.map(msg => {
         const isAgent = msg.role === 'agent';
         const isHuman = msg.role === 'human';
         const formattedTime = new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -1359,8 +1456,16 @@
         `;
       }).join('');
 
+      container.innerHTML = topBanner + messagesHtml;
       lucide.createIcons();
-      scrollChatToBottom();
+
+      if (options.shouldScrollToBottom === true) {
+        scrollChatToBottom();
+      } else if (options.maintainScrollPosition) {
+        // Position preserved by loadOlderMessages
+      } else if (options.shouldScrollToBottom === undefined && isNearBottom) {
+        scrollChatToBottom();
+      }
     }
 
     function scrollChatToBottom() {
@@ -1723,7 +1828,8 @@
                 if (newMsg.metadata && newMsg.metadata.poll_id && !pollsMap[newMsg.metadata.poll_id]) {
                   fetchPollDetails(newMsg.metadata.poll_id);
                 }
-                renderMessages();
+                const isMyMsg = newMsg.sender.toLowerCase() === getMyUsername().toLowerCase();
+                renderMessages({ shouldScrollToBottom: isMyMsg ? true : undefined });
                 playNotificationSound();
                 showDesktopNotification(newMsg);
 

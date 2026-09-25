@@ -1093,16 +1093,50 @@ class ChatStorage:
         self,
         room_name: str,
         since_id: int = 0,
-        limit: int = 500,
+        before_id: int = 0,
+        limit: int = 50,
     ) -> list[dict[str, Any]]:
         """
         Retrieves messages for a room.
-        If since_id > 0: returns messages strictly newer than since_id (ascending).
-        If since_id == 0: returns the most recent `limit` messages in chronological order (ascending).
+        - If since_id > 0 and before_id > 0: returns messages strictly between since_id and before_id (ascending).
+        - If before_id > 0 (and since_id == 0): returns up to `limit` messages strictly older than before_id (ascending).
+        - If since_id > 0: returns messages strictly newer than since_id (ascending).
+        - If both == 0: returns the most recent `limit` messages in chronological order (ascending).
         """
         conn = self._get_connection()
         clean_room = room_name.strip()
-        if since_id > 0:
+        if since_id > 0 and before_id > 0:
+            cursor = conn.execute(
+                """
+                SELECT id, room_name, sender, role, content, is_verified, 
+                       COALESCE(message_type, 'text') as message_type, 
+                       COALESCE(metadata, '{}') as metadata, created_at
+                FROM messages
+                WHERE room_name = ? COLLATE NOCASE AND id > ? AND id < ?
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (clean_room, since_id, before_id, limit),
+            )
+        elif before_id > 0:
+            # Fetch the most recent `limit` messages strictly older than before_id, ordered chronologically
+            cursor = conn.execute(
+                """
+                SELECT id, room_name, sender, role, content, is_verified, 
+                       COALESCE(message_type, 'text') as message_type, 
+                       COALESCE(metadata, '{}') as metadata, created_at
+                FROM (
+                    SELECT id, room_name, sender, role, content, is_verified, message_type, metadata, created_at
+                    FROM messages
+                    WHERE room_name = ? COLLATE NOCASE AND id < ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                )
+                ORDER BY id ASC
+                """,
+                (clean_room, before_id, limit),
+            )
+        elif since_id > 0:
             cursor = conn.execute(
                 """
                 SELECT id, room_name, sender, role, content, is_verified, 

@@ -283,6 +283,7 @@ def read_messages(
     room_name: str,
     password: str = "",
     since_id: int = 0,
+    before_id: int = 0,
     limit: int = 50,
     message_id: int = 0,
     agent_token: str = "",
@@ -292,6 +293,7 @@ def read_messages(
     Reads recent messages from a room, or fetches a specific message by message_id.
     Requires authorized agent_token (or member_token).
     - since_id: Only fetch messages newer than this ID.
+    - before_id: Only fetch messages older than this ID (for backward pagination).
     - message_id: If specified (> 0), fetches that specific message with its current reactions and status.
     Each message includes 'reactions': [{'emoji': '👍', 'count': 1, 'users': ['Rui']}].
     """
@@ -303,6 +305,7 @@ def read_messages(
             room_name=room_name,
             password=password,
             since_id=since_id,
+            before_id=before_id,
             limit=limit,
             message_id=message_id if message_id > 0 else None,
         )

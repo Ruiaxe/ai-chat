@@ -144,7 +144,8 @@ async def endpoint_get_messages(request: Request) -> Response:
     room_name = request.path_params["room_name"]
     password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
     since_id = safe_int(request.query_params.get("since_id"), default=0, min_val=0)
-    limit = safe_int(request.query_params.get("limit"), default=500, min_val=1, max_val=1000)
+    before_id = safe_int(request.query_params.get("before_id"), default=0, min_val=0)
+    limit = safe_int(request.query_params.get("limit"), default=50, min_val=1, max_val=1000)
 
     try:
         # Record presence only for verified tokens or authenticated human session
@@ -167,6 +168,7 @@ async def endpoint_get_messages(request: Request) -> Response:
             room_name=room_name,
             password=password,
             since_id=since_id,
+            before_id=before_id,
             limit=limit,
         )
         return JSONResponse(messages)
