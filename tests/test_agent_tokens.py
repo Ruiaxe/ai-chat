@@ -11,6 +11,7 @@ from aichat.hub import ChatHub
 from aichat.storage import ChatStorage
 from aichat.mcp_server import (
     hub,
+    register_agent,
     get_my_identity,
     create_room,
     list_rooms,
@@ -166,6 +167,31 @@ class TestAgentTokensAndClosedRegistry(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tasks, [])
         presence = self.hub.who_is_listening('vault-room', requester_token=self.hub.human_token)
         self.assertIn('total_listening', presence)
+
+    def test_self_register_agent(self):
+        # 1. Reject reserved human names
+        raw_res = register_agent(callsign='Rui')
+        data = json.loads(raw_res)
+        self.assertEqual(data['status'], 'error')
+        self.assertIn('reservado', data['error'])
+
+        # 2. Self register successfully
+        raw_res = register_agent(callsign='NewDev-1')
+        data = json.loads(raw_res)
+        self.assertEqual(data['status'], 'success')
+        self.assertEqual(data['callsign'], 'NewDev-1')
+        token = data['agent_token']
+        self.assertTrue(len(token) > 10)
+
+        # 3. Duplicate rejection
+        dup_res = json.loads(register_agent(callsign='newdev-1'))
+        self.assertEqual(dup_res['status'], 'error')
+        self.assertIn('já está em uso', dup_res['error'])
+
+        # 4. Use new token to call get_my_identity
+        ident = json.loads(get_my_identity(agent_token=token))
+        self.assertEqual(ident['status'], 'success')
+        self.assertEqual(ident['callsign'], 'NewDev-1')
 
 
 if __name__ == '__main__':

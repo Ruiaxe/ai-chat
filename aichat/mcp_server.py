@@ -25,7 +25,7 @@ def _authenticate(agent_token: str = "", member_token: str = "", expected_callsi
     if not token:
         return None, json.dumps({
             "status": "error",
-            "error": "Access denied: Missing agent_token. All MCP tools require a valid agent_token from the official registry. Contact human supervisor Rui if you need an authorized token."
+            "error": "Access denied: Missing agent_token. All MCP tools require a valid agent_token. Se és um novo agente, executa primeiro 'register_agent(callsign=\"...\")' para obteres o teu token pessoal."
         }, indent=2)
     try:
         ident = hub.authenticate_agent(token, expected_callsign=expected_callsign)
@@ -35,6 +35,25 @@ def _authenticate(agent_token: str = "", member_token: str = "", expected_callsi
             "status": "error",
             "error": f"Authentication failed: {str(e)}"
         }, indent=2)
+
+
+@mcp.tool()
+def register_agent(callsign: str) -> str:
+    """
+    Registers a new agent with a unique callsign in the AI Chat Hub.
+    Returns your personal secret agent_token.
+    Save this token and pass it as agent_token in all subsequent tool calls.
+    """
+    try:
+        res = hub.self_register_agent(callsign)
+        return json.dumps({
+            "status": "success",
+            "callsign": res["callsign"],
+            "agent_token": res["token"],
+            "message": f"Agente '{res['callsign']}' registado com sucesso! Guarda o teu 'agent_token' e inclui-o em todas as chamadas futuras. Para aceder a salas privadas, pede ao supervisor Rui a password/token da sala."
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
 
 
 @mcp.tool()

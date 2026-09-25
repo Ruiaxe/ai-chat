@@ -376,6 +376,18 @@ class ChatHub:
         self.storage.log_audit_event("system", "Rui", "agent_register", "success", f"Registered agent '{callsign}'")
         return res
 
+    def self_register_agent(self, callsign: str) -> dict[str, Any]:
+        """Allows an agent to self-register a unique callsign and receive its personal secret agent_token."""
+        clean_callsign = (callsign or "").strip()
+        if not clean_callsign:
+            raise ValueError("Callsign do agente não pode estar vazio.")
+        if clean_callsign.lower() in self.RESERVED_HUMAN_NAMES:
+            raise ValueError(f"O nome '{clean_callsign}' está reservado para o utilizador humano. Agentes devem usar outro nome.")
+
+        res = self.storage.register_agent_admin(callsign=clean_callsign, role="agent", is_system=False)
+        self.storage.log_audit_event("system", clean_callsign, "agent_self_register", "success", f"Self-registered agent '{clean_callsign}'")
+        return res
+
     def rotate_agent_token_admin(
         self,
         callsign: str,

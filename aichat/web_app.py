@@ -994,6 +994,26 @@ async def endpoint_register_agent(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+async def endpoint_self_register_agent(request: Request) -> Response:
+    """Allows an agent or client to self-register with a unique callsign and obtain an agent_token."""
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    callsign = (data.get("callsign") or "").strip()
+    if not callsign:
+        return JSONResponse({"error": "callsign is required"}, status_code=400)
+
+    try:
+        res = hub.self_register_agent(callsign=callsign)
+        return JSONResponse({"status": "success", "agent": res}, status_code=201)
+    except (ValueError, PermissionError) as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 async def endpoint_rotate_agent_token(request: Request) -> Response:
     """Rotates an agent's secret token in the closed registry. Restricted to supervisor Rui."""
     if not is_authenticated_human(request):
@@ -1121,6 +1141,7 @@ def create_app(allowed_hosts: list[str] | None = None) -> Starlette:
         Route("/api/rooms/{room_name}/audit", endpoint=endpoint_get_audit, methods=["GET"]),
         Route("/api/rooms/{room_name}/presence", endpoint=endpoint_get_presence, methods=["GET"]),
         Route("/api/agents", endpoint=endpoint_list_agents, methods=["GET"]),
+        Route("/api/agents/register", endpoint=endpoint_self_register_agent, methods=["POST"]),
         Route("/api/agents", endpoint=endpoint_register_agent, methods=["POST"]),
         Route("/api/agents/{callsign}/rotate", endpoint=endpoint_rotate_agent_token, methods=["POST"]),
         Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_get_tasks, methods=["GET"]),
