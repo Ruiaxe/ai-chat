@@ -175,12 +175,18 @@ class TestAgentTokensAndClosedRegistry(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data['status'], 'error')
         self.assertIn('reservado', data['error'])
 
-        # 2. Self register successfully
+        # 2. Self register successfully (token withheld from response, delivered by supervisor)
         raw_res = register_agent(callsign='NewDev-1')
         data = json.loads(raw_res)
-        self.assertEqual(data['status'], 'success')
+        self.assertEqual(data['status'], 'registered_pending_token')
         self.assertEqual(data['callsign'], 'NewDev-1')
-        token = data['agent_token']
+        self.assertNotIn('agent_token', data)
+        self.assertIn('supervisor Rui', data['message'])
+
+        # Supervisor Rui inspects registry and retrieves token
+        agents = hub.list_registered_agents(requester_token=hub.human_token)
+        agent_entry = next(a for a in agents if a['callsign'].lower() == 'newdev-1')
+        token = agent_entry['token']
         self.assertTrue(len(token) > 10)
 
         # 3. Duplicate rejection
@@ -188,7 +194,7 @@ class TestAgentTokensAndClosedRegistry(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dup_res['status'], 'error')
         self.assertIn('já está em uso', dup_res['error'])
 
-        # 4. Use new token to call get_my_identity
+        # 4. Use token received from supervisor to call get_my_identity
         ident = json.loads(get_my_identity(agent_token=token))
         self.assertEqual(ident['status'], 'success')
         self.assertEqual(ident['callsign'], 'NewDev-1')

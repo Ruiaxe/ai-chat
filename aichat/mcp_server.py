@@ -25,7 +25,7 @@ def _authenticate(agent_token: str = "", member_token: str = "", expected_callsi
     if not token:
         return None, json.dumps({
             "status": "error",
-            "error": "Access denied: Missing agent_token. All MCP tools require a valid agent_token. Se és um novo agente, executa primeiro 'register_agent(callsign=\"...\")' para obteres o teu token pessoal."
+            "error": "Access denied: Missing agent_token. All MCP tools require a valid agent_token. Se és um novo agente, executa primeiro 'register_agent(callsign=\"...\")' e solicita o teu token ao supervisor Rui."
         }, indent=2)
     try:
         ident = hub.authenticate_agent(token, expected_callsign=expected_callsign)
@@ -41,16 +41,14 @@ def _authenticate(agent_token: str = "", member_token: str = "", expected_callsi
 def register_agent(callsign: str) -> str:
     """
     Registers a new agent with a unique callsign in the AI Chat Hub.
-    Returns your personal secret agent_token.
-    Save this token and pass it as agent_token in all subsequent tool calls.
+    Note: Your access token is generated securely on the server and must be delivered directly by supervisor Rui.
     """
     try:
         res = hub.self_register_agent(callsign)
         return json.dumps({
-            "status": "success",
+            "status": "registered_pending_token",
             "callsign": res["callsign"],
-            "agent_token": res["token"],
-            "message": f"Agente '{res['callsign']}' registado com sucesso! Guarda o teu 'agent_token' e inclui-o em todas as chamadas futuras. Para aceder a salas privadas, pede ao supervisor Rui a password/token da sala."
+            "message": f"Agente '{res['callsign']}' registado no servidor. O teu token pessoal de acesso foi gerado e deve ser solicitado diretamente ao supervisor Rui. Uma vez obtido o token, inclui-o como agent_token em todas as chamadas futuras."
         }, indent=2)
     except Exception as e:
         return json.dumps({"status": "error", "error": str(e)}, indent=2)
@@ -152,21 +150,16 @@ def leave_room(room_name: str, agent_name: str = "", member_token: str = "", age
 
 
 @mcp.tool()
-def rotate_member_token(room_name: str, agent_name: str = "", current_token: str = "", password: str = "", member_token: str = "", agent_token: str = "") -> str:
+def rotate_member_token(room_name: str, agent_name: str = "", current_token: str = "", password: str = "", member_token: str = "", agent_token: str = "", supervisor_token: str = "") -> str:
     """
-    Securely rotates and generates a new token for an agent in a room.
-    The new token is returned directly and privately in this tool output. It is never broadcasted to the room.
+    [RESTRICTED] Token management is restricted to supervisor Rui. Agents cannot rotate tokens.
     """
-    token = (agent_token or member_token or current_token).strip()
-    ident, err = _authenticate(token, expected_callsign=agent_name)
-    if err:
-        return err
-    callsign = ident["callsign"]
+    token = (supervisor_token or agent_token or member_token or current_token).strip()
     try:
-        res = hub.rotate_member_token(room_name=room_name, member_name=callsign, current_token=token, password=password)
+        res = hub.rotate_member_token(room_name=room_name, member_name=agent_name, supervisor_token=token)
         return json.dumps({
             "status": "success",
-            "message": f"Token for agent '{callsign}' in room '{room_name}' rotated successfully.",
+            "message": f"Token for agent '{agent_name}' in room '{room_name}' rotated successfully by supervisor.",
             "details": res,
             "member_token": res.get("member_token", ""),
         }, indent=2)
@@ -175,18 +168,13 @@ def rotate_member_token(room_name: str, agent_name: str = "", current_token: str
 
 
 @mcp.tool()
-def change_room_password(room_name: str, old_password: str, new_password: str, agent_name: str = "", agent_token: str = "", member_token: str = "") -> str:
+def change_room_password(room_name: str, old_password: str = "", new_password: str = "", agent_name: str = "", agent_token: str = "", member_token: str = "", supervisor_token: str = "") -> str:
     """
-    Changes the password of a room.
-    Requires authorized agent_token and current room password (or supervisor authorization).
+    [RESTRICTED] Room password management is restricted to supervisor Rui. Agents cannot change room passwords.
     """
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(token, expected_callsign=agent_name)
-    if err:
-        return err
-    callsign = ident["callsign"]
+    token = (supervisor_token or agent_token or member_token).strip()
     try:
-        res = hub.change_room_password(room_name=room_name, old_password=old_password, new_password=new_password, actor_name=callsign)
+        res = hub.change_room_password(room_name=room_name, old_password=old_password, new_password=new_password, actor_name=agent_name or "Rui", supervisor_token=token)
         return json.dumps({
             "status": "success",
             "message": f"Password for room '{room_name}' changed successfully.",

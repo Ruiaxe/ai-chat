@@ -62,6 +62,7 @@ class ChatStorage:
                     password_hash TEXT DEFAULT '',
                     salt TEXT DEFAULT '',
                     is_protected INTEGER DEFAULT 0,
+                    clear_password TEXT DEFAULT '',
                     created_at TEXT NOT NULL
                 );
             """)
@@ -295,6 +296,10 @@ class ChatStorage:
                 conn.execute("UPDATE member_identities SET is_system = 1 WHERE member_name IN ('Antigravity-Hub', 'SentinelSupport');")
             except sqlite3.OperationalError:
                 pass
+            try:
+                conn.execute("ALTER TABLE rooms ADD COLUMN clear_password TEXT DEFAULT '';")
+            except sqlite3.OperationalError:
+                pass
 
     def create_room(
         self,
@@ -303,6 +308,7 @@ class ChatStorage:
         password_hash: str = "",
         salt: str = "",
         is_protected: bool = False,
+        clear_password: str = "",
     ) -> dict[str, Any]:
         """Creates a new room in SQLite and prepares its log files."""
         now = datetime.now().isoformat()
@@ -310,10 +316,10 @@ class ChatStorage:
         with conn:
             cursor = conn.execute(
                 """
-                INSERT INTO rooms (name, topic, password_hash, salt, is_protected, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO rooms (name, topic, password_hash, salt, is_protected, clear_password, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (name, topic, password_hash, salt, 1 if is_protected else 0, now),
+                (name, topic, password_hash, salt, 1 if is_protected else 0, clear_password if is_protected else "", now),
             )
             room_id = cursor.lastrowid
 
@@ -337,12 +343,12 @@ class ChatStorage:
             "created_at": now,
         }
 
-    def get_room(self, name: str) -> dict[str, Any] | None:
+    def get_room(self, name: str, include_password: bool = False) -> dict[str, Any] | None:
         """Fetches room information by name."""
         conn = self._get_connection()
         cursor = conn.execute(
             """
-            SELECT id, name, topic, password_hash, salt, is_protected, COALESCE(is_archived, 0) as is_archived, created_at
+            SELECT id, name, topic, password_hash, salt, is_protected, clear_password, COALESCE(is_archived, 0) as is_archived, created_at
             FROM rooms WHERE name = ? COLLATE NOCASE
             """,
             (name,),
@@ -352,6 +358,10 @@ class ChatStorage:
             return None
         res = dict(row)
         res["is_archived"] = bool(res.get("is_archived", 0))
+        if include_password:
+            res["password"] = res.get("clear_password", "")
+        else:
+            res.pop("clear_password", None)
         return res
 
     def update_room_password(
@@ -360,30 +370,32 @@ class ChatStorage:
         password_hash: str,
         salt: str,
         is_protected: bool = True,
+        clear_password: str = "",
     ) -> None:
-        """Updates room password hash and salt."""
+        """Updates room password hash, salt, and clear_password for supervisor access."""
         conn = self._get_connection()
         with conn:
             conn.execute(
                 """
                 UPDATE rooms 
-                SET password_hash = ?, salt = ?, is_protected = ?
+                SET password_hash = ?, salt = ?, is_protected = ?, clear_password = ?
                 WHERE name = ? COLLATE NOCASE
                 """,
-                (password_hash, salt, 1 if is_protected else 0, room_name.strip()),
+                (password_hash, salt, 1 if is_protected else 0, clear_password if is_protected else "", room_name.strip()),
             )
 
-    def list_rooms(self, include_archived: bool = True) -> list[dict[str, Any]]:
+    def list_rooms(self, include_archived: bool = True, include_passwords: bool = False) -> list[dict[str, Any]]:
         """Lists all rooms with member count, message count, and archived status."""
         conn = self._get_connection()
-        query = """
+        pwd_col = ", r.clear_password as password" if include_passwords else ""
+        query = f"""
             SELECT 
                 r.id,
                 r.name,
                 r.topic,
                 r.is_protected,
                 COALESCE(r.is_archived, 0) as is_archived,
-                r.created_at,
+                r.created_at{pwd_col},
                 (SELECT COUNT(*) FROM messages m WHERE m.room_name = r.name) as message_count,
                 (SELECT COUNT(*) FROM members mb WHERE mb.room_name = r.name) as member_count
             FROM rooms r
@@ -727,6 +739,34 @@ class ChatStorage:
                 (final_token, clean_callsign),
             )
         return final_token
+
+    def update_agent_status_admin(self, callsign: str, status: str) -> None:
+        """Updates agent status (e.g. 'active', 'inactive', 'pending')."""
+        clean_callsign = (callsign or "").strip()
+        conn = self._get_connection()
+        with conn:
+            cursor = conn.execute(
+                "UPDATE member_identities SET status = ? WHERE member_name = ? COLLATE NOCASE",
+                (status.strip(), clean_callsign),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"Agente com callsign '{clean_callsign}' não encontrado no registo.")
+
+    def delete_agent_admin(self, callsign: str) -> None:
+        """Deletes an agent from member_identities and room memberships."""
+        clean_callsign = (callsign or "").strip()
+        conn = self._get_connection()
+        with conn:
+            cursor = conn.execute(
+                "DELETE FROM member_identities WHERE member_name = ? COLLATE NOCASE",
+                (clean_callsign,),
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"Agente com callsign '{clean_callsign}' não encontrado no registo.")
+            conn.execute(
+                "DELETE FROM members WHERE member_name = ? COLLATE NOCASE",
+                (clean_callsign,),
+            )
 
     def mask_tokens_in_text(self, text: str, human_token: str = "") -> str:
         """

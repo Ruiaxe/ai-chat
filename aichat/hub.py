@@ -144,6 +144,7 @@ class ChatHub:
             password_hash=pwd_hash,
             salt=salt,
             is_protected=is_protected,
+            clear_password=password.strip() if is_protected else "",
         )
         return room
 
@@ -273,9 +274,15 @@ class ChatHub:
         member_name: str,
         current_token: str = "",
         password: str = "",
+        supervisor_token: str = "",
     ) -> dict[str, Any]:
-        """Rotates a member's token for a room, validating current token or room password."""
+        """Rotates a member's token for a room. Restricted to supervisor Rui."""
         import secrets
+        clean_st = (supervisor_token or "").strip()
+        if not clean_st or not secrets.compare_digest(clean_st, self.human_token):
+            self.storage.log_audit_event(room_name, member_name, "token_rotate", "failure", "Unauthorized token rotation attempt by non-supervisor")
+            raise PermissionError("Acesso negado: Apenas o supervisor humano Rui pode gerir e rodar tokens.")
+
         clean_member = member_name.strip()
         room = self.storage.get_room(room_name)
         if not room:
@@ -286,22 +293,8 @@ class ChatHub:
         if not mem:
             raise ValueError(f"O membro '{clean_member}' não está registado na sala '{canonical_name}'.")
 
-        authorized = False
-        if mem.get("token") and current_token:
-            if secrets.compare_digest(current_token.strip(), mem["token"]):
-                authorized = True
-        if not authorized and room["is_protected"] and password:
-            if self.verify_room_access(canonical_name, password):
-                authorized = True
-        if not authorized and not mem.get("token"):
-            authorized = True
-
-        if not authorized:
-            self.storage.log_audit_event(canonical_name, clean_member, "token_rotate", "failure", "Unauthorized token rotation attempt")
-            raise PermissionError("Acesso negado: Para renovar o token, forneça o current_token atual ou a senha da sala.")
-
         new_token = self.storage.rotate_member_token(canonical_name, clean_member)
-        self.storage.log_audit_event(canonical_name, clean_member, "token_rotate", "success", "Token rotated securely")
+        self.storage.log_audit_event(canonical_name, clean_member, "token_rotate", "success", "Token rotated by supervisor")
         return {
             "status": "rotated",
             "room_name": canonical_name,
@@ -377,7 +370,7 @@ class ChatHub:
         return res
 
     def self_register_agent(self, callsign: str) -> dict[str, Any]:
-        """Allows an agent to self-register a unique callsign and receive its personal secret agent_token."""
+        """Allows an agent to self-register a unique callsign. The access token is withheld for supervisor delivery."""
         clean_callsign = (callsign or "").strip()
         if not clean_callsign:
             raise ValueError("Callsign do agente não pode estar vazio.")
@@ -385,8 +378,14 @@ class ChatHub:
             raise ValueError(f"O nome '{clean_callsign}' está reservado para o utilizador humano. Agentes devem usar outro nome.")
 
         res = self.storage.register_agent_admin(callsign=clean_callsign, role="agent", is_system=False)
-        self.storage.log_audit_event("system", clean_callsign, "agent_self_register", "success", f"Self-registered agent '{clean_callsign}'")
-        return res
+        self.storage.log_audit_event("system", clean_callsign, "agent_self_register", "success", f"Self-registered agent '{clean_callsign}' (token held for supervisor delivery)")
+        return {
+            "status": "registered_pending_token",
+            "callsign": clean_callsign,
+            "role": res.get("role", "agent"),
+            "created_at": res.get("created_at", ""),
+            "message": f"Registo submetido com sucesso para '{clean_callsign}'. O teu token de acesso deve ser solicitado diretamente ao supervisor Rui.",
+        }
 
     def rotate_agent_token_admin(
         self,
@@ -404,6 +403,15 @@ class ChatHub:
         self.storage.log_audit_event("system", "Rui", "agent_token_rotate", "success", f"Rotated token for agent '{callsign}'")
         return rotated
 
+    def delete_agent_admin(self, callsign: str, supervisor_token: str = "") -> None:
+        """Deletes an agent from registry and rooms. Restricted to supervisor."""
+        import secrets
+        clean_st = (supervisor_token or "").strip()
+        if not clean_st or not secrets.compare_digest(clean_st, self.human_token):
+            raise PermissionError("Acesso negado: Apenas o supervisor humano Rui pode remover agentes.")
+        self.storage.delete_agent_admin(callsign)
+        self.storage.log_audit_event("system", "Rui", "agent_delete", "success", f"Deleted agent '{callsign}'")
+
     def change_room_password(
         self,
         room_name: str,
@@ -412,7 +420,7 @@ class ChatHub:
         actor_name: str = "",
         supervisor_token: str = "",
     ) -> dict[str, Any]:
-        """Changes room password after verifying old password or supervisor token."""
+        """Changes room password. Restricted to supervisor Rui."""
         import secrets
         clean_room = room_name.strip()
         room = self.storage.get_room(clean_room)
@@ -424,14 +432,10 @@ class ChatHub:
         authorized = False
         if supervisor_token and secrets.compare_digest(supervisor_token.strip(), self.human_token):
             authorized = True
-        elif not room["is_protected"]:
-            authorized = True
-        elif old_password and self.verify_room_access(canonical_name, old_password):
-            authorized = True
 
         if not authorized:
-            self.storage.log_audit_event(canonical_name, clean_actor, "password_change", "failure", "Invalid old password or supervisor credentials")
-            raise PermissionError("Acesso negado: Senha anterior incorreta ou credencial de supervisor inválida.")
+            self.storage.log_audit_event(canonical_name, clean_actor, "password_change", "failure", "Unauthorized attempt by non-supervisor")
+            raise PermissionError("Acesso negado: Apenas o supervisor humano Rui pode definir ou alterar a senha de salas.")
 
         clean_new = new_password.strip()
         is_protected = bool(clean_new)
@@ -440,7 +444,7 @@ class ChatHub:
         if is_protected:
             pwd_hash, salt = self._hash_password(clean_new)
 
-        self.storage.update_room_password(canonical_name, pwd_hash, salt, is_protected)
+        self.storage.update_room_password(canonical_name, pwd_hash, salt, is_protected, clear_password=clean_new)
         self.storage.log_audit_event(canonical_name, clean_actor, "password_change", "success", f"is_protected={is_protected}")
         return {
             "status": "password_changed",

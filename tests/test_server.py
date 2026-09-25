@@ -1061,19 +1061,19 @@ class TestWebAppAndApi(unittest.TestCase):
         join_res = hub.join_room(room_name, "AgentSec", role="agent", password="pass1")
         token1 = join_res["member_token"]
 
-        # 1. Rotate token
+        # 1. Rotate token (with supervisor_token)
         rot_res = self.client.post(
             f"/api/rooms/{room_name}/rotate-token",
-            json={"member_name": "AgentSec", "current_token": token1},
+            json={"member_name": "AgentSec", "current_token": token1, "supervisor_token": hub.human_token},
         )
         self.assertEqual(rot_res.status_code, 200)
         token2 = rot_res.json()["member_token"]
         self.assertNotEqual(token1, token2)
 
-        # 2. Change password
+        # 2. Change password (with supervisor_token)
         pwd_res = self.client.post(
             f"/api/rooms/{room_name}/password",
-            json={"old_password": "pass1", "new_password": "pass2"},
+            json={"old_password": "pass1", "new_password": "pass2", "supervisor_token": hub.human_token},
         )
         self.assertEqual(pwd_res.status_code, 200)
         self.assertTrue(pwd_res.json()["is_protected"])
@@ -1094,6 +1094,59 @@ class TestWebAppAndApi(unittest.TestCase):
         )
         self.assertEqual(kick_res.status_code, 200)
         self.assertEqual(kick_res.json()["status"], "kicked")
+
+    def test_supervisor_admin_rooms_and_agents_api(self):
+        """Verifies supervisor endpoints for room passwords, agent registration withholding, and agent management."""
+        import uuid
+        room_name = f"admin-room-{uuid.uuid4().hex[:6]}"
+        hub.create_room(room_name, password="InitialPassword123")
+
+        # 1. GET /api/admin/rooms: 403 for unauthorized, 200 for supervisor with passwords
+        fail_res = self.client.get("/api/admin/rooms")
+        self.assertEqual(fail_res.status_code, 403)
+
+        ok_res = self.client.get("/api/admin/rooms", headers={"x-human-token": hub.human_token})
+        self.assertEqual(ok_res.status_code, 200)
+        admin_rooms = ok_res.json()["rooms"]
+        target = next(r for r in admin_rooms if r["name"].lower() == room_name.lower())
+        self.assertEqual(target["password"], "InitialPassword123")
+        self.assertTrue(target["is_protected"])
+
+        # 2. POST /api/admin/rooms/{room}/password: change password as supervisor
+        ch_fail = self.client.post(f"/api/admin/rooms/{room_name}/password", json={"password": "NewSecretPass456"})
+        self.assertEqual(ch_fail.status_code, 403)
+
+        ch_ok = self.client.post(
+            f"/api/admin/rooms/{room_name}/password",
+            headers={"x-human-token": hub.human_token},
+            json={"password": "NewSecretPass456"},
+        )
+        self.assertEqual(ch_ok.status_code, 200)
+        self.assertTrue(hub.verify_room_access(room_name, "NewSecretPass456"))
+        self.assertFalse(hub.verify_room_access(room_name, "InitialPassword123"))
+
+        # 3. POST /api/agents/register: does not leak secret token to caller
+        callsign = f"AgentTest-{uuid.uuid4().hex[:4]}"
+        reg_res = self.client.post("/api/agents/register", json={"callsign": callsign})
+        self.assertEqual(reg_res.status_code, 201)
+        body = reg_res.json()
+        self.assertEqual(body["agent"]["status"], "registered_pending_token")
+        self.assertNotIn("token", body["agent"])
+        self.assertNotIn("agent_token", body["agent"])
+
+        # Supervisor can view agent token via /api/agents
+        agents_res = self.client.get("/api/agents", headers={"x-human-token": hub.human_token})
+        self.assertEqual(agents_res.status_code, 200)
+        reg_agent = next(a for a in agents_res.json()["agents"] if a["callsign"].lower() == callsign.lower())
+        self.assertTrue(len(reg_agent["token"]) >= 16)
+
+        # 4. DELETE /api/agents/{callsign}
+        del_fail = self.client.delete(f"/api/agents/{callsign}")
+        self.assertEqual(del_fail.status_code, 403)
+
+        del_ok = self.client.delete(f"/api/agents/{callsign}", headers={"x-human-token": hub.human_token})
+        self.assertEqual(del_ok.status_code, 200)
+        self.assertEqual(del_ok.json()["deleted"], callsign)
 
 
 class TestMCPTools(unittest.IsolatedAsyncioTestCase):
@@ -1340,15 +1393,23 @@ class TestMCPTools(unittest.IsolatedAsyncioTestCase):
         join_res = json.loads(tool_join_room(room_name, agent_name="AdminAgent", password="oldpass", agent_token=self.admin_token))
         token = join_res["member_token"]
 
-        # 1. rotate_member_token
-        rot_res = json.loads(tool_rotate_member_token(room_name, agent_name="AdminAgent", current_token=token, agent_token=self.admin_token))
-        self.assertEqual(rot_res["status"], "success")
-        new_token = rot_res["member_token"]
+        # 1. rotate_member_token (agent rejected, supervisor allowed)
+        agent_rot = json.loads(tool_rotate_member_token(room_name, agent_name="AdminAgent", current_token=token, agent_token=self.admin_token))
+        self.assertEqual(agent_rot["status"], "error")
+        self.assertIn("Apenas o supervisor humano Rui", agent_rot["error"])
+
+        sup_rot = json.loads(tool_rotate_member_token(room_name, agent_name="AdminAgent", supervisor_token=hub.human_token))
+        self.assertEqual(sup_rot["status"], "success")
+        new_token = sup_rot["member_token"]
         self.assertNotEqual(token, new_token)
 
-        # 2. change_room_password
-        ch_res = json.loads(tool_change_room_password(room_name, old_password="oldpass", new_password="newpass", agent_name="AdminAgent", agent_token=new_token))
-        self.assertEqual(ch_res["status"], "success")
+        # 2. change_room_password (agent rejected, supervisor allowed)
+        agent_ch = json.loads(tool_change_room_password(room_name, old_password="oldpass", new_password="newpass", agent_name="AdminAgent", agent_token=new_token))
+        self.assertEqual(agent_ch["status"], "error")
+        self.assertIn("Apenas o supervisor humano Rui", agent_ch["error"])
+
+        sup_ch = json.loads(tool_change_room_password(room_name, old_password="oldpass", new_password="newpass", supervisor_token=hub.human_token))
+        self.assertEqual(sup_ch["status"], "success")
 
         # 3. kick_member
         kick_res = json.loads(tool_kick_member(room_name, member_to_kick="AdminAgent", requester_name="Rui", agent_token=hub.human_token))

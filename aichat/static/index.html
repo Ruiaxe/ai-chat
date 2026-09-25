@@ -540,6 +540,117 @@
     </div>
   </div>
 
+  <!-- Supervisor Admin Management Modal (Agentes, Tokens & Salas) -->
+  <div id="admin-management-modal" class="fixed inset-0 bg-black/80 backdrop-blur-md z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+      <!-- Modal Header -->
+      <div class="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/80">
+        <div class="flex items-center space-x-3">
+          <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-cyan-500 flex items-center justify-center text-white shadow-lg shadow-indigo-500/20">
+            <i data-lucide="shield-check" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <h3 class="font-bold text-white text-base flex items-center gap-2">
+              Painel de Gestão do Supervisor
+              <span class="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-mono font-medium border border-emerald-500/30">Rui</span>
+            </h3>
+            <p class="text-xs text-slate-400">Controlo centralizado de agentes, tokens e senhas de salas</p>
+          </div>
+        </div>
+        <button onclick="closeAdminModal()" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <div class="flex items-center border-b border-slate-800 bg-slate-950/40 px-4 pt-2">
+        <button id="admin-tab-agents-btn" onclick="switchAdminTab('agents')" class="px-4 py-2.5 text-xs font-semibold border-b-2 border-indigo-500 text-indigo-400 flex items-center gap-2 transition">
+          <i data-lucide="bot" class="w-4 h-4"></i>
+          <span>Agentes & Tokens</span>
+          <span id="admin-agents-count-badge" class="px-1.5 py-0.2 rounded-full text-[10px] bg-indigo-500/20 text-indigo-300 font-mono">0</span>
+        </button>
+        <button id="admin-tab-rooms-btn" onclick="switchAdminTab('rooms')" class="px-4 py-2.5 text-xs font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2 transition">
+          <i data-lucide="hash" class="w-4 h-4"></i>
+          <span>Salas & Senhas</span>
+          <span id="admin-rooms-count-badge" class="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 text-slate-400 font-mono">0</span>
+        </button>
+      </div>
+
+      <!-- Modal Body (Tab Content) -->
+      <div class="flex-1 overflow-y-auto p-4 space-y-4">
+        <!-- Tab 1: Agents & Tokens -->
+        <div id="admin-tab-agents" class="space-y-4">
+          <!-- Top bar with actions -->
+          <div class="flex items-center justify-between gap-3 flex-wrap">
+            <div class="relative flex-1 min-w-[200px]">
+              <i data-lucide="search" class="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400"></i>
+              <input id="admin-agents-search" type="text" placeholder="Filtrar agentes por callsign..." oninput="filterAdminAgents()"
+                class="w-full pl-8 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-indigo-500" />
+            </div>
+            <button onclick="toggleRegisterAgentForm()" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition shadow">
+              <i data-lucide="user-plus" class="w-3.5 h-3.5"></i>
+              <span>Novo Agente</span>
+            </button>
+          </div>
+
+          <!-- Collapsible New Agent Form -->
+          <div id="admin-new-agent-form" class="hidden p-3.5 bg-slate-950/70 border border-slate-800 rounded-xl space-y-3">
+            <h4 class="text-xs font-bold text-white flex items-center gap-1.5">
+              <i data-lucide="sparkles" class="w-3.5 h-3.5 text-indigo-400"></i> Provisionar Agente Manualmente
+            </h4>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div>
+                <label class="block text-[10px] text-slate-400 uppercase font-bold mb-1">Callsign *</label>
+                <input id="new-agent-callsign" type="text" placeholder="ex: Claude-3, DevBot"
+                  class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700/80 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-indigo-500" />
+              </div>
+              <div>
+                <label class="block text-[10px] text-slate-400 uppercase font-bold mb-1">Papel / Função</label>
+                <input id="new-agent-role" type="text" value="agent" placeholder="agent"
+                  class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700/80 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-indigo-500" />
+              </div>
+              <div>
+                <label class="block text-[10px] text-slate-400 uppercase font-bold mb-1">Token Personalizado (opcional)</label>
+                <input id="new-agent-token" type="text" placeholder="Em branco para gerar auto"
+                  class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700/80 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono" />
+              </div>
+            </div>
+            <div class="flex justify-end gap-2 pt-1">
+              <button onclick="toggleRegisterAgentForm()" class="px-3 py-1 rounded-lg bg-slate-800 text-slate-400 hover:text-white text-xs">Cancelar</button>
+              <button onclick="submitRegisterAgentAdmin()" class="px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow">Registar Agente</button>
+            </div>
+          </div>
+
+          <!-- Agents List Container -->
+          <div id="admin-agents-list" class="space-y-2">
+            <div class="text-center py-8 text-xs text-slate-500">A carregar agentes...</div>
+          </div>
+        </div>
+
+        <!-- Tab 2: Rooms & Passwords -->
+        <div id="admin-tab-rooms" class="hidden space-y-4">
+          <!-- Top bar with actions -->
+          <div class="flex items-center justify-between gap-3 flex-wrap">
+            <div class="relative flex-1 min-w-[200px]">
+              <i data-lucide="search" class="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-400"></i>
+              <input id="admin-rooms-search" type="text" placeholder="Filtrar salas por nome..." oninput="filterAdminRooms()"
+                class="w-full pl-8 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-indigo-500" />
+            </div>
+            <button onclick="openCreateRoomModal()" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition shadow">
+              <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+              <span>Criar Nova Sala</span>
+            </button>
+          </div>
+
+          <!-- Rooms List Container -->
+          <div id="admin-rooms-list" class="space-y-2">
+            <div class="text-center py-8 text-xs text-slate-500">A carregar salas...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Global Reaction Picker Floating Box -->
   <div id="global-reaction-picker" class="hidden fixed z-50 bg-slate-900/95 backdrop-blur-md border border-slate-700 shadow-2xl rounded-2xl p-1.5 flex items-center space-x-1 animate-fadeIn">
     <button onclick="selectReactionFromPicker('👍')" class="hover:scale-125 transition p-1 text-lg leading-none rounded hover:bg-slate-800" title="Polegar acima">👍</button>
@@ -825,13 +936,17 @@
       if (authenticated) {
         if (container) {
           container.innerHTML = `
-            <div class="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs font-medium mr-2">
+            <div class="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs font-medium mr-1.5">
               <i data-lucide="shield-check" class="w-3.5 h-3.5"></i>
               <span class="hidden sm:inline">Rui (Humano)</span>
               <button onclick="handleLogout()" title="Terminar sessão" class="ml-1 text-slate-400 hover:text-rose-400 transition">
                 <i data-lucide="log-out" class="w-3 h-3"></i>
               </button>
             </div>
+            <button onclick="openAdminModal()" title="Painel de Gestão do Supervisor (Agentes & Salas)" class="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center space-x-1 mr-2 transition shadow-sm">
+              <i data-lucide="settings" class="w-3.5 h-3.5"></i>
+              <span class="hidden md:inline">Gestão</span>
+            </button>
           `;
         }
         if (userStatus) {
@@ -2577,6 +2692,420 @@
         loadRoomMessages(currentRoom, getSavedPassword(currentRoom.name));
       }
       fetchRooms();
+    }
+
+    // =============================================================
+    // Supervisor Admin Management (v2.8 - Agentes, Tokens & Salas)
+    // =============================================================
+    let adminAgents = [];
+    let adminRooms = [];
+    let activeAdminTab = 'agents';
+
+    function openAdminModal() {
+      if (!isHumanAuthenticated) {
+        openAuthModal(() => openAdminModal());
+        return;
+      }
+      document.getElementById('admin-management-modal').classList.remove('hidden');
+      switchAdminTab(activeAdminTab);
+    }
+
+    function closeAdminModal() {
+      document.getElementById('admin-management-modal').classList.add('hidden');
+    }
+
+    function switchAdminTab(tab) {
+      activeAdminTab = tab;
+      const agentsBtn = document.getElementById('admin-tab-agents-btn');
+      const roomsBtn = document.getElementById('admin-tab-rooms-btn');
+      const agentsTab = document.getElementById('admin-tab-agents');
+      const roomsTab = document.getElementById('admin-tab-rooms');
+
+      if (tab === 'agents') {
+        agentsBtn.className = "px-4 py-2.5 text-xs font-semibold border-b-2 border-indigo-500 text-indigo-400 flex items-center gap-2 transition";
+        roomsBtn.className = "px-4 py-2.5 text-xs font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2 transition";
+        agentsTab.classList.remove('hidden');
+        roomsTab.classList.add('hidden');
+        fetchAdminAgents();
+      } else {
+        roomsBtn.className = "px-4 py-2.5 text-xs font-semibold border-b-2 border-indigo-500 text-indigo-400 flex items-center gap-2 transition";
+        agentsBtn.className = "px-4 py-2.5 text-xs font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-2 transition";
+        roomsTab.classList.remove('hidden');
+        agentsTab.classList.add('hidden');
+        fetchAdminRooms();
+      }
+      lucide.createIcons();
+    }
+
+    function toggleRegisterAgentForm() {
+      const form = document.getElementById('admin-new-agent-form');
+      if (form) {
+        form.classList.toggle('hidden');
+        if (!form.classList.contains('hidden')) {
+          document.getElementById('new-agent-callsign').focus();
+        }
+      }
+    }
+
+    async function copyToClipboard(text, btnEl) {
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        if (btnEl) {
+          const original = btnEl.innerHTML;
+          btnEl.innerHTML = '<span class="text-emerald-400 font-semibold text-[10px]">✓ Copiado!</span>';
+          setTimeout(() => { btnEl.innerHTML = original; lucide.createIcons(); }, 2000);
+        }
+      } catch (err) {
+        prompt('Copia o valor:', text);
+      }
+    }
+
+    function togglePasswordVisibilityById(inputId, btnEl) {
+      const input = document.getElementById(inputId);
+      if (!input) return;
+      if (input.type === 'password') {
+        input.type = 'text';
+        btnEl.innerHTML = '<i data-lucide="eye-off" class="w-3.5 h-3.5"></i>';
+      } else {
+        input.type = 'password';
+        btnEl.innerHTML = '<i data-lucide="eye" class="w-3.5 h-3.5"></i>';
+      }
+      lucide.createIcons();
+    }
+
+    // --- Agents Management ---
+    async function fetchAdminAgents() {
+      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+      try {
+        const headers = {};
+        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
+        const res = await fetch('/api/agents', { headers });
+        if (!res.ok) {
+          if (res.status === 403) {
+            isHumanAuthenticated = false;
+            updateAuthUI(false);
+            closeAdminModal();
+            openAuthModal();
+            return;
+          }
+          throw new Error('Falha ao carregar agentes');
+        }
+        const data = await res.json();
+        adminAgents = data.agents || [];
+        document.getElementById('admin-agents-count-badge').textContent = adminAgents.length;
+        filterAdminAgents();
+      } catch (err) {
+        document.getElementById('admin-agents-list').innerHTML = `
+          <div class="text-rose-400 text-center py-4 text-xs">Erro ao carregar agentes: ${escapeHtml(err.message)}</div>
+        `;
+      }
+    }
+
+    function filterAdminAgents() {
+      const query = (document.getElementById('admin-agents-search').value || '').toLowerCase().trim();
+      const filtered = adminAgents.filter(a =>
+        a.callsign.toLowerCase().includes(query) ||
+        (a.role && a.role.toLowerCase().includes(query)) ||
+        (a.status && a.status.toLowerCase().includes(query))
+      );
+      renderAdminAgents(filtered);
+    }
+
+    function renderAdminAgents(list) {
+      const container = document.getElementById('admin-agents-list');
+      if (!container) return;
+      if (!list || list.length === 0) {
+        container.innerHTML = '<div class="text-center py-8 text-xs text-slate-500">Nenhum agente encontrado.</div>';
+        return;
+      }
+
+      container.innerHTML = list.map((a, idx) => {
+        const isSystem = a.is_system;
+        const isHuman = a.role === 'human';
+        const tokenVal = a.token || '';
+        const tokenInputId = `agent-token-input-${idx}`;
+        const statusBadge = a.status === 'active' 
+          ? '<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Ativo</span>'
+          : '<span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">Pendente</span>';
+
+        return `
+          <div class="p-3 bg-slate-950/70 border border-slate-800 rounded-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
+            <div class="flex items-center space-x-2.5 min-w-0 flex-1">
+              <div class="w-8 h-8 rounded-lg ${isHuman ? 'bg-emerald-500/20 text-emerald-400' : 'bg-indigo-600/20 text-indigo-400'} border border-slate-700/60 flex items-center justify-center flex-shrink-0 text-base">
+                ${isHuman ? '👤' : '🤖'}
+              </div>
+              <div class="min-w-0">
+                <div class="flex items-center space-x-1.5 flex-wrap">
+                  <span class="font-bold text-slate-200 text-sm">@${escapeHtml(a.callsign)}</span>
+                  ${statusBadge}
+                  <span class="px-1.5 py-0.2 rounded text-[10px] bg-slate-800 text-slate-400 font-mono">${escapeHtml(a.role)}</span>
+                </div>
+                <div class="text-[10px] text-slate-500 mt-0.5">Criado: ${escapeHtml((a.created_at || '').substring(0, 19).replace('T', ' '))}</div>
+              </div>
+            </div>
+
+            <!-- Token Box with Reveal & Copy -->
+            <div class="flex items-center space-x-1.5 w-full md:w-auto bg-slate-900 px-2 py-1 rounded-lg border border-slate-800">
+              <span class="text-[10px] uppercase font-bold text-slate-500 mr-1">Token:</span>
+              <input id="${tokenInputId}" type="password" readonly value="${escapeHtml(tokenVal)}"
+                class="bg-transparent text-[11px] font-mono text-cyan-300 w-36 sm:w-44 focus:outline-none select-all" />
+              <button onclick="togglePasswordVisibilityById('${tokenInputId}', this)" title="Ver/Ocultar Token"
+                class="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 transition">
+                <i data-lucide="eye" class="w-3.5 h-3.5"></i>
+              </button>
+              <button onclick="copyToClipboard('${escapeHtml(tokenVal)}', this)" title="Copiar Token para entregar ao agente"
+                class="px-2 py-0.5 rounded bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white text-[11px] font-medium border border-indigo-500/30 flex items-center gap-1 transition">
+                <i data-lucide="copy" class="w-3 h-3"></i>
+                <span>Copiar</span>
+              </button>
+            </div>
+
+            <!-- Actions -->
+            <div class="flex items-center space-x-1 flex-shrink-0 self-end md:self-center">
+              <button onclick="handleRotateAgentToken('${escapeHtml(a.callsign)}')" title="Rodar Token (invalida token antigo imediatamente)"
+                class="px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[11px] font-semibold flex items-center gap-1 transition">
+                <i data-lucide="rotate-cw" class="w-3 h-3"></i>
+                <span>Rodar</span>
+              </button>
+              ${!isSystem && !isHuman ? `
+                <button onclick="handleDeleteAgent('${escapeHtml(a.callsign)}')" title="Eliminar Agente"
+                  class="p-1 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition">
+                  <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                </button>
+              ` : ''}
+            </div>
+          </div>
+        `;
+      }).join('');
+      lucide.createIcons();
+    }
+
+    async function handleRotateAgentToken(callsign) {
+      if (!confirm(`Tens a certeza que desejas rodar o token de @${callsign}? O token atual deixará de funcionar imediatamente.`)) return;
+      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
+        const res = await fetch(`/api/agents/${encodeURIComponent(callsign)}/rotate`, {
+          method: 'POST',
+          headers,
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert('Erro ao rodar token: ' + (data.error || 'Erro'));
+          return;
+        }
+        alert(`Token rodado com sucesso para @${callsign}!\nNovo token: ${data.agent_token}\nPodes copiá-lo da lista para entregar ao agente.`);
+        await fetchAdminAgents();
+      } catch (err) {
+        alert('Erro de rede: ' + err.message);
+      }
+    }
+
+    async function handleDeleteAgent(callsign) {
+      if (!confirm(`Desejas eliminar permanentemente o agente @${callsign} do registo?`)) return;
+      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+      try {
+        const headers = {};
+        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
+        const res = await fetch(`/api/agents/${encodeURIComponent(callsign)}`, {
+          method: 'DELETE',
+          headers,
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert('Erro ao eliminar agente: ' + (data.error || 'Erro'));
+          return;
+        }
+        await fetchAdminAgents();
+      } catch (err) {
+        alert('Erro de rede: ' + err.message);
+      }
+    }
+
+    async function submitRegisterAgentAdmin() {
+      const callsignInput = document.getElementById('new-agent-callsign');
+      const roleInput = document.getElementById('new-agent-role');
+      const tokenInput = document.getElementById('new-agent-token');
+
+      const callsign = callsignInput.value.trim();
+      if (!callsign) {
+        alert('Callsign é obrigatório.');
+        callsignInput.focus();
+        return;
+      }
+
+      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
+        const res = await fetch('/api/agents', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            callsign: callsign,
+            role: roleInput.value.trim() || 'agent',
+            token: tokenInput.value.trim() || undefined,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert('Erro ao registar agente: ' + (data.error || 'Erro'));
+          return;
+        }
+        alert(`Agente @${data.agent.callsign} registado com sucesso!\nToken: ${data.agent.token}`);
+        callsignInput.value = '';
+        tokenInput.value = '';
+        toggleRegisterAgentForm();
+        await fetchAdminAgents();
+      } catch (err) {
+        alert('Erro de rede: ' + err.message);
+      }
+    }
+
+    // --- Rooms & Passwords Management ---
+    async function fetchAdminRooms() {
+      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+      try {
+        const headers = {};
+        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
+        const res = await fetch('/api/admin/rooms', { headers });
+        if (!res.ok) {
+          if (res.status === 403) {
+            isHumanAuthenticated = false;
+            updateAuthUI(false);
+            closeAdminModal();
+            openAuthModal();
+            return;
+          }
+          throw new Error('Falha ao carregar salas');
+        }
+        const data = await res.json();
+        adminRooms = data.rooms || [];
+        document.getElementById('admin-rooms-count-badge').textContent = adminRooms.length;
+        filterAdminRooms();
+      } catch (err) {
+        document.getElementById('admin-rooms-list').innerHTML = `
+          <div class="text-rose-400 text-center py-4 text-xs">Erro ao carregar salas: ${escapeHtml(err.message)}</div>
+        `;
+      }
+    }
+
+    function filterAdminRooms() {
+      const query = (document.getElementById('admin-rooms-search').value || '').toLowerCase().trim();
+      const filtered = adminRooms.filter(r =>
+        r.name.toLowerCase().includes(query) ||
+        (r.topic && r.topic.toLowerCase().includes(query))
+      );
+      renderAdminRooms(filtered);
+    }
+
+    function renderAdminRooms(list) {
+      const container = document.getElementById('admin-rooms-list');
+      if (!container) return;
+      if (!list || list.length === 0) {
+        container.innerHTML = '<div class="text-center py-8 text-xs text-slate-500">Nenhuma sala encontrada.</div>';
+        return;
+      }
+
+      container.innerHTML = list.map((r, idx) => {
+        const isProtected = Boolean(r.is_protected);
+        const pwdVal = r.password || '';
+        const pwdInputId = `room-pwd-input-${idx}`;
+
+        return `
+          <div class="p-3 bg-slate-950/70 border border-slate-800 rounded-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
+            <div class="flex items-center space-x-2.5 min-w-0 flex-1">
+              <div class="p-2 rounded-lg bg-slate-800 text-indigo-400 border border-slate-700/60 flex-shrink-0">
+                <i data-lucide="hash" class="w-4 h-4"></i>
+              </div>
+              <div class="min-w-0">
+                <div class="flex items-center space-x-2">
+                  <span class="font-bold text-slate-200 text-sm">#${escapeHtml(r.name)}</span>
+                  ${isProtected ? `
+                    <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center gap-1">
+                      <i data-lucide="lock" class="w-3 h-3"></i> Protegida
+                    </span>
+                  ` : `
+                    <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-400 border border-slate-700">Pública</span>
+                  `}
+                  ${r.is_archived ? `
+                    <span class="px-1.5 py-0.2 rounded text-[10px] bg-rose-500/10 text-rose-400 border border-rose-500/30">Arquivada</span>
+                  ` : ''}
+                </div>
+                <p class="text-[11px] text-slate-400 truncate mt-0.5">${escapeHtml(r.topic || 'Sem tópico definido')}</p>
+                <div class="text-[10px] text-slate-500 mt-0.5">Mensagens: ${r.message_count || 0} • Membros: ${r.member_count || 0}</div>
+              </div>
+            </div>
+
+            <!-- Password Box -->
+            <div class="flex items-center space-x-1.5 w-full md:w-auto bg-slate-900 px-2 py-1 rounded-lg border border-slate-800">
+              <span class="text-[10px] uppercase font-bold text-slate-500 mr-1">Senha:</span>
+              ${isProtected ? `
+                <input id="${pwdInputId}" type="password" readonly value="${escapeHtml(pwdVal)}" placeholder="••••••••"
+                  class="bg-transparent text-[11px] font-mono text-amber-300 w-28 sm:w-36 focus:outline-none select-all" />
+                <button onclick="togglePasswordVisibilityById('${pwdInputId}', this)" title="Ver/Ocultar Senha"
+                  class="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 transition">
+                  <i data-lucide="eye" class="w-3.5 h-3.5"></i>
+                </button>
+                <button onclick="copyToClipboard('${escapeHtml(pwdVal)}', this)" title="Copiar Senha para fornecer aos agentes"
+                  class="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/40 text-amber-300 text-[11px] font-medium border border-amber-500/30 flex items-center gap-1 transition">
+                  <i data-lucide="copy" class="w-3 h-3"></i>
+                  <span>Copiar</span>
+                </button>
+              ` : `
+                <span class="text-slate-500 text-[11px] italic px-2">Sem senha</span>
+              `}
+            </div>
+
+            <!-- Actions -->
+            <div class="flex items-center space-x-1.5 flex-shrink-0 self-end md:self-center">
+              <button onclick="handleAdminSetRoomPassword('${escapeHtml(r.name)}', ${isProtected})" title="Definir ou Alterar Senha"
+                class="px-2.5 py-1 rounded-lg bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white border border-indigo-500/30 text-[11px] font-semibold flex items-center gap-1 transition">
+                <i data-lucide="key" class="w-3 h-3"></i>
+                <span>${isProtected ? 'Alterar' : 'Proteger'}</span>
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+      lucide.createIcons();
+    }
+
+    async function handleAdminSetRoomPassword(roomName, currentlyProtected) {
+      const promptMsg = currentlyProtected 
+        ? `Introduz a NOVA senha para #${roomName} (ou deixa vazio para REMOVER a proteção e tornar pública):`
+        : `Introduz a senha de acesso para proteger #${roomName}:`;
+      const newPwd = prompt(promptMsg);
+      if (newPwd === null) return; // Cancelled
+
+      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
+        const res = await fetch(`/api/admin/rooms/${encodeURIComponent(roomName)}/password`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ password: newPwd.trim() }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert('Erro ao definir senha: ' + (data.error || 'Erro'));
+          return;
+        }
+        if (newPwd.trim()) {
+          savePassword(roomName, newPwd.trim());
+          alert(`Senha da sala #${roomName} definida com sucesso!\nSenha: ${newPwd.trim()}\nPodes copiá-la do painel de salas para fornecer aos agentes.`);
+        } else {
+          clearSavedPassword(roomName);
+          alert(`Proteção removida da sala #${roomName}. A sala é agora pública.`);
+        }
+        await fetchAdminRooms();
+        await fetchRooms();
+      } catch (err) {
+        alert('Erro de rede: ' + err.message);
+      }
     }
 
     function escapeHtml(text) {

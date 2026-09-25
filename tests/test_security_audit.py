@@ -304,12 +304,12 @@ class TestSecurityAuditVulnerabilities(unittest.IsolatedAsyncioTestCase):
         msg1 = await self.hub.send_message("priv-room", "AgentOne", "msg 1", password="secret_pass", member_token=token1)
         self.assertTrue(msg1["is_verified"])
 
-        # Rotate with wrong token -> fails
+        # Rotate without supervisor credentials -> fails
         with self.assertRaises(PermissionError):
             self.hub.rotate_member_token("priv-room", "AgentOne", current_token="wrong_token")
 
-        # Rotate with valid token1 -> succeeds
-        rot_res = self.hub.rotate_member_token("priv-room", "AgentOne", current_token=token1)
+        # Rotate by supervisor -> succeeds
+        rot_res = self.hub.rotate_member_token("priv-room", "AgentOne", supervisor_token=self.hub.human_token)
         token2 = rot_res["member_token"]
         self.assertNotEqual(token1, token2)
 
@@ -322,15 +322,15 @@ class TestSecurityAuditVulnerabilities(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(msg2["is_verified"])
 
     async def test_v26_change_room_password(self):
-        """Verifies changing room password requires old password or supervisor token."""
+        """Verifies changing room password requires supervisor token."""
         self.hub.create_room("locked-room", password="old_password")
 
-        # Unauthorized change -> fails
+        # Non-supervisor change -> fails
         with self.assertRaises(PermissionError):
             self.hub.change_room_password("locked-room", old_password="wrong", new_password="new_pass")
 
-        # Authorized change -> succeeds
-        res = self.hub.change_room_password("locked-room", old_password="old_password", new_password="new_password")
+        # Authorized supervisor change -> succeeds
+        res = self.hub.change_room_password("locked-room", old_password="old_password", new_password="new_password", supervisor_token=self.hub.human_token)
         self.assertEqual(res["status"], "password_changed")
 
         # Access with old password -> fails

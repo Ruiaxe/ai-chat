@@ -602,12 +602,15 @@ async def endpoint_rotate_token(request: Request) -> Response:
     current_token = (data.get("current_token") or data.get("member_token") or "").strip()
     password = data.get("password", "") or request.headers.get("x-room-password", "")
 
+    supervisor_token = hub.human_token if is_authenticated_human(request) else (data.get("supervisor_token") or request.headers.get("x-human-token", "")).strip()
+
     try:
         res = hub.rotate_member_token(
             room_name=room_name,
             member_name=member_name,
             current_token=current_token,
             password=password,
+            supervisor_token=supervisor_token,
         )
         return JSONResponse(res, status_code=200)
     except PermissionError as pe:
@@ -1028,6 +1031,58 @@ async def endpoint_rotate_agent_token(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+async def endpoint_delete_agent(request: Request) -> Response:
+    """Allows authenticated supervisor Rui to delete an agent."""
+    if not is_authenticated_human(request):
+        return JSONResponse({"error": "Acesso negado: Apenas o supervisor humano Rui pode remover agentes."}, status_code=403)
+    callsign = request.path_params["callsign"]
+    try:
+        hub.delete_agent_admin(callsign=callsign, supervisor_token=hub.human_token)
+        return JSONResponse({"status": "success", "deleted": callsign})
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_list_admin_rooms(request: Request) -> Response:
+    """Lists all rooms including passwords for the authenticated supervisor."""
+    if not is_authenticated_human(request):
+        return JSONResponse({"error": "Acesso negado: Apenas o supervisor humano Rui pode aceder a este endpoint."}, status_code=403)
+    try:
+        rooms = hub.storage.list_rooms(include_archived=True, include_passwords=True)
+        return JSONResponse({"status": "success", "count": len(rooms), "rooms": rooms})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_admin_set_room_password(request: Request) -> Response:
+    """Allows authenticated supervisor Rui to set, change, or remove a room's password."""
+    if not is_authenticated_human(request):
+        return JSONResponse({"error": "Acesso negado: Apenas o supervisor humano Rui pode alterar senhas de salas."}, status_code=403)
+    room_name = request.path_params["room_name"]
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    password = data.get("password", "")
+    try:
+        res = hub.change_room_password(
+            room_name=room_name,
+            old_password="",
+            new_password=password,
+            actor_name="Rui",
+            supervisor_token=hub.human_token,
+        )
+        return JSONResponse(res, status_code=200)
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 # --- WebSocket Endpoint ---
 
 async def websocket_room_endpoint(websocket: WebSocket) -> None:
@@ -1143,7 +1198,10 @@ def create_app(allowed_hosts: list[str] | None = None) -> Starlette:
         Route("/api/agents", endpoint=endpoint_list_agents, methods=["GET"]),
         Route("/api/agents/register", endpoint=endpoint_self_register_agent, methods=["POST"]),
         Route("/api/agents", endpoint=endpoint_register_agent, methods=["POST"]),
+        Route("/api/agents/{callsign}", endpoint=endpoint_delete_agent, methods=["DELETE"]),
         Route("/api/agents/{callsign}/rotate", endpoint=endpoint_rotate_agent_token, methods=["POST"]),
+        Route("/api/admin/rooms", endpoint=endpoint_list_admin_rooms, methods=["GET"]),
+        Route("/api/admin/rooms/{room_name}/password", endpoint=endpoint_admin_set_room_password, methods=["POST"]),
         Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_get_tasks, methods=["GET"]),
         Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_create_task, methods=["POST"]),
         Route("/api/tasks/{task_id:int}", endpoint=endpoint_update_task, methods=["PATCH", "POST"]),
