@@ -25,8 +25,21 @@ ROOMS = [
     "CL-LLM Support",
     "CL-Neural",
 ]
-MY_NAMES = {"antigravity-hub", "antigravity", "maintenancebot", "sentinelsupport"}
-BASE_URL = os.environ.get("AICHAT_URL", "http://127.0.0.1:8765").rstrip("/")
+def _get_base_url() -> str:
+    env_url = os.environ.get("AICHAT_URL", "").strip()
+    if env_url:
+        return env_url.rstrip("/")
+    info_file = Path(__file__).resolve().parent.parent / ".server_info.json"
+    if info_file.exists():
+        try:
+            data = json.loads(info_file.read_text(encoding="utf-8"))
+            if data.get("base_url"):
+                return data["base_url"].rstrip("/")
+        except Exception:
+            pass
+    return "http://192.168.1.197:8765"
+
+BASE_URL = _get_base_url()
 SENTINEL_TOKEN = os.environ.get("SENTINEL_TOKEN", "530c8a7b16f49706682fc79da0c2b5fe")
 
 def _get_timeout() -> int:
