@@ -665,20 +665,36 @@
             <i data-lucide="shield-check" class="w-5 h-5"></i>
           </div>
           <div>
-            <h3 class="font-bold text-white text-base">Autenticação Humana</h3>
-            <p class="text-xs text-slate-400">Acesso exclusivo para Rui / Humano</p>
+            <h3 class="font-bold text-white text-base">Autenticação do Utilizador</h3>
+            <p class="text-xs text-slate-400">Acesso exclusivo do supervisor Rui</p>
           </div>
         </div>
         <button onclick="closeAuthModal()" class="text-slate-400 hover:text-white">
           <i data-lucide="x" class="w-5 h-5"></i>
         </button>
       </div>
-      <div>
-        <label class="block text-slate-400 mb-1 text-xs font-medium">Token de Acesso Humano</label>
-        <input id="human-auth-token-input" type="password" placeholder="Insira o seu token de acesso..." onkeydown="if(event.key==='Enter') submitAuthLogin()"
-          class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-emerald-500 font-mono text-xs" />
-        <p id="auth-error" class="text-xs text-rose-400 mt-1.5 hidden"></p>
-        <p class="text-[11px] text-slate-500 mt-2">Dica: O token é exibido no terminal do servidor e fica guardado em <code class="text-slate-400">data/.human_token</code>.</p>
+      <div class="space-y-3">
+        <div>
+          <label class="block text-slate-400 mb-1 text-xs font-medium">Nome de Utilizador</label>
+          <input id="human-auth-username-input" type="text" value="Rui" placeholder="Utilizador (ex: Rui)" onkeydown="if(event.key==='Enter') document.getElementById('human-auth-token-input').focus()"
+            class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-emerald-500 text-xs" />
+        </div>
+        <div>
+          <label class="block text-slate-400 mb-1 text-xs font-medium">Palavra-passe / Token de Acesso</label>
+          <div class="relative">
+            <input id="human-auth-token-input" type="password" placeholder="Palavra-passe ou token de acesso humano..." onkeydown="if(event.key==='Enter') submitAuthLogin()"
+              class="w-full pl-3 pr-10 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-emerald-500 font-mono text-xs" />
+            <button type="button" onclick="togglePasswordVisibility('human-auth-token-input', 'auth-pwd-eye-icon')" class="absolute right-2.5 top-2 text-slate-400 hover:text-slate-200">
+              <i id="auth-pwd-eye-icon" data-lucide="eye" class="w-4 h-4"></i>
+            </button>
+          </div>
+          <p id="auth-error" class="text-xs text-rose-400 mt-1.5 hidden"></p>
+        </div>
+        <label class="flex items-center space-x-2 text-xs text-slate-400 cursor-pointer pt-0.5">
+          <input type="checkbox" id="human-auth-remember" checked class="rounded border-slate-700 bg-slate-950 text-emerald-500 focus:ring-emerald-500/20" />
+          <span>Manter sessão iniciada neste navegador (30 dias)</span>
+        </label>
+        <p class="text-[11px] text-slate-500">Dica: O token é exibido no arranque do servidor e fica guardado em <code class="text-slate-400">data/.human_token</code>.</p>
       </div>
       <div class="flex justify-end space-x-2 pt-2">
         <button onclick="closeAuthModal()" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium">Cancelar</button>
@@ -1062,11 +1078,12 @@
           if (!isHumanAuthenticated) {
             // Check if we have a saved token in localStorage to auto-restore human session
             const savedToken = localStorage.getItem('ai_chat_human_token');
+            const savedUser = localStorage.getItem('ai_chat_username') || 'Rui';
             if (savedToken) {
               const loginRes = await fetch('/api/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ token: savedToken })
+                body: JSON.stringify({ username: savedUser, token: savedToken })
               });
               if (loginRes.ok) {
                 isHumanAuthenticated = true;
@@ -1131,14 +1148,17 @@
 
     function openAuthModal(callback = null) {
       pendingActionCallback = callback;
-      const input = document.getElementById('human-auth-token-input');
-      if (input) input.value = '';
+      const userInput = document.getElementById('human-auth-username-input');
+      const savedUser = localStorage.getItem('ai_chat_username') || 'Rui';
+      if (userInput) userInput.value = savedUser;
+      const tokenInput = document.getElementById('human-auth-token-input');
+      if (tokenInput) tokenInput.value = '';
       const errEl = document.getElementById('auth-error');
       if (errEl) errEl.classList.add('hidden');
       const modal = document.getElementById('auth-modal');
       if (modal) {
         modal.classList.remove('hidden');
-        if (input) input.focus();
+        if (tokenInput) setTimeout(() => tokenInput.focus(), 60);
       }
     }
 
@@ -1149,13 +1169,17 @@
     }
 
     async function submitAuthLogin() {
-      const input = document.getElementById('human-auth-token-input');
-      const token = input ? input.value.trim() : '';
+      const userInput = document.getElementById('human-auth-username-input');
+      const tokenInput = document.getElementById('human-auth-token-input');
+      const rememberInput = document.getElementById('human-auth-remember');
+      const username = userInput ? userInput.value.trim() : 'Rui';
+      const token = tokenInput ? tokenInput.value.trim() : '';
+      const remember = rememberInput ? rememberInput.checked : true;
       const errEl = document.getElementById('auth-error');
 
       if (!token) {
         if (errEl) {
-          errEl.textContent = 'Por favor insira o token.';
+          errEl.textContent = 'Por favor insira a palavra-passe ou token de acesso.';
           errEl.classList.remove('hidden');
         }
         return;
@@ -1165,14 +1189,26 @@
         const res = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: token })
+          body: JSON.stringify({ username: username, password: token, token: token })
         });
         const data = await res.json();
         if (res.ok) {
           isHumanAuthenticated = true;
-          localStorage.setItem('ai_chat_human_token', token);
+          if (remember) {
+            localStorage.setItem('ai_chat_human_token', token);
+            localStorage.setItem('ai_chat_username', username);
+          } else {
+            localStorage.removeItem('ai_chat_human_token');
+          }
           updateAuthUI(true);
           closeAuthModal();
+          await fetchRooms();
+          const savedRoom = localStorage.getItem('active_room');
+          if (savedRoom && rooms.some(r => r.name.toLowerCase() === savedRoom.toLowerCase())) {
+            selectRoom(savedRoom);
+          } else if (rooms.length > 0) {
+            selectRoom(rooms[0].name);
+          }
           if (pendingActionCallback) {
             const cb = pendingActionCallback;
             pendingActionCallback = null;
@@ -1180,7 +1216,7 @@
           }
         } else {
           if (errEl) {
-            errEl.textContent = data.error || 'Token inválido.';
+            errEl.textContent = data.error || 'Credenciais inválidas.';
             errEl.classList.remove('hidden');
           }
         }
@@ -1199,6 +1235,12 @@
       localStorage.removeItem('ai_chat_human_token');
       isHumanAuthenticated = false;
       updateAuthUI(false);
+      rooms = [];
+      messages = [];
+      currentRoom = null;
+      renderRoomsList();
+      renderMessages();
+      openAuthModal();
     }
 
     // Load initial data
@@ -1212,17 +1254,23 @@
       
       lucide.createIcons();
       await checkAuthStatus();
-      await fetchRooms();
-      setInterval(fetchRooms, 8000); // Background room sync
-
-      // Auto-reconnect active room from localStorage or default to cl-llm/first room
-      const savedRoom = localStorage.getItem('active_room');
-      if (savedRoom && rooms.some(r => r.name.toLowerCase() === savedRoom.toLowerCase())) {
-        selectRoom(savedRoom);
-      } else if (rooms.length > 0) {
-        const defaultRoom = rooms.find(r => r.name.toLowerCase() === 'cl-llm') || rooms[0];
-        selectRoom(defaultRoom.name);
+      if (isHumanAuthenticated) {
+        await fetchRooms();
+        const savedRoom = localStorage.getItem('active_room');
+        if (savedRoom && rooms.some(r => r.name.toLowerCase() === savedRoom.toLowerCase())) {
+          selectRoom(savedRoom);
+        } else if (rooms.length > 0) {
+          const defaultRoom = rooms.find(r => r.name.toLowerCase() === 'cl-llm') || rooms[0];
+          selectRoom(defaultRoom.name);
+        }
+      } else {
+        openAuthModal();
       }
+      setInterval(() => {
+        if (isHumanAuthenticated) {
+          fetchRooms();
+        }
+      }, 8000);
 
       // Request desktop notifications if available
       if ('Notification' in window && Notification.permission === 'default') {
@@ -1244,6 +1292,12 @@
     async function fetchRooms() {
       try {
         const res = await fetch('/api/rooms?include_archived=true');
+        if (res.status === 401) {
+          isHumanAuthenticated = false;
+          updateAuthUI(false);
+          openAuthModal();
+          return;
+        }
         if (res.ok) {
           rooms = await res.json();
           renderRoomsList();
@@ -1497,7 +1551,13 @@
         isLoadingOlder = false;
         const res = await fetch(`/api/rooms/${encodeURIComponent(room.name)}/messages?password=${encodeURIComponent(password)}&limit=50`);
         if (!res.ok) {
-          if (res.status === 403 || res.status === 401) {
+          if (res.status === 401) {
+            isHumanAuthenticated = false;
+            updateAuthUI(false);
+            openAuthModal();
+            return false;
+          }
+          if (res.status === 403) {
             clearSavedPassword(room.name);
             return false;
           }
@@ -2217,6 +2277,17 @@
       };
 
       ws.onclose = (evt) => {
+        if (evt && (evt.code === 4401 || evt.code === 4001)) {
+          console.warn(`WebSocket fechado devido a falta de autenticação (${evt.code}): ${evt.reason}`);
+          document.getElementById('server-status').textContent = 'Autenticação necessária (401)';
+          document.getElementById('server-status').parentElement.querySelector('span').className = 'w-2 h-2 rounded-full bg-rose-500';
+          clearTimeout(reconnectTimer);
+          isHumanAuthenticated = false;
+          updateAuthUI(false);
+          openAuthModal();
+          return;
+        }
+
         if (evt && (evt.code === 4403 || evt.code === 4003 || evt.code === 1008)) {
           console.warn(`WebSocket fechado devido a erro de autenticação (${evt.code}): ${evt.reason}`);
           document.getElementById('server-status').textContent = 'Autenticação necessária (403)';
@@ -2247,6 +2318,10 @@
         const pwd = getSavedPassword(currentRoom.name);
         const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/messages?password=${encodeURIComponent(pwd)}&since_id=${lastSeenId}`);
         if (!res.ok) {
+          if (res.status === 401 && !isHumanAuthenticated) {
+            openAuthModal();
+            return;
+          }
           if ((res.status === 403 || res.status === 401) && currentRoom.is_protected && !isHumanAuthenticated) {
             clearSavedPassword(currentRoom.name);
             const modal = document.getElementById('password-modal');

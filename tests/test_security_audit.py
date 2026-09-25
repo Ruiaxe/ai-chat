@@ -186,21 +186,28 @@ class TestSecurityAuditVulnerabilities(unittest.IsolatedAsyncioTestCase):
         global_hub.storage = self.storage
         try:
             self.hub.create_room("secret-ws-room", password="SuperSecretPassword")
+            agent_info = self.storage.register_agent_admin(callsign="AgentWS")
+            agent_tok = agent_info["token"]
             app = create_app()
             client = TestClient(app)
 
-            # Connecting without password -> closes with 4403
+            # 1. Connecting without token -> closes with 4401 Unauthorized
             with self.assertRaises(Exception):
-                with client.websocket_connect("/ws/secret-ws-room") as ws:
+                with client.websocket_connect("/ws/secret-ws-room?password=SuperSecretPassword") as ws:
                     ws.receive_text()
 
-            # Connecting with wrong password -> closes with 4403
+            # 2. Connecting with valid agent token but without room password -> closes with 4403
             with self.assertRaises(Exception):
-                with client.websocket_connect("/ws/secret-ws-room?password=wrong") as ws:
+                with client.websocket_connect(f"/ws/secret-ws-room?agent_token={agent_tok}") as ws:
                     ws.receive_text()
 
-            # Connecting with correct password -> succeeds
-            with client.websocket_connect("/ws/secret-ws-room?password=SuperSecretPassword") as ws:
+            # 3. Connecting with valid agent token but wrong room password -> closes with 4403
+            with self.assertRaises(Exception):
+                with client.websocket_connect(f"/ws/secret-ws-room?password=wrong&agent_token={agent_tok}") as ws:
+                    ws.receive_text()
+
+            # 4. Connecting with valid agent token and correct room password -> succeeds
+            with client.websocket_connect(f"/ws/secret-ws-room?password=SuperSecretPassword&agent_token={agent_tok}") as ws:
                 ws.send_text(json.dumps({"type": "ping"}))
                 resp = ws.receive_json()
                 self.assertEqual(resp.get("type"), "pong")

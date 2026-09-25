@@ -77,11 +77,11 @@ class TestSecurityHardening(unittest.TestCase):
         )
         self.assertEqual(resp_port.status_code, 403)
 
-        # Valid matching origin is accepted
+        # Valid matching origin is accepted (with authenticated supervisor)
         resp_ok = self.client.post(
             "/api/rooms",
             json={"name": "valid-room"},
-            headers={"Origin": "http://testserver"},
+            headers={"Origin": "http://testserver", "X-Human-Token": global_hub.human_token},
         )
         self.assertIn(resp_ok.status_code, [200, 201])
 
@@ -92,7 +92,7 @@ class TestSecurityHardening(unittest.TestCase):
         resp_text = self.client.post(
             "/api/rooms",
             content=b'{"name": "test"}',
-            headers={"Content-Type": "text/plain"},
+            headers={"Content-Type": "text/plain", "X-Human-Token": global_hub.human_token},
         )
         self.assertEqual(resp_text.status_code, 415)
         self.assertIn("expected application/json", resp_text.text)
@@ -101,7 +101,7 @@ class TestSecurityHardening(unittest.TestCase):
         resp_form = self.client.post(
             "/api/rooms",
             content=b"name=test",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={"Content-Type": "application/x-www-form-urlencoded", "X-Human-Token": global_hub.human_token},
         )
         self.assertEqual(resp_form.status_code, 415)
 
@@ -110,12 +110,12 @@ class TestSecurityHardening(unittest.TestCase):
         """WebSocket connection with untrusted origin is rejected."""
         global_hub.create_room(name="ws-sec-room")
         with self.assertRaises(WebSocketDisconnect) as cm:
-            with self.client.websocket_connect("/ws/ws-sec-room", headers={"Origin": "http://evil.attacker.com"}):
+            with self.client.websocket_connect("/ws/ws-sec-room", headers={"Origin": "http://evil.attacker.com", "X-Human-Token": global_hub.human_token}):
                 pass
         self.assertEqual(cm.exception.code, 4403)
 
         # Valid origin connects cleanly
-        with self.client.websocket_connect("/ws/ws-sec-room", headers={"Origin": "http://testserver"}) as ws:
+        with self.client.websocket_connect("/ws/ws-sec-room", headers={"Origin": "http://testserver", "X-Human-Token": global_hub.human_token}) as ws:
             ws.send_json({"type": "ping"})
             # Connected without disconnect
 

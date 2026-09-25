@@ -134,13 +134,72 @@ class SecurityHardeningMiddleware:
 
 
 def is_authenticated_human(request: Request) -> bool:
-    """Verifies if request originates from authenticated human via valid session cookie or X-Human-Token header."""
+    """Verifies if request originates from authenticated human via valid session cookie, X-Human-Token header, Bearer token, or query param."""
     cookie_token = request.cookies.get("human_session", "").strip()
+    if cookie_token and hub.verify_human_session(cookie_token):
+        return True
+
     header_token = request.headers.get("X-Human-Token", "").strip()
-    return bool(
-        (cookie_token and hub.verify_human_session(cookie_token)) or
-        (header_token and secrets.compare_digest(header_token, hub.human_token))
-    )
+    if header_token and secrets.compare_digest(header_token, hub.human_token):
+        return True
+
+    auth_header = request.headers.get("Authorization", "").strip()
+    if auth_header.lower().startswith("bearer "):
+        bearer_tok = auth_header[7:].strip()
+        if bearer_tok and secrets.compare_digest(bearer_tok, hub.human_token):
+            return True
+
+    query_token = (request.query_params.get("human_token") or request.query_params.get("token") or "").strip()
+    if query_token and secrets.compare_digest(query_token, hub.human_token):
+        return True
+
+    return False
+
+
+def get_request_auth(request: Request) -> dict[str, Any] | None:
+    """
+    Verifies caller identity. Allows authenticated human supervisor (Rui) or active agents with valid tokens.
+    Returns:
+        {"type": "human", "name": hub.human_name, "is_human": True, "token": hub.human_token}
+    or:
+        {"type": "agent", "name": ident["callsign"], "is_human": ident.get("is_human", False), "token": agent_tok, "ident": ident}
+    Returns None if unauthenticated or agent is inactive/revoked.
+    """
+    if is_authenticated_human(request):
+        return {
+            "type": "human",
+            "name": hub.human_name,
+            "is_human": True,
+            "token": hub.human_token,
+        }
+
+    # Check for agent token
+    auth_header = request.headers.get("Authorization", "").strip()
+    bearer_tok = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
+
+    agent_tok = (
+        request.headers.get("x-agent-token", "") or
+        request.headers.get("x-member-token", "") or
+        bearer_tok or
+        request.query_params.get("agent_token", "") or
+        request.query_params.get("member_token", "") or
+        request.query_params.get("token", "")
+    ).strip()
+
+    if not agent_tok:
+        return None
+
+    try:
+        ident = hub.authenticate_agent(agent_tok)
+        return {
+            "type": "agent",
+            "name": ident["callsign"],
+            "is_human": ident.get("is_human", False),
+            "token": agent_tok,
+            "ident": ident,
+        }
+    except Exception:
+        return None
 
 
 def set_human_session_cookie(response: Response, session_val: str) -> None:
@@ -183,19 +242,27 @@ async def endpoint_auth_status(request: Request) -> Response:
 
 
 async def endpoint_auth_login(request: Request) -> Response:
-    """Authenticates human user with token or one-time code, setting persistent session cookie."""
+    """Authenticates human user with username/password or token, setting persistent session cookie."""
     try:
         data = await request.json()
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
-    token = (data.get("token") or "").strip()
+    username = (data.get("username") or "").strip()
+    token = (data.get("password") or data.get("token") or "").strip()
+
+    if username:
+        clean_user = "".join(c for c in username.lower() if c.isalnum())
+        expected_user = "".join(c for c in hub.human_name.lower() if c.isalnum())
+        if clean_user != expected_user and clean_user != "rui":
+            return JSONResponse({"error": "Nome de utilizador incorreto. Acesso restrito ao supervisor Rui."}, status_code=401)
+
     if not token:
-        return JSONResponse({"error": "Token is required"}, status_code=400)
+        return JSONResponse({"error": "A palavra-passe ou token de acesso é obrigatório"}, status_code=400)
 
     is_valid = secrets.compare_digest(token, hub.human_token) or hub.consume_one_time_code(token)
     if not is_valid:
-        return JSONResponse({"error": "Token inválido. Verifique a credencial de acesso humano."}, status_code=401)
+        return JSONResponse({"error": "Palavra-passe / token inválido. Verifique a credencial de acesso humano."}, status_code=401)
 
     session_id = hub.create_human_session()
     response = JSONResponse({
@@ -218,7 +285,13 @@ async def endpoint_auth_logout(request: Request) -> Response:
 
 
 async def endpoint_get_rooms(request: Request) -> Response:
-    """Lists all rooms with metadata."""
+    """Lists all rooms with metadata. Requires authenticated human supervisor or active agent."""
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse(
+            {"error": "Acesso negado: Autenticação obrigatória. Inicie sessão como humano ou forneça um token de agente ativo."},
+            status_code=401
+        )
     include_archived = request.query_params.get("include_archived", "true").lower() in ("true", "1")
     rooms = hub.list_rooms(include_archived=include_archived)
     return JSONResponse(rooms)
@@ -226,6 +299,10 @@ async def endpoint_get_rooms(request: Request) -> Response:
 
 async def endpoint_create_room(request: Request) -> Response:
     """Creates a new room."""
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse({"error": "Acesso negado: Autenticação obrigatória."}, status_code=401)
+
     try:
         data = await request.json()
     except Exception:
@@ -254,7 +331,14 @@ async def endpoint_create_room(request: Request) -> Response:
 
 
 async def endpoint_get_messages(request: Request) -> Response:
-    """Gets recent messages for a room."""
+    """Gets recent messages for a room. Requires authenticated human supervisor or active agent."""
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse(
+            {"error": "Acesso negado: Autenticação obrigatória. Inicie sessão como humano ou forneça um token de agente ativo."},
+            status_code=401
+        )
+
     room_name = request.path_params["room_name"]
     password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
     since_id = safe_int(request.query_params.get("since_id"), default=0, min_val=0)
@@ -262,24 +346,13 @@ async def endpoint_get_messages(request: Request) -> Response:
     limit = safe_int(request.query_params.get("limit"), default=50, min_val=1, max_val=1000)
 
     try:
-        is_human = is_authenticated_human(request)
-        effective_ht = hub.human_token if is_human else ""
+        effective_ht = hub.human_token if auth["is_human"] else ""
 
         # Record presence only for verified tokens or authenticated human session
-        agent_tok = (
-            request.headers.get("x-agent-token", "") or
-            request.headers.get("x-member-token", "") or
-            request.query_params.get("agent_token", "") or
-            request.query_params.get("token", "")
-        ).strip()
-        if agent_tok:
-            try:
-                ident = hub.authenticate_agent(agent_tok)
-                hub.record_presence(room_name, ident["callsign"], client="http_poll", is_human=ident.get("is_human", False))
-            except Exception:
-                pass
-        elif is_human:
+        if auth["is_human"]:
             hub.record_presence(room_name, hub.human_name, client="web_ui", is_human=True)
+        else:
+            hub.record_presence(room_name, auth["name"], client="http_poll", is_human=auth.get("is_human", False))
 
         messages = hub.read_messages(
             room_name=room_name,
@@ -300,6 +373,13 @@ async def endpoint_get_messages(request: Request) -> Response:
 
 async def endpoint_post_message(request: Request) -> Response:
     """Posts a message to a room with strict authentication."""
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse(
+            {"error": "Acesso negado: Autenticação obrigatória. Inicie sessão como humano ou forneça um token de agente ativo."},
+            status_code=401,
+        )
+
     room_name = request.path_params["room_name"]
     try:
         data = await request.json()
@@ -307,14 +387,11 @@ async def endpoint_post_message(request: Request) -> Response:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
     sender = (data.get("sender") or data.get("sender_name") or data.get("agent_name") or "").strip()
-    if not sender:
-        return JSONResponse({"error": "Sender cannot be empty"}, status_code=400)
-
     content = data.get("content", "").strip()
     password = data.get("password", "")
-    member_token = data.get("member_token", "")
+    member_token = data.get("member_token", "") or (auth["token"] if not auth["is_human"] else "")
 
-    is_human = is_authenticated_human(request)
+    is_human = auth["is_human"]
     sender_norm = "".join(c for c in sender.lower() if c.isalnum())
     is_reserved = sender_norm in hub.RESERVED_HUMAN_NAMES or sender.lower() in hub.RESERVED_HUMAN_NAMES
     req_role = (data.get("role") or "").strip().lower()
@@ -327,9 +404,13 @@ async def endpoint_post_message(request: Request) -> Response:
             )
         role = "human"
         effective_ht = hub.human_token
+        if not sender:
+            sender = hub.human_name
     else:
         role = "agent"
         effective_ht = ""
+        if not sender:
+            sender = auth["name"]
 
     if not content:
         return JSONResponse({"error": "Content cannot be empty"}, status_code=400)
@@ -357,10 +438,13 @@ async def endpoint_post_message(request: Request) -> Response:
 
 async def endpoint_download_log(request: Request) -> Response:
     """Downloads the text log of a room."""
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse({"error": "Acesso negado: Autenticação obrigatória."}, status_code=401)
+
     room_name = request.path_params["room_name"]
     password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
-    is_human = is_authenticated_human(request)
-    effective_ht = hub.human_token if is_human else ""
+    effective_ht = hub.human_token if auth["is_human"] else ""
 
     try:
         if not hub.verify_room_access(room_name, password, requester_token=effective_ht):
@@ -381,10 +465,13 @@ async def endpoint_download_log(request: Request) -> Response:
 
 async def endpoint_download_jsonl(request: Request) -> Response:
     """Downloads the structured JSONL log of a room."""
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse({"error": "Acesso negado: Autenticação obrigatória."}, status_code=401)
+
     room_name = request.path_params["room_name"]
     password = request.query_params.get("password", "")
-    is_human = is_authenticated_human(request)
-    effective_ht = hub.human_token if is_human else ""
+    effective_ht = hub.human_token if auth["is_human"] else ""
 
     try:
         if not hub.verify_room_access(room_name, password, requester_token=effective_ht):
@@ -405,10 +492,13 @@ async def endpoint_download_jsonl(request: Request) -> Response:
 
 async def endpoint_room_sse_stream(request: Request) -> Response:
     """Server-Sent Events (SSE) stream for a room to allow live event consumption."""
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse({"error": "Acesso negado: Autenticação obrigatória."}, status_code=401)
+
     room_name = request.path_params["room_name"]
     password = request.query_params.get("password", "")
-    is_human = is_authenticated_human(request)
-    effective_ht = hub.human_token if is_human else ""
+    effective_ht = hub.human_token if auth["is_human"] else ""
 
     try:
         if not hub.verify_room_access(room_name, password, requester_token=effective_ht):
@@ -779,11 +869,13 @@ async def endpoint_tts_voices(request: Request) -> Response:
 # --- Task Planner & Presence Endpoints (v2.5) ---
 
 async def endpoint_get_presence(request: Request) -> Response:
-    """Returns real-time active listeners in a room."""
+    """Returns real-time active listeners in a room. Requires authenticated human supervisor or active agent."""
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse({"error": "Acesso negado: Autenticação obrigatória."}, status_code=401)
     room_name = request.path_params["room_name"]
     password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
-    is_human = is_authenticated_human(request)
-    effective_ht = hub.human_token if is_human else ""
+    effective_ht = hub.human_token if auth["is_human"] else ""
     try:
         presence = hub.who_is_listening(room_name=room_name, password=password, requester_token=effective_ht)
         return JSONResponse(presence)
@@ -796,14 +888,16 @@ async def endpoint_get_presence(request: Request) -> Response:
 
 
 async def endpoint_get_tasks(request: Request) -> Response:
-    """Lists tasks in a room with optional filters."""
+    """Lists tasks in a room with optional filters. Requires authenticated human supervisor or active agent."""
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse({"error": "Acesso negado: Autenticação obrigatória."}, status_code=401)
     room_name = request.path_params["room_name"]
     password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
     status = request.query_params.get("status")
     assignee = request.query_params.get("assignee")
     hide_completed = request.query_params.get("hide_completed", "").lower() in ("true", "1", "yes")
-    is_human = is_authenticated_human(request)
-    effective_ht = hub.human_token if is_human else ""
+    effective_ht = hub.human_token if auth["is_human"] else ""
 
     try:
         tasks = hub.list_tasks(
@@ -966,9 +1060,11 @@ async def endpoint_reorder_tasks(request: Request) -> Response:
 # --- Agent Registry Management Endpoints (v2.7) ---
 
 async def endpoint_list_agents(request: Request) -> Response:
-    """Lists registered agents. Secret tokens are only exposed to the authenticated human supervisor."""
-    is_human = is_authenticated_human(request)
-    agents = hub.list_registered_agents(requester_token=hub.human_token if is_human else "")
+    """Lists registered agents. Requires authenticated human supervisor or active agent."""
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse({"error": "Acesso negado: Autenticação obrigatória."}, status_code=401)
+    agents = hub.list_registered_agents(requester_token=hub.human_token if auth["is_human"] else "")
     return JSONResponse({"status": "success", "count": len(agents), "agents": agents})
 
 
@@ -1129,15 +1225,43 @@ async def websocket_room_endpoint(websocket: WebSocket) -> None:
         await websocket.close(code=4403, reason="Forbidden: Cross-origin WebSocket rejected")
         return
 
-    # Check if human is authenticated via valid session cookie or X-Human-Token header
+    # Check if human is authenticated via valid session cookie, header, bearer, or query param
     cookie_token = websocket.cookies.get("human_session", "").strip()
     header_token = websocket.headers.get("x-human-token", "").strip()
+    auth_header = websocket.headers.get("authorization", "").strip()
+    bearer_tok = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
+    query_token = (websocket.query_params.get("token") or websocket.query_params.get("human_token") or "").strip()
+
     is_human = bool(
         (cookie_token and hub.verify_human_session(cookie_token)) or
-        (header_token and secrets.compare_digest(header_token, hub.human_token))
+        (header_token and secrets.compare_digest(header_token, hub.human_token)) or
+        (bearer_tok and secrets.compare_digest(bearer_tok, hub.human_token)) or
+        (query_token and secrets.compare_digest(query_token, hub.human_token))
     )
 
+    caller_name = "Rui (Humano)"
     if not is_human:
+        agent_tok = (
+            websocket.headers.get("x-agent-token", "") or
+            websocket.headers.get("x-member-token", "") or
+            bearer_tok or
+            websocket.query_params.get("agent_token", "") or
+            websocket.query_params.get("member_token", "") or
+            query_token
+        ).strip()
+
+        if not agent_tok:
+            await websocket.close(code=4401, reason="Unauthorized: Authentication required")
+            return
+
+        try:
+            ident = hub.authenticate_agent(agent_tok)
+            caller_name = ident["callsign"]
+            is_human = ident.get("is_human", False)
+        except Exception:
+            await websocket.close(code=4401, reason="Unauthorized: Invalid or inactive agent token")
+            return
+
         try:
             if not hub.verify_room_access(room_name, password):
                 await websocket.close(code=4403, reason="Access denied: invalid or missing room password")
@@ -1147,8 +1271,7 @@ async def websocket_room_endpoint(websocket: WebSocket) -> None:
             return
 
     await websocket.accept()
-    user_name = "Rui (Humano)" if is_human else websocket.query_params.get("username", "WebUser")
-    await hub.register_websocket(room_name, websocket, user_name=user_name, is_human=is_human)
+    await hub.register_websocket(room_name, websocket, user_name=caller_name, is_human=is_human)
 
     # Broadcast presence update on join
     try:

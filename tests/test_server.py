@@ -849,16 +849,20 @@ class TestWebAppAndApi(unittest.TestCase):
     def test_api_rooms_and_messages(self):
         import uuid
         room_name = f"api-test-{uuid.uuid4().hex[:6]}"
-        # Create room via API
-        res = self.client.post("/api/rooms", json={"name": room_name, "topic": "API Testing"})
+        # Unauthenticated room creation is rejected -> 401
+        unauth_create = self.client.post("/api/rooms", json={"name": room_name, "topic": "API Testing"})
+        self.assertEqual(unauth_create.status_code, 401)
+
+        # Authenticated room creation via API
+        res = self.client.post("/api/rooms", json={"name": room_name, "topic": "API Testing"}, headers={"X-Human-Token": hub.human_token})
         self.assertIn(res.status_code, [200, 201])
 
-        # Attempt to post as human without token -> 403 Forbidden
+        # Attempt to post as human without token -> 401 or 403 Forbidden
         post_fail = self.client.post(
             f"/api/rooms/{room_name}/messages",
             json={"sender": "UserTest", "content": "Fake Human", "role": "human"},
         )
-        self.assertEqual(post_fail.status_code, 403)
+        self.assertIn(post_fail.status_code, [401, 403])
 
         # Post message with valid human token -> 201 Created
         post_res = self.client.post(
@@ -868,14 +872,22 @@ class TestWebAppAndApi(unittest.TestCase):
         )
         self.assertEqual(post_res.status_code, 201)
 
-        # Get messages
-        get_res = self.client.get(f"/api/rooms/{room_name}/messages")
+        # Unauthenticated get messages is rejected -> 401
+        unauth_get = self.client.get(f"/api/rooms/{room_name}/messages")
+        self.assertEqual(unauth_get.status_code, 401)
+
+        # Authenticated get messages -> 200
+        get_res = self.client.get(f"/api/rooms/{room_name}/messages", headers={"X-Human-Token": hub.human_token})
         self.assertEqual(get_res.status_code, 200)
         msgs = get_res.json()
         self.assertTrue(any(m["content"] == "Hello from API!" for m in msgs))
 
-        # Download log
-        log_res = self.client.get(f"/api/rooms/{room_name}/log")
+        # Unauthenticated log download -> 401
+        unauth_log = self.client.get(f"/api/rooms/{room_name}/log")
+        self.assertEqual(unauth_log.status_code, 401)
+
+        # Authenticated download log -> 200
+        log_res = self.client.get(f"/api/rooms/{room_name}/log", headers={"X-Human-Token": hub.human_token})
         self.assertEqual(log_res.status_code, 200)
         self.assertIn("Hello from API!", log_res.text)
 
@@ -887,7 +899,7 @@ class TestWebAppAndApi(unittest.TestCase):
             self.test_storage.add_message(room_name, "Bot", "agent", f"API Msg {i}")
 
         # Default limit=50 -> returns 50 most recent (15 to 64)
-        res = self.client.get(f"/api/rooms/{room_name}/messages")
+        res = self.client.get(f"/api/rooms/{room_name}/messages", headers={"X-Human-Token": hub.human_token})
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertEqual(len(data), 50)
@@ -896,7 +908,7 @@ class TestWebAppAndApi(unittest.TestCase):
 
         # Pagination with before_id
         oldest_id = data[0]["id"]
-        res_older = self.client.get(f"/api/rooms/{room_name}/messages?before_id={oldest_id}")
+        res_older = self.client.get(f"/api/rooms/{room_name}/messages?before_id={oldest_id}", headers={"X-Human-Token": hub.human_token})
         self.assertEqual(res_older.status_code, 200)
         data_older = res_older.json()
         self.assertEqual(len(data_older), 14)
@@ -913,7 +925,7 @@ class TestWebAppAndApi(unittest.TestCase):
     def test_api_new_features_endpoints(self):
         import uuid
         room_name = f"api-feat-{uuid.uuid4().hex[:6]}"
-        self.client.post("/api/rooms", json={"name": room_name, "topic": "Features API Testing"})
+        self.client.post("/api/rooms", json={"name": room_name, "topic": "Features API Testing"}, headers={"X-Human-Token": hub.human_token})
 
         # Send a message
         msg_res = self.client.post(
@@ -969,10 +981,10 @@ class TestWebAppAndApi(unittest.TestCase):
     def test_tasks_and_presence_api(self):
         import uuid
         room_name = f"api-tasks-{uuid.uuid4().hex[:6]}"
-        self.client.post("/api/rooms", json={"name": room_name, "topic": "Tasks API"})
+        self.client.post("/api/rooms", json={"name": room_name, "topic": "Tasks API"}, headers={"X-Human-Token": hub.human_token})
 
         # 1. Presence endpoint
-        pres_res = self.client.get(f"/api/rooms/{room_name}/presence")
+        pres_res = self.client.get(f"/api/rooms/{room_name}/presence", headers={"X-Human-Token": hub.human_token})
         self.assertEqual(pres_res.status_code, 200)
         self.assertIn("listeners", pres_res.json())
 
@@ -1010,12 +1022,12 @@ class TestWebAppAndApi(unittest.TestCase):
         task2 = create2.json()
 
         # 3. List tasks without hide_completed
-        list_all = self.client.get(f"/api/rooms/{room_name}/tasks")
+        list_all = self.client.get(f"/api/rooms/{room_name}/tasks", headers={"X-Human-Token": hub.human_token})
         self.assertEqual(list_all.status_code, 200)
         self.assertEqual(len(list_all.json()["tasks"]), 2)
 
         # 4. List tasks with hide_completed=true
-        list_active = self.client.get(f"/api/rooms/{room_name}/tasks?hide_completed=true")
+        list_active = self.client.get(f"/api/rooms/{room_name}/tasks?hide_completed=true", headers={"X-Human-Token": hub.human_token})
         self.assertEqual(list_active.status_code, 200)
         self.assertEqual(len(list_active.json()["tasks"]), 1)
         self.assertEqual(list_active.json()["tasks"][0]["id"], task1["id"])
@@ -1047,14 +1059,14 @@ class TestWebAppAndApi(unittest.TestCase):
         self.assertEqual(del_res.status_code, 200)
 
         # Verify deletion
-        list_after_del = self.client.get(f"/api/rooms/{room_name}/tasks")
+        list_after_del = self.client.get(f"/api/rooms/{room_name}/tasks", headers={"X-Human-Token": hub.human_token})
         self.assertEqual(len(list_after_del.json()["tasks"]), 1)
 
     def test_security_admin_endpoints(self):
         import uuid
         room_name = f"api-sec-{uuid.uuid4().hex[:6]}"
         # Create room with password
-        c_res = self.client.post("/api/rooms", json={"name": room_name, "password": "pass1", "topic": "Security API Test"})
+        c_res = self.client.post("/api/rooms", json={"name": room_name, "password": "pass1", "topic": "Security API Test"}, headers={"X-Human-Token": hub.human_token})
         self.assertEqual(c_res.status_code, 201)
 
         # Join member
@@ -1185,7 +1197,7 @@ class TestWebAppAndApi(unittest.TestCase):
             headers={"X-Agent-Token": token},
             json={"content": "Should be blocked", "sender": callsign},
         )
-        self.assertIn(msg_res.status_code, (400, 403))
+        self.assertIn(msg_res.status_code, (400, 401, 403))
 
         # 3. Supervisor reactivates agent -> 200
         react_res = self.client.post(
@@ -1218,12 +1230,76 @@ class TestWebAppAndApi(unittest.TestCase):
         create_res = self.client.post(
             "/api/rooms",
             json={"name": new_room_name, "auto_generate_password": True},
+            headers={"x-human-token": hub.human_token},
         )
         self.assertEqual(create_res.status_code, 201)
         created_data = create_res.json()
         self.assertTrue(created_data["is_protected"])
         self.assertEqual(len(created_data["password"]), 16)
         self.assertTrue(hub.verify_room_access(new_room_name, created_data["password"]))
+
+    def test_zero_anonymous_access_enforcement(self):
+        """Verifies that all message reading, log downloading, and presence endpoints reject anonymous requests with 401."""
+        import uuid
+        room_name = f"public-room-{uuid.uuid4().hex[:6]}"
+        # Create a public (unprotected) room
+        hub.create_room(room_name)
+        hub.storage.add_message(room_name, "Bot", "agent", "Confidential message")
+
+        # Fresh unauthenticated client without session cookies
+        anon_client = TestClient(self.app)
+
+        # 1. Anonymous REST reading -> 401 Unauthorized
+        res_anon = anon_client.get(f"/api/rooms/{room_name}/messages")
+        self.assertEqual(res_anon.status_code, 401)
+        self.assertIn("Autenticação obrigatória", res_anon.json()["error"])
+
+        # 2. Anonymous log downloading -> 401 Unauthorized
+        res_anon_log = anon_client.get(f"/api/rooms/{room_name}/log")
+        self.assertEqual(res_anon_log.status_code, 401)
+
+        # 3. Anonymous presence -> 401 Unauthorized
+        res_anon_pres = anon_client.get(f"/api/rooms/{room_name}/presence")
+        self.assertEqual(res_anon_pres.status_code, 401)
+
+        # 4. Anonymous room listing -> 401 Unauthorized
+        res_anon_rooms = anon_client.get("/api/rooms")
+        self.assertEqual(res_anon_rooms.status_code, 401)
+
+        # 5. Provision active agent and verify reading succeeds
+        agent_info = self.test_storage.register_agent_admin(callsign=f"agent-{uuid.uuid4().hex[:4]}")
+        agent_tok = agent_info["token"]
+
+        res_agent = anon_client.get(f"/api/rooms/{room_name}/messages", headers={"X-Agent-Token": agent_tok})
+        self.assertEqual(res_agent.status_code, 200)
+        self.assertEqual(len(res_agent.json()), 1)
+
+        # 6. Deactivate agent and verify reading is blocked with 401
+        self.test_storage.update_agent_status_admin(agent_info["callsign"], "inactive")
+        res_deact = anon_client.get(f"/api/rooms/{room_name}/messages", headers={"X-Agent-Token": agent_tok})
+        self.assertEqual(res_deact.status_code, 401)
+
+        # 7. Authenticated supervisor via X-Human-Token succeeds
+        res_human = anon_client.get(f"/api/rooms/{room_name}/messages", headers={"X-Human-Token": hub.human_token})
+        self.assertEqual(res_human.status_code, 200)
+
+    def test_username_password_human_login(self):
+        """Verifies username and password validation for Rui in /api/auth/login."""
+        # 1. Correct username and password -> 200 with session cookie
+        res_ok = self.client.post("/api/auth/login", json={"username": "Rui", "password": hub.human_token})
+        self.assertEqual(res_ok.status_code, 200)
+        self.assertTrue(res_ok.json()["success"])
+        self.assertIn("human_session", res_ok.headers.get("set-cookie", ""))
+
+        # 2. Correct username, wrong password -> 401
+        res_bad_pwd = self.client.post("/api/auth/login", json={"username": "Rui", "password": "WrongPassword"})
+        self.assertEqual(res_bad_pwd.status_code, 401)
+        self.assertIn("inválido", res_bad_pwd.json()["error"].lower())
+
+        # 3. Wrong username, valid master token -> 401
+        res_bad_user = self.client.post("/api/auth/login", json={"username": "Hacker", "password": hub.human_token})
+        self.assertEqual(res_bad_user.status_code, 401)
+        self.assertIn("incorreto", res_bad_user.json()["error"].lower())
 
 
 class TestMCPTools(unittest.IsolatedAsyncioTestCase):
