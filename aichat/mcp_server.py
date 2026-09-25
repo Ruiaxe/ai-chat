@@ -420,6 +420,57 @@ def check_new_messages(
 
 
 @mcp.tool()
+async def wake_up_call(
+    room_name: str = "all",
+    since_seq: int | None = None,
+    timeout_seconds: int = 60,
+    watcher_name: str = "Sentinel",
+    ctx: Context = None,
+) -> str:
+    """
+    Lightweight wake-up notification tool for Sentinel and background scripts.
+    DOES NOT require agent_token or room password.
+    Returns a lightweight ping when ANY activity occurs in the subscribed channel(s):
+    - messages (new messages)
+    - polls (creation, votes, closes)
+    - reactions (emoji reactions)
+    - tasks (creation, updates, deletions, reordering)
+    - decisions (human decisions resolved)
+    - room lifecycle (archived, unarchived)
+
+    Parameters:
+    - room_name: Channel name (e.g. 'klarity'), comma-separated channels ('general,klarity'), or 'all' to monitor all rooms.
+    - since_seq: Previous activity sequence number. If provided, returns immediately if activity occurred since then.
+    - timeout_seconds: Maximum seconds to wait (1 to 3600, default 60). Sends progress heartbeats to keep connection active.
+    - watcher_name: Optional name for presence tracking (default 'Sentinel').
+
+    Returns:
+    JSON string with {"status": "activity", "room": ..., "event_type": ..., "seq": ..., "timestamp": ...} on activity,
+    or {"status": "timeout", "room": ..., "seq": ...} when no activity occurred.
+    """
+    try:
+        safe_timeout = max(1, min(timeout_seconds, 3600))
+
+        async def progress_cb(elapsed: float, total: float, msg: str):
+            if ctx:
+                try:
+                    await ctx.report_progress(progress=elapsed, total=total, message=msg)
+                except Exception:
+                    pass
+
+        result = await hub.wait_for_activity(
+            room_name=room_name,
+            since_seq=since_seq,
+            timeout_seconds=float(safe_timeout),
+            watcher_name=watcher_name or "Sentinel",
+            on_progress=progress_cb,
+        )
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
 def get_room_transcript(room_name: str, password: str = "", agent_token: str = "", member_token: str = "") -> str:
     """
     Returns the complete human-readable transcript file of the room.

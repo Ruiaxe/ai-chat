@@ -36,6 +36,7 @@ from aichat.mcp_server import (
     change_room_password as tool_change_room_password,
     kick_member as tool_kick_member,
     get_room_audit_log as tool_get_room_audit_log,
+    wake_up_call as tool_wake_up_call,
 )
 from aichat.storage import ChatStorage
 from aichat.web_app import create_app
@@ -1572,6 +1573,190 @@ class TestMCPTools(unittest.IsolatedAsyncioTestCase):
         audit_res = json.loads(tool_get_room_audit_log(room_name, password="newpass", agent_token=new_token))
         self.assertEqual(audit_res["status"], "success")
         self.assertGreaterEqual(len(audit_res["events"]), 3)
+
+
+class TestWakeUpCall(unittest.IsolatedAsyncioTestCase):
+    """Tests for Sentinel tokenless wake-up-call MCP tool and REST endpoints."""
+
+    async def asyncSetUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = Path(self.temp_dir) / "test_wakeup.db"
+        self.logs_dir = Path(self.temp_dir) / "logs"
+        self.storage = ChatStorage(db_path=self.db_path, logs_dir=self.logs_dir)
+        # Patch the shared hub in mcp_server / web_app with isolated storage
+        self.hub = hub
+        self.hub.storage = self.storage
+        self.hub._active_websockets.clear()
+        self.hub._room_listeners.clear()
+        self.hub._recent_http_polls.clear()
+        self.hub._activity_events.clear()
+        self.hub._activity_seq = 0
+        self.hub._activity_listeners.clear()
+
+        # Create room
+        self.room_name = "sentinel-room"
+        self.hub.create_room(self.room_name)
+
+    async def asyncTearDown(self):
+        self.storage.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    async def test_wake_up_call_mcp_without_token_on_message(self):
+        """MCP wake_up_call requires no token and wakes up on message with zero data leakage."""
+        async def wait_worker():
+            return json.loads(await tool_wake_up_call(
+                room_name=self.room_name,
+                timeout_seconds=5,
+                watcher_name="SentinelWatcher",
+            ))
+
+        task = asyncio.create_task(wait_worker())
+        await asyncio.sleep(0.05)
+
+        # Trigger message
+        await self.hub.send_message(
+            room_name=self.room_name,
+            sender="Rui",
+            content="Super secret confidential message!",
+            role="human",
+            human_token=self.hub.human_token,
+        )
+
+        res = await asyncio.wait_for(task, timeout=2.0)
+        self.assertEqual(res["status"], "activity")
+        self.assertEqual(res["room"].lower(), self.room_name.lower())
+        self.assertEqual(res["event_type"], "message")
+        self.assertIn("seq", res)
+        self.assertIn("timestamp", res)
+
+        # SECURITY: Verify NO confidential message text or author is leaked in ping
+        self.assertNotIn("Super secret confidential message!", json.dumps(res))
+        self.assertNotIn("content", res)
+        self.assertNotIn("sender", res)
+
+    async def test_wake_up_call_event_types(self):
+        """Tests that wake_up_call wakes up on task, poll, reaction, and decision."""
+        # 1. Task activity
+        task_wait = asyncio.create_task(tool_wake_up_call(room_name=self.room_name, timeout_seconds=5))
+        await asyncio.sleep(0.05)
+        await self.hub.create_task(
+            room_name=self.room_name,
+            title="Fix bug",
+            human_token=self.hub.human_token,
+        )
+        res_task = json.loads(await asyncio.wait_for(task_wait, timeout=2.0))
+        self.assertEqual(res_task["status"], "activity")
+        self.assertEqual(res_task["event_type"], "task")
+        self.assertNotIn("Fix bug", json.dumps(res_task))
+
+        # 2. Poll activity
+        poll_wait = asyncio.create_task(tool_wake_up_call(room_name=self.room_name, timeout_seconds=5))
+        await asyncio.sleep(0.05)
+        poll = await self.hub.create_poll(
+            room_name=self.room_name,
+            creator="Rui",
+            question="Qual o melhor modelo?",
+            options=["A", "B"],
+            human_token=self.hub.human_token,
+        )
+        res_poll = json.loads(await asyncio.wait_for(poll_wait, timeout=2.0))
+        self.assertEqual(res_poll["status"], "activity")
+        self.assertIn(res_poll["event_type"], ("poll", "message"))
+
+        # 3. Vote activity
+        vote_wait = asyncio.create_task(tool_wake_up_call(room_name=self.room_name, timeout_seconds=5))
+        await asyncio.sleep(0.05)
+        await self.hub.cast_vote(poll_id=poll["id"], voter="Voter1", option_index=0)
+        res_vote = json.loads(await asyncio.wait_for(vote_wait, timeout=2.0))
+        self.assertEqual(res_vote["status"], "activity")
+        self.assertEqual(res_vote["event_type"], "poll")
+
+        # 4. Reaction activity
+        msg = await self.hub.send_message(
+            room_name=self.room_name,
+            sender="Rui",
+            content="Check reaction",
+            human_token=self.hub.human_token,
+        )
+        react_wait = asyncio.create_task(tool_wake_up_call(room_name=self.room_name, timeout_seconds=5))
+        await asyncio.sleep(0.05)
+        await self.hub.toggle_reaction(msg["id"], self.room_name, sender="Rui", emoji="🚀")
+        res_react = json.loads(await asyncio.wait_for(react_wait, timeout=2.0))
+        self.assertEqual(res_react["status"], "activity")
+        self.assertEqual(res_react["event_type"], "reaction")
+
+    async def test_wake_up_call_since_seq_immediate(self):
+        """Passing since_seq returns immediately when unhandled activity exists."""
+        # Create an event first
+        await self.hub.send_message(
+            room_name=self.room_name,
+            sender="Rui",
+            content="Message before poll",
+            human_token=self.hub.human_token,
+        )
+        current_seq = self.hub._activity_seq
+        self.assertGreater(current_seq, 0)
+
+        # Call with since_seq = current_seq - 1
+        res = json.loads(await tool_wake_up_call(
+            room_name=self.room_name,
+            since_seq=current_seq - 1,
+            timeout_seconds=5,
+        ))
+        self.assertEqual(res["status"], "activity")
+        self.assertEqual(res["seq"], current_seq)
+
+    async def test_wake_up_call_timeout(self):
+        """wake_up_call times out cleanly when no activity occurs."""
+        res = json.loads(await tool_wake_up_call(
+            room_name=self.room_name,
+            timeout_seconds=1,
+        ))
+        self.assertEqual(res["status"], "timeout")
+        self.assertEqual(res["room"], self.room_name)
+
+    async def test_wake_up_presence_recorded(self):
+        """Watcher name is recorded in presence and visible in who_is_listening."""
+        res = json.loads(await tool_wake_up_call(
+            room_name=self.room_name,
+            watcher_name="SentinelWatcher",
+            timeout_seconds=1,
+        ))
+        self.assertEqual(res["status"], "timeout")
+
+        listening = self.hub.who_is_listening(self.room_name, requester_token=self.hub.human_token)
+        names = [m["name"].lower() for m in listening["listeners"]]
+        self.assertIn("sentinelwatcher", names)
+
+    def test_wake_up_rest_endpoints(self):
+        """Tests GET /api/rooms/{room}/wake-up and GET /api/wake-up without credentials."""
+        app = create_app()
+        client = TestClient(app)
+
+        # 1. Global /api/wake-up without any headers -> 200 OK timeout
+        resp = client.get("/api/wake-up?timeout=1")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["status"], "timeout")
+
+        # 2. Room /api/rooms/{room}/wake-up without any headers -> 200 OK timeout
+        resp = client.get(f"/api/rooms/{self.room_name}/wake-up?timeout=1")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["status"], "timeout")
+
+        # 3. REST wake-up with since_seq returns immediately on previous event
+        seq_before = self.hub._activity_seq
+        self.storage.add_message(self.room_name, "Rui", "human", "Hello REST!")
+        self.hub._notify_activity(self.room_name, "message")
+
+        resp = client.get(f"/api/rooms/{self.room_name}/wake-up?since_seq={seq_before}&timeout=1")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["status"], "activity")
+        self.assertEqual(data["event_type"], "message")
+        self.assertEqual(data["seq"], seq_before + 1)
+        self.assertNotIn("Hello REST!", resp.text)
 
 
 if __name__ == "__main__":

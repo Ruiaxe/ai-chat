@@ -25,6 +25,10 @@ class ChatHub:
         # Reaction events log for long-polling notification: list of event dicts
         self._reaction_events: list[dict[str, Any]] = []
         self._reaction_seq: int = 0
+        # Activity log and wake-up listeners for Sentinel / background watchers
+        self._activity_events: list[dict[str, Any]] = []
+        self._activity_seq: int = 0
+        self._activity_listeners: dict[str, list[dict[str, Any]]] = {}
         self._lock = asyncio.Lock()
 
         # Human identity name
@@ -650,6 +654,7 @@ class ChatHub:
         if not room:
             raise ValueError(f"Room '{room_name}' does not exist.")
         self.storage.archive_room(room["name"])
+        self._notify_activity(room["name"], "room")
         return {"status": "archived", "room_name": room["name"]}
 
     def unarchive_room(self, room_name: str, requester_role: str = "human") -> dict[str, Any]:
@@ -660,6 +665,7 @@ class ChatHub:
         if not room:
             raise ValueError(f"Room '{room_name}' does not exist.")
         self.storage.unarchive_room(room["name"])
+        self._notify_activity(room["name"], "room")
         return {"status": "unarchived", "room_name": room["name"]}
 
     async def toggle_reaction(
@@ -1242,6 +1248,140 @@ class ChatHub:
             except Exception:
                 pass
 
+    def _notify_activity(self, room_name: str, event_type: str) -> None:
+        """Logs an activity event and wakes up any Sentinel / background listeners waiting on this room or 'all'."""
+        self._activity_seq += 1
+        seq = self._activity_seq
+        now_iso = datetime.now().isoformat()
+        room_clean = (room_name or "general").strip()
+        ev = {
+            "seq": seq,
+            "room": room_clean,
+            "event_type": event_type,
+            "timestamp": now_iso,
+        }
+        self._activity_events.append(ev)
+        if len(self._activity_events) > 200:
+            self._activity_events = self._activity_events[-200:]
+
+        room_key = room_clean.lower()
+        target_keys = {room_key, "all"}
+        for k in target_keys:
+            listeners = self._activity_listeners.get(k, [])
+            for entry in list(listeners):
+                try:
+                    if isinstance(entry, dict) and "event" in entry:
+                        entry["triggered_event"] = {
+                            "status": "activity",
+                            "room": room_clean,
+                            "event_type": event_type,
+                            "seq": seq,
+                            "timestamp": now_iso,
+                            "hint": "Activity detected. Use your agent_token with read_messages or task tools to fetch details.",
+                        }
+                        entry["event"].set()
+                except Exception:
+                    pass
+
+    async def wait_for_activity(
+        self,
+        room_name: str = "all",
+        since_seq: int | None = None,
+        timeout_seconds: float = 30.0,
+        watcher_name: str = "",
+        on_progress: Any = None,
+    ) -> dict[str, Any]:
+        """
+        Tokenless wake-up notification for Sentinel and background watchers:
+        - room_name: Target room name, 'all' (or empty) to watch entire chat, or comma-separated room list.
+        - since_seq: Activity sequence number. If >= 0, returns immediately if activity happened since that sequence.
+        - timeout_seconds: Maximum wait time in seconds (1 to 3600, default 30).
+        - watcher_name: Optional name (e.g. 'Sentinel') for presence recording in who_is_listening.
+        - on_progress: Optional async callback for MCP progress reporting.
+        Returns:
+            {"status": "activity", "room": ..., "event_type": ..., "seq": ..., "timestamp": ..., ...}
+            or {"status": "timeout", "room": ..., "seq": ...}
+        """
+        clean_watcher = (watcher_name or "").strip()
+        clean_req = (room_name or "all").strip().lower()
+
+        # Record watcher presence if name provided
+        if clean_watcher:
+            presence_room = "general" if clean_req in ("all", "*", "") else [r.strip() for r in clean_req.split(",") if r.strip()][0]
+            self.record_presence(presence_room, clean_watcher, client="sentinel")
+
+        # Parse target keys
+        if clean_req in ("all", "*", ""):
+            listen_keys = ["all"]
+        else:
+            listen_keys = [r.strip().lower() for r in clean_req.split(",") if r.strip()]
+
+        listener_info: dict[str, Any] = {
+            "event": asyncio.Event(),
+            "triggered_event": None,
+            "started_at": datetime.now().isoformat(),
+        }
+
+        async with self._lock:
+            # If since_seq is specified (>= 0), check if an activity event already happened
+            if since_seq is not None and since_seq >= 0:
+                for ev in self._activity_events:
+                    if ev["seq"] > since_seq:
+                        ev_room_key = ev["room"].lower()
+                        if "all" in listen_keys or ev_room_key in listen_keys:
+                            return {
+                                "status": "activity",
+                                "room": ev["room"],
+                                "event_type": ev["event_type"],
+                                "seq": ev["seq"],
+                                "timestamp": ev["timestamp"],
+                                "hint": "Activity detected. Use your agent_token with read_messages or task tools to fetch details.",
+                            }
+
+            for k in listen_keys:
+                if k not in self._activity_listeners:
+                    self._activity_listeners[k] = []
+                self._activity_listeners[k].append(listener_info)
+
+        loop = asyncio.get_running_loop()
+        start_time = loop.time()
+        deadline = start_time + max(0.5, float(timeout_seconds))
+        last_progress_time = start_time
+        heartbeat_interval = 45.0
+
+        try:
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return {
+                        "status": "timeout",
+                        "room": room_name,
+                        "seq": self._activity_seq,
+                        "hint": "No activity detected within the timeout period.",
+                    }
+
+                slice_timeout = min(heartbeat_interval, remaining)
+                try:
+                    await asyncio.wait_for(listener_info["event"].wait(), timeout=max(0.05, slice_timeout))
+                    if listener_info.get("triggered_event"):
+                        return listener_info["triggered_event"]
+                except asyncio.TimeoutError:
+                    elapsed = loop.time() - start_time
+                    if on_progress and (loop.time() - last_progress_time >= 40.0):
+                        last_progress_time = loop.time()
+                        try:
+                            await on_progress(elapsed, float(timeout_seconds), f"Watching for activity in {room_name}... ({int(elapsed)}s elapsed)")
+                        except Exception:
+                            pass
+                    continue
+        finally:
+            async with self._lock:
+                for k in listen_keys:
+                    if k in self._activity_listeners:
+                        self._activity_listeners[k] = [
+                            li for li in self._activity_listeners[k] if li is not listener_info
+                        ]
+
     # WebSocket registration and broadcast
     async def register_websocket(
         self,
@@ -1269,7 +1409,27 @@ class ChatHub:
                 self._active_websockets[room_key].pop(websocket, None)
 
     async def _broadcast_to_websockets(self, room_name: str, payload: dict[str, Any]) -> None:
-        """Pushes data to all active WebSockets connected to this room."""
+        """Pushes data to all active WebSockets connected to this room and notifies wake-up listeners."""
+        # 1. Notify wake-up / activity listeners (Sentinel, etc.)
+        raw_type = payload.get("type", "")
+        if raw_type and raw_type != "presence_updated":
+            if "message" in raw_type:
+                cat = "message"
+            elif "poll" in raw_type:
+                cat = "poll"
+            elif "reaction" in raw_type:
+                cat = "reaction"
+            elif "decision" in raw_type:
+                cat = "decision"
+            elif "task" in raw_type:
+                cat = "task"
+            elif "room" in raw_type:
+                cat = "room"
+            else:
+                cat = raw_type
+            self._notify_activity(room_name, cat)
+
+        # 2. Push to connected WebSockets
         room_key = room_name.strip().lower()
         sockets_map = self._active_websockets.get(room_key, {})
         if not sockets_map:
@@ -1359,7 +1519,7 @@ class ChatHub:
 
         # 3. Recent HTTP pollers (Sentinel / REST polls within 60s)
         for (r_k, n_low), poll_info in list(self._recent_http_polls.items()):
-            if r_k == room_key:
+            if r_k == room_key or r_k == "all":
                 elapsed = now_ts - poll_info["timestamp"]
                 if elapsed <= 60.0:
                     name = poll_info["name"]

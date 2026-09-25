@@ -527,6 +527,59 @@ async def endpoint_room_sse_stream(request: Request) -> Response:
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+async def _handle_wake_up_request(request: Request, room_name: str) -> Response:
+    """Core handler for tokenless wake-up activity ping for Sentinel / background watchers."""
+    try:
+        timeout_val = float(request.query_params.get("timeout", 30.0))
+    except (ValueError, TypeError):
+        timeout_val = 30.0
+    safe_timeout = max(0.5, min(timeout_val, 300.0))
+
+    raw_since = request.query_params.get("since_seq")
+    if raw_since is not None:
+        try:
+            since_seq = int(raw_since)
+        except (ValueError, TypeError):
+            since_seq = None
+    else:
+        since_seq = None
+
+    # Optional watcher name for presence tracking
+    watcher_name = request.query_params.get("name") or request.query_params.get("watcher_name") or ""
+    if not watcher_name:
+        auth = get_request_auth(request)
+        if auth and auth.get("name"):
+            watcher_name = auth["name"]
+        else:
+            watcher_name = "Sentinel"
+
+    res = await hub.wait_for_activity(
+        room_name=room_name,
+        since_seq=since_seq,
+        timeout_seconds=safe_timeout,
+        watcher_name=watcher_name,
+    )
+    return JSONResponse(res)
+
+
+async def endpoint_wake_up(request: Request) -> Response:
+    """
+    Public wake-up ping endpoint for Sentinel / background watchers (global or specified room).
+    GET /api/wake-up?room=all&timeout=30&since_seq=0
+    """
+    room_name = request.query_params.get("room") or request.query_params.get("room_name") or "all"
+    return await _handle_wake_up_request(request, room_name)
+
+
+async def endpoint_room_wake_up(request: Request) -> Response:
+    """
+    Public room-specific wake-up ping endpoint for Sentinel / background watchers.
+    GET /api/rooms/{room_name}/wake-up?timeout=30&since_seq=0
+    """
+    room_name = request.path_params.get("room_name", "all")
+    return await _handle_wake_up_request(request, room_name)
+
+
 async def endpoint_toggle_reaction(request: Request) -> Response:
     """Toggles an emoji reaction on a message."""
     message_id = int(request.path_params["message_id"])
@@ -1367,6 +1420,8 @@ def create_app(allowed_hosts: list[str] | None = None) -> Starlette:
         Route("/api/rooms/{room_name}/log", endpoint=endpoint_download_log, methods=["GET"]),
         Route("/api/rooms/{room_name}/jsonl", endpoint=endpoint_download_jsonl, methods=["GET"]),
         Route("/api/rooms/{room_name}/stream", endpoint=endpoint_room_sse_stream, methods=["GET"]),
+        Route("/api/rooms/{room_name}/wake-up", endpoint=endpoint_room_wake_up, methods=["GET"]),
+        Route("/api/wake-up", endpoint=endpoint_wake_up, methods=["GET"]),
         WebSocketRoute("/ws/{room_name}", endpoint=websocket_room_endpoint),
         # If client sends POST /sse, handle via Streamable HTTP
         *([Route("/sse", endpoint=streamable_endpoint, methods=["POST"])] if streamable_endpoint else []),
