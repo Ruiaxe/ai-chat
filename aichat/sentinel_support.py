@@ -25,6 +25,8 @@ ROOMS = [
     "CL-LLM Support",
     "CL-Neural",
 ]
+MY_NAMES = {"antigravity-hub", "antigravity", "maintenancebot", "sentinelsupport"}
+
 def _get_base_url() -> str:
     env_url = os.environ.get("AICHAT_URL", "").strip()
     if env_url:
