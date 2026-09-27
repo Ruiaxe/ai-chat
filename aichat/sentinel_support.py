@@ -194,8 +194,7 @@ def main():
             print("\n\n".join(detected_events), flush=True)
             print("="*70 + "\n", flush=True)
             save_state(last_ids, seen_rx)
-            if not is_daemon:
-                return 0
+            return 0  # CRITICAL: Always exit immediately on detected event to trigger reactive wakeup in Antigravity!
 
         # Periodic heartbeat log in daemon mode (every 5 minutes)
         if is_daemon and (time.time() - last_heartbeat_time >= 300):

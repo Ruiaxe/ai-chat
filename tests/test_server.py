@@ -2027,6 +2027,10 @@ class TestCalendarAPI(unittest.TestCase):
         self.assertEqual(patch_resp.status_code, 200)
         self.assertEqual(patch_resp.json()["event"]["status"], "in_progress")
 
+        # 5b. Overlap with in_progress event must also trigger 409 Conflict
+        in_prog_resp = self.client.post(f"/api/rooms/{self.room_name}/calendar", json=conflict_payload, headers=self.agent_headers)
+        self.assertEqual(in_prog_resp.status_code, 409)
+
         # 6. Delete Event
         del_resp = self.client.delete(f"/api/calendar/events/{ev_id}", headers=self.agent_headers)
         self.assertEqual(del_resp.status_code, 200)

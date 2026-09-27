@@ -1884,7 +1884,7 @@ class ChatStorage:
         query = """
             SELECT * FROM calendar_events 
             WHERE UPPER(resource) = ? 
-              AND status IN ('scheduled', 'active')
+              AND status NOT IN ('completed', 'cancelled')
         """
         params: list[Any] = [clean_resource]
         if exclude_id is not None:
@@ -2190,7 +2190,7 @@ class ChatStorage:
         cur = conn.execute(
             """
             SELECT * FROM calendar_events 
-            WHERE status = 'active' 
+            WHERE status IN ('active', 'in_progress') 
               AND end_at != '' 
               AND end_at <= ? 
               AND notified_end = 0
@@ -2223,7 +2223,7 @@ class ChatStorage:
                 """
                 SELECT * FROM calendar_events 
                 WHERE UPPER(resource) = ? 
-                  AND status IN ('scheduled', 'active')
+                  AND status NOT IN ('completed', 'cancelled')
                   AND start_at <= ? 
                   AND (end_at = '' OR end_at > ?)
                 ORDER BY start_at ASC LIMIT 1
@@ -2236,7 +2236,7 @@ class ChatStorage:
                 """
                 SELECT * FROM calendar_events 
                 WHERE UPPER(resource) = ? 
-                  AND status = 'scheduled' 
+                  AND status NOT IN ('completed', 'cancelled') 
                   AND start_at > ?
                 ORDER BY start_at ASC LIMIT 1
                 """,
