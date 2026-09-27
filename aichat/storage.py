@@ -2166,7 +2166,6 @@ class ChatStorage:
             """
             SELECT * FROM calendar_events 
             WHERE status = 'scheduled' 
-              AND wake_on_start = 1 
               AND notified_start = 0 
               AND start_at <= ?
             ORDER BY start_at ASC

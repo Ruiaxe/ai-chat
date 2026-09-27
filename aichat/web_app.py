@@ -1224,17 +1224,22 @@ def generate_ical_feed(events: list[dict[str, Any]], cal_name: str = "ai-chat Ca
 
 async def endpoint_get_calendar_events(request: Request) -> Response:
     """Lists calendar events for room or all rooms."""
-    is_human = is_authenticated_human(request)
     auth = get_request_auth(request)
-    effective_tok = hub.human_token if is_human else (auth["token"] if auth else "")
+    if not auth:
+        return JSONResponse(
+            {"error": "Acesso negado: Autenticação obrigatória. Inicie sessão como humano ou forneça um token de agente ativo."},
+            status_code=401,
+        )
+    is_human = auth["is_human"]
+    effective_tok = hub.human_token if is_human else auth["token"]
 
-    room_name = request.path_params.get("room_name") or request.query_params.get("room") or "all"
+    room_name = request.path_params.get("room_name") or request.query_params.get("room_name") or request.query_params.get("room") or "all"
     start_from = request.query_params.get("start_from", "")
     start_to = request.query_params.get("start_to", "")
     resource = request.query_params.get("resource", "")
     status = request.query_params.get("status", "")
     include_completed = request.query_params.get("include_completed", "true").lower() in ("true", "1")
-    password = request.query_params.get("password", "")
+    password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
 
     try:
         events = hub.list_calendar_events(
@@ -1256,6 +1261,12 @@ async def endpoint_get_calendar_events(request: Request) -> Response:
 
 async def endpoint_create_calendar_event(request: Request) -> Response:
     """Creates a new calendar event with resource collision detection."""
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse(
+            {"error": "Acesso negado: Autenticação obrigatória."},
+            status_code=401,
+        )
     room_name = request.path_params.get("room_name") or "general"
     try:
         data = await request.json()
@@ -1269,11 +1280,11 @@ async def endpoint_create_calendar_event(request: Request) -> Response:
     if not start_at:
         return JSONResponse({"error": "A data/hora de início ('start_at') é obrigatória."}, status_code=400)
 
-    is_human = is_authenticated_human(request)
-    auth = get_request_auth(request)
+    is_human = auth["is_human"]
     human_tok = hub.human_token if is_human else ""
-    member_tok = data.get("member_token", "") or (auth["token"] if auth and not is_human else "")
-    creator = "Rui" if is_human else (auth["name"] if auth else (data.get("created_by") or "WebUser"))
+    member_tok = data.get("member_token", "") or (auth["token"] if not is_human else "")
+    creator = "Rui" if is_human else (auth["name"] or data.get("created_by") or "WebUser")
+    password = data.get("password", "") or request.headers.get("x-room-password", "")
     force = bool(data.get("force", False))
 
     try:
@@ -1292,7 +1303,7 @@ async def endpoint_create_calendar_event(request: Request) -> Response:
             wake_on_end=bool(data.get("wake_on_end", False)),
             member_token=member_tok,
             human_token=human_tok,
-            password=data.get("password", ""),
+            password=password,
             created_by=creator,
             force=force,
         )
@@ -1314,16 +1325,22 @@ async def endpoint_create_calendar_event(request: Request) -> Response:
 
 async def endpoint_update_calendar_event(request: Request) -> Response:
     """Updates a calendar event."""
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse(
+            {"error": "Acesso negado: Autenticação obrigatória."},
+            status_code=401,
+        )
     event_id = int(request.path_params["event_id"])
     try:
         data = await request.json()
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
-    is_human = is_authenticated_human(request)
-    auth = get_request_auth(request)
+    is_human = auth["is_human"]
     human_tok = hub.human_token if is_human else ""
-    member_tok = data.get("member_token", "") or (auth["token"] if auth and not is_human else "")
+    member_tok = data.get("member_token", "") or (auth["token"] if not is_human else "")
+    password = data.get("password", "") or request.headers.get("x-room-password", "")
     force = bool(data.get("force", False))
 
     allowed_fields = [
@@ -1337,7 +1354,7 @@ async def endpoint_update_calendar_event(request: Request) -> Response:
             event_id=event_id,
             member_token=member_tok,
             human_token=human_tok,
-            password=data.get("password", ""),
+            password=password,
             force=force,
             **kwargs,
         )
@@ -1354,12 +1371,17 @@ async def endpoint_update_calendar_event(request: Request) -> Response:
 
 async def endpoint_delete_calendar_event(request: Request) -> Response:
     """Deletes a calendar event."""
-    event_id = int(request.path_params["event_id"])
-    is_human = is_authenticated_human(request)
     auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse(
+            {"error": "Acesso negado: Autenticação obrigatória."},
+            status_code=401,
+        )
+    event_id = int(request.path_params["event_id"])
+    is_human = auth["is_human"]
     human_tok = hub.human_token if is_human else ""
-    member_tok = request.query_params.get("member_token", "") or (auth["token"] if auth and not is_human else "")
-    password = request.query_params.get("password", "")
+    member_tok = request.query_params.get("member_token", "") or (auth["token"] if not is_human else "")
+    password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
 
     try:
         res = await hub.delete_calendar_event(
@@ -1379,6 +1401,12 @@ async def endpoint_delete_calendar_event(request: Request) -> Response:
 
 async def endpoint_get_calendar_resources(request: Request) -> Response:
     """Returns hardware resource availability."""
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse(
+            {"error": "Acesso negado: Autenticação obrigatória."},
+            status_code=401,
+        )
     raw_resources = request.query_params.get("resources", "")
     res_list = [r.strip() for r in raw_resources.split(",") if r.strip()] if raw_resources else None
     status = hub.get_resource_status(resources=res_list)
@@ -1387,12 +1415,14 @@ async def endpoint_get_calendar_resources(request: Request) -> Response:
 
 async def endpoint_get_calendar_ics(request: Request) -> Response:
     """Exports events as standard RFC 5545 iCalendar (.ics) format."""
-    is_human = is_authenticated_human(request)
     auth = get_request_auth(request)
-    effective_tok = hub.human_token if is_human else (auth["token"] if auth else "")
-    password = request.query_params.get("password", "")
+    if not auth:
+        return PlainTextResponse("Acesso negado: Autenticação obrigatória.", status_code=401)
+    is_human = auth["is_human"]
+    effective_tok = hub.human_token if is_human else auth["token"]
+    password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
 
-    room_name = request.path_params.get("room_name") or request.query_params.get("room") or "all"
+    room_name = request.path_params.get("room_name") or request.query_params.get("room_name") or request.query_params.get("room") or "all"
     try:
         events = hub.list_calendar_events(
             room_name=room_name,

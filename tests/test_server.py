@@ -1969,6 +1969,10 @@ class TestCalendarAPI(unittest.TestCase):
         self.hub.human_token = "test_human_cal_token"
         self.room_name = "calendar-api-room"
         self.storage.create_room(self.room_name)
+        self.agent_reg = self.storage.register_agent_admin(callsign="AgentCalTest")
+        self.agent_token = self.agent_reg["token"]
+        self.human_headers = {"X-Human-Token": self.hub.human_token}
+        self.agent_headers = {"X-Agent-Token": self.agent_token}
         self.app = create_app()
         self.client = TestClient(self.app)
 
@@ -1985,7 +1989,7 @@ class TestCalendarAPI(unittest.TestCase):
             "resource": "RTX_3080",
             "description": "Running 1000 inferences",
         }
-        resp = self.client.post(f"/api/rooms/{self.room_name}/calendar", json=payload)
+        resp = self.client.post(f"/api/rooms/{self.room_name}/calendar", json=payload, headers=self.agent_headers)
         self.assertEqual(resp.status_code, 201)
         data = resp.json()
         ev_id = data["event"]["id"]
@@ -1998,7 +2002,7 @@ class TestCalendarAPI(unittest.TestCase):
             "end_at": "2026-09-27T18:00:00",
             "resource": "RTX_3080",
         }
-        conflict_resp = self.client.post(f"/api/rooms/{self.room_name}/calendar", json=conflict_payload)
+        conflict_resp = self.client.post(f"/api/rooms/{self.room_name}/calendar", json=conflict_payload, headers=self.agent_headers)
         self.assertEqual(conflict_resp.status_code, 409)
         conflict_data = conflict_resp.json()
         self.assertIn("conflicts", conflict_data)
@@ -2014,22 +2018,22 @@ class TestCalendarAPI(unittest.TestCase):
         self.assertEqual(forced_resp.status_code, 201)
 
         # 4. List Events
-        list_resp = self.client.get(f"/api/rooms/{self.room_name}/calendar")
+        list_resp = self.client.get(f"/api/rooms/{self.room_name}/calendar", headers=self.agent_headers)
         self.assertEqual(list_resp.status_code, 200)
         self.assertEqual(len(list_resp.json()["events"]), 2)
 
         # 5. Patch Event
-        patch_resp = self.client.patch(f"/api/calendar/events/{ev_id}", json={"status": "in_progress"})
+        patch_resp = self.client.patch(f"/api/calendar/events/{ev_id}", json={"status": "in_progress"}, headers=self.agent_headers)
         self.assertEqual(patch_resp.status_code, 200)
         self.assertEqual(patch_resp.json()["event"]["status"], "in_progress")
 
         # 6. Delete Event
-        del_resp = self.client.delete(f"/api/calendar/events/{ev_id}")
+        del_resp = self.client.delete(f"/api/calendar/events/{ev_id}", headers=self.agent_headers)
         self.assertEqual(del_resp.status_code, 200)
         self.assertEqual(del_resp.json()["status"], "success")
 
     def test_calendar_resources_endpoint(self):
-        resp = self.client.get("/api/calendar/resources")
+        resp = self.client.get("/api/calendar/resources", headers=self.agent_headers)
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
         self.assertIn("resources", data)
@@ -2048,7 +2052,7 @@ class TestCalendarAPI(unittest.TestCase):
         )
 
         # Test room feed
-        resp = self.client.get(f"/api/rooms/{self.room_name}/calendar.ics")
+        resp = self.client.get(f"/api/rooms/{self.room_name}/calendar.ics", headers=self.agent_headers)
         self.assertEqual(resp.status_code, 200)
         self.assertIn("text/calendar", resp.headers.get("content-type", ""))
         body = resp.text
@@ -2060,9 +2064,113 @@ class TestCalendarAPI(unittest.TestCase):
         self.assertIn("END:VCALENDAR", body)
 
         # Test global feed
-        global_resp = self.client.get("/api/calendar.ics")
+        global_resp = self.client.get("/api/calendar.ics", headers=self.agent_headers)
         self.assertEqual(global_resp.status_code, 200)
         self.assertIn("BEGIN:VCALENDAR", global_resp.text)
+
+    def test_calendar_endpoints_require_auth_401(self):
+        """Verifies that all calendar endpoints reject anonymous requests with 401."""
+        self.assertEqual(self.client.get(f"/api/rooms/{self.room_name}/calendar").status_code, 401)
+        self.assertEqual(self.client.get("/api/calendar/events").status_code, 401)
+        self.assertEqual(self.client.post(f"/api/rooms/{self.room_name}/calendar", json={"title": "x", "start_at": "2026-09-27T10:00:00"}).status_code, 401)
+        self.assertEqual(self.client.patch("/api/calendar/events/1", json={"status": "completed"}).status_code, 401)
+        self.assertEqual(self.client.delete("/api/calendar/events/1").status_code, 401)
+        self.assertEqual(self.client.get("/api/calendar/resources").status_code, 401)
+        self.assertEqual(self.client.get(f"/api/rooms/{self.room_name}/calendar.ics").status_code, 401)
+        self.assertEqual(self.client.get("/api/calendar.ics").status_code, 401)
+
+    def test_calendar_protected_room_isolation_and_room_name_param(self):
+        """Verifies room_name param, X-Room-Password, and that protected rooms do not leak to unauthorized agents."""
+        sec_room = "sec-cal-room"
+        self.hub.create_room(sec_room, password="sec-password-123")
+        self.storage.create_calendar_event(room_name=self.room_name, title="Public Talk", start_at="2026-09-27T14:00:00")
+        self.storage.create_calendar_event(room_name=sec_room, title="Top Secret Briefing", start_at="2026-09-27T15:00:00")
+
+        # 1. Non-supervisor agent queries /api/calendar/events (defaults to all) -> only public returned!
+        resp = self.client.get("/api/calendar/events", headers=self.agent_headers)
+        self.assertEqual(resp.status_code, 200)
+        titles = [e["title"] for e in resp.json()["events"]]
+        self.assertIn("Public Talk", titles)
+        self.assertNotIn("Top Secret Briefing", titles)
+
+        # 2. Agent queries specific protected room without password -> 403 Forbidden
+        denied_resp = self.client.get(f"/api/calendar/events?room_name={sec_room}", headers=self.agent_headers)
+        self.assertEqual(denied_resp.status_code, 403)
+
+        # 3. Agent queries specific protected room with X-Room-Password -> 200 OK with event
+        auth_headers = dict(self.agent_headers, **{"X-Room-Password": "sec-password-123"})
+        ok_resp = self.client.get(f"/api/calendar/events?room_name={sec_room}", headers=auth_headers)
+        self.assertEqual(ok_resp.status_code, 200)
+        sec_titles = [e["title"] for e in ok_resp.json()["events"]]
+        self.assertIn("Top Secret Briefing", sec_titles)
+
+        # 4. Agent queries /api/rooms/{room}/calendar with X-Room-Password -> 200 OK
+        room_ok_resp = self.client.get(f"/api/rooms/{sec_room}/calendar", headers=auth_headers)
+        self.assertEqual(room_ok_resp.status_code, 200)
+        self.assertIn("Top Secret Briefing", [e["title"] for e in room_ok_resp.json()["events"]])
+
+        # 5. Supervisor queries /api/calendar/events -> sees both public and protected
+        sup_resp = self.client.get("/api/calendar/events", headers=self.human_headers)
+        self.assertEqual(sup_resp.status_code, 200)
+        all_titles = [e["title"] for e in sup_resp.json()["events"]]
+        self.assertIn("Public Talk", all_titles)
+        self.assertIn("Top Secret Briefing", all_titles)
+
+    def test_calendar_dispatcher_wake_on_flags(self):
+        """Verifies that wake_on_start and wake_on_end flags are respected by dispatcher notifications."""
+        # Create silent event (wake_on_start=False, wake_on_end=False)
+        self.storage.create_calendar_event(
+            room_name=self.room_name,
+            title="Silent Task",
+            start_at="2020-01-01T00:00:00",
+            end_at="2020-01-01T01:00:00",
+            wake_on_start=False,
+            wake_on_end=False,
+        )
+        activity_count_before = len(self.hub._activity_events)
+        due = self.storage.get_due_calendar_events("2020-01-01T00:30:00")
+        self.assertEqual(len(due), 1)
+        # Dispatcher logic:
+        for ev in due:
+            self.storage.mark_event_start_notified(ev["id"])
+            if bool(ev["wake_on_start"]) if "wake_on_start" in ev and ev["wake_on_start"] is not None else True:
+                self.hub._notify_activity(ev["room_name"], event_type="calendar_event_start")
+        # No activity event was emitted for wake_on_start=False
+        self.assertEqual(len(self.hub._activity_events), activity_count_before)
+
+        ending = self.storage.get_ending_calendar_events("2020-01-01T02:00:00")
+        self.assertEqual(len(ending), 1)
+        for ev in ending:
+            self.storage.mark_event_end_notified(ev["id"])
+            if bool(ev["wake_on_end"]) if "wake_on_end" in ev and ev["wake_on_end"] is not None else False:
+                self.hub._notify_activity(ev["room_name"], event_type="calendar_event_end")
+        # No activity event was emitted for wake_on_end=False
+        self.assertEqual(len(self.hub._activity_events), activity_count_before)
+
+        # Create loud event (wake_on_start=True, wake_on_end=True)
+        self.storage.create_calendar_event(
+            room_name=self.room_name,
+            title="Loud Task",
+            start_at="2020-01-01T00:00:00",
+            end_at="2020-01-01T01:00:00",
+            wake_on_start=True,
+            wake_on_end=True,
+        )
+        due2 = self.storage.get_due_calendar_events("2020-01-01T00:30:00")
+        self.assertEqual(len(due2), 1)
+        for ev in due2:
+            self.storage.mark_event_start_notified(ev["id"])
+            if bool(ev["wake_on_start"]) if "wake_on_start" in ev and ev["wake_on_start"] is not None else True:
+                self.hub._notify_activity(ev["room_name"], event_type="calendar_event_start")
+        self.assertEqual(self.hub._activity_events[-1]["event_type"], "calendar_event_start")
+
+        ending2 = self.storage.get_ending_calendar_events("2020-01-01T02:00:00")
+        self.assertEqual(len(ending2), 1)
+        for ev in ending2:
+            self.storage.mark_event_end_notified(ev["id"])
+            if bool(ev["wake_on_end"]) if "wake_on_end" in ev and ev["wake_on_end"] is not None else False:
+                self.hub._notify_activity(ev["room_name"], event_type="calendar_event_end")
+        self.assertEqual(self.hub._activity_events[-1]["event_type"], "calendar_event_end")
 
 
 class TestCalendarMCP(unittest.IsolatedAsyncioTestCase):

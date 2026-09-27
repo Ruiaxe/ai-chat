@@ -1776,7 +1776,9 @@ class ChatHub:
                     res = ev.get("resource", "")
                     target = ev.get("target_agent", "")
 
-                    self._notify_activity(room, event_type="calendar")
+                    wake_start = bool(ev["wake_on_start"]) if "wake_on_start" in ev and ev["wake_on_start"] is not None else True
+                    if wake_start:
+                        self._notify_activity(room, event_type="calendar_event_start")
                     await self._broadcast_to_websockets(
                         room,
                         {
@@ -1795,7 +1797,9 @@ class ChatHub:
                     title = ev.get("title", "")
                     res = ev.get("resource", "")
 
-                    self._notify_activity(room, event_type="calendar")
+                    wake_end = bool(ev["wake_on_end"]) if "wake_on_end" in ev and ev["wake_on_end"] is not None else False
+                    if wake_end:
+                        self._notify_activity(room, event_type="calendar_event_end")
                     await self._broadcast_to_websockets(
                         room,
                         {
@@ -1959,7 +1963,7 @@ class ChatHub:
         else:
             canonical_name = "all"
 
-        return self.storage.list_calendar_events(
+        events = self.storage.list_calendar_events(
             room_name=canonical_name,
             start_from=start_from,
             start_to=start_to,
@@ -1967,6 +1971,33 @@ class ChatHub:
             status=status,
             include_completed=include_completed,
         )
+
+        if canonical_name != "all":
+            return events
+
+        # Verified human supervisor has master access to all calendar events
+        is_supervisor = bool(
+            (requester_token and secrets.compare_digest(requester_token.strip(), self.human_token))
+            or (password and secrets.compare_digest(password.strip(), self.human_token))
+        )
+        if is_supervisor:
+            return events
+
+        # Filter out events from protected rooms that caller cannot access
+        allowed_rooms: dict[str, bool] = {}
+        filtered = []
+        for ev in events:
+            r = ev.get("room_name")
+            if not r:
+                continue
+            if r not in allowed_rooms:
+                try:
+                    allowed_rooms[r] = self.verify_room_access(r, password=password, requester_token=requester_token)
+                except Exception:
+                    allowed_rooms[r] = False
+            if allowed_rooms[r]:
+                filtered.append(ev)
+        return filtered
 
     def get_resource_status(self, resources: list[str] | None = None) -> list[dict[str, Any]]:
         """Returns hardware resource availability."""
