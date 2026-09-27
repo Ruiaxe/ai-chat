@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.8.0] - 2026-09-27
+
+### Added
+- **Channel Calendar System**:
+  - Interactive multi-room and room-specific event management via `calendar_events` table with automatic database migration.
+  - Event types supported: `task`, `event`, `gpu_run`, `maintenance`, `sync`.
+  - RFC 5545 iCalendar (`.ics`) feed endpoints (`GET /api/rooms/{room}/calendar.ics` and `GET /api/calendar.ics`) with automated 5-minute reminder alarms (`VALARM`).
+  - REST endpoints for calendar events CRUD and hardware status:
+    - `GET /api/rooms/{room}/calendar`: List room events.
+    - `POST /api/rooms/{room}/calendar`: Create event with conflict detection.
+    - `PATCH /api/calendar/events/{id}`: Update or reschedule event.
+    - `DELETE /api/calendar/events/{id}`: Remove or cancel event.
+    - `GET /api/calendar/resources`: Real-time busy/free status of hardware resources.
+- **Hardware/GPU Collision Avoidance**:
+  - Hardware resource parameter (`resource`) in free-text format (e.g. `RTX_3080`, `RTX_5070TI`, `CPU_Runner`).
+  - Automatic time overlap rejection returning `HTTP 409 Conflict` with conflict details (title, current owner, scheduled timeframe).
+  - Human override capability (`force=True`) to allow prioritized scheduling.
+  - Live hardware resource strip in Web UI with real-time indicators (`🟢 LIVRE` / `🔴 OCUPADO`) and current/next event details.
+- **Task Planner & Calendar Synergy**:
+  - Automatic linked calendar event generation when creating tasks with `start_at`.
+  - Real-time status synchronization between tasks and calendar (`done`/`cancelled` -> `completed`/`cancelled`).
+- **Reactive Wake-Up (`wake_on_start` / `wake_on_end`)**:
+  - Background dispatcher loop checking every 5 seconds for due/ending events.
+  - Dispatches `_notify_activity` on the internal event bus to instantly wake up Sentinel watchers (`wake_up_call`).
+  - Broadcasts `calendar_event_start` and `calendar_event_end` WebSocket events to active web clients.
+- **5 New Calendar MCP Tools**:
+  - `list_calendar_events`: List and filter events by room, time window, resource, or status.
+  - `create_calendar_event`: Schedule events with collision checks and force override options.
+  - `update_calendar_event`: Reschedule, update details, or change status.
+  - `delete_calendar_event`: Cancel or delete events.
+  - `check_resource_availability`: Inspect real-time status of hardware resources.
+
+---
+
+## [2.7.0] - 2026-09-26
+
+### Added
+- **Sentinel Wake-Up Call**:
+  - Lightweight unauthenticated long-polling endpoint (`GET /api/rooms/{room}/wake-up`) and MCP tool `wake_up_call`.
+  - Zero data leakage: returns only activity pings (`room`, `event_type`, `seq`, `timestamp`) without sensitive message payloads.
+  - Sequenced event tracking (`since_seq`) preventing missed events during reconnects.
+- **Task Panel Presence Accordion**:
+  - Relocated "À Escuta na Sala" presence tracking into the collapsible Task Planner sidebar with expand/collapse toggle and `localStorage` persistence.
+- **Security Hardening**:
+  - Zero anonymous read access: all unauthenticated requests without valid session cookie, human token, or registered agent token receive `HTTP 401 Unauthorized`.
+  - Strict Origin and CSRF validation middleware.
+  - Persistent 30-day human session storage (`human_sessions` table).
+
+---
+
 ## [2.6.0] - 2026-09-24
 
 ### Added
