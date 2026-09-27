@@ -1,6 +1,7 @@
 import os
 os.environ["AICHAT_TESTING"] = "1"
 import asyncio
+from datetime import datetime, timedelta
 import json
 import shutil
 import tempfile
@@ -37,6 +38,11 @@ from aichat.mcp_server import (
     kick_member as tool_kick_member,
     get_room_audit_log as tool_get_room_audit_log,
     wake_up_call as tool_wake_up_call,
+    list_calendar_events as tool_list_calendar_events,
+    create_calendar_event as tool_create_calendar_event,
+    update_calendar_event as tool_update_calendar_event,
+    delete_calendar_event as tool_delete_calendar_event,
+    check_resource_availability as tool_check_resource_availability,
 )
 from aichat.storage import ChatStorage
 from aichat.web_app import create_app
@@ -1757,6 +1763,385 @@ class TestWakeUpCall(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["event_type"], "message")
         self.assertEqual(data["seq"], seq_before + 1)
         self.assertNotIn("Hello REST!", resp.text)
+
+
+class TestCalendarStorage(unittest.TestCase):
+    """Tests for calendar_events table, conflict detection engine, and task synergy."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = Path(self.temp_dir) / "test_chat.db"
+        self.logs_dir = Path(self.temp_dir) / "logs"
+        self.storage = ChatStorage(db_path=self.db_path, logs_dir=self.logs_dir)
+        self.storage.create_room("project-channel")
+
+    def tearDown(self):
+        self.storage.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_create_and_list_calendar_events(self):
+        ev = self.storage.create_calendar_event(
+            room_name="project-channel",
+            title="Model Fine-Tuning",
+            start_at="2026-09-27T14:00:00",
+            end_at="2026-09-27T16:00:00",
+            resource="RTX_3080",
+            created_by="Claude",
+        )
+        self.assertGreater(ev["id"], 0)
+        self.assertEqual(ev["resource"], "RTX_3080")
+        self.assertEqual(ev["status"], "scheduled")
+
+        # List all
+        events = self.storage.list_calendar_events("project-channel")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["title"], "Model Fine-Tuning")
+
+        # Filter by resource
+        ev_gpu = self.storage.list_calendar_events("project-channel", resource="RTX_3080")
+        self.assertEqual(len(ev_gpu), 1)
+        ev_none = self.storage.list_calendar_events("project-channel", resource="RTX_4090")
+        self.assertEqual(len(ev_none), 0)
+
+    def test_check_resource_conflicts(self):
+        # Base event: 14:00 to 16:00 on RTX_3080
+        self.storage.create_calendar_event(
+            room_name="project-channel",
+            title="Training Job 1",
+            start_at="2026-09-27T14:00:00",
+            end_at="2026-09-27T16:00:00",
+            resource="RTX_3080",
+            created_by="Claude",
+        )
+
+        # Overlapping: 15:00 to 17:00 -> Conflict
+        conflicts = self.storage.check_resource_conflicts("RTX_3080", "2026-09-27T15:00:00", "2026-09-27T17:00:00")
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(conflicts[0]["title"], "Training Job 1")
+
+        # Case-insensitivity check ('rtx_3080' vs 'RTX_3080')
+        conflicts_lower = self.storage.check_resource_conflicts("rtx_3080", "2026-09-27T15:00:00", "2026-09-27T17:00:00")
+        self.assertEqual(len(conflicts_lower), 1)
+
+        # Disjoint: 16:00 to 18:00 (exact boundary) -> No conflict
+        no_conflicts = self.storage.check_resource_conflicts("RTX_3080", "2026-09-27T16:00:00", "2026-09-27T18:00:00")
+        self.assertEqual(len(no_conflicts), 0)
+
+        # Different resource -> No conflict
+        diff_res = self.storage.check_resource_conflicts("RTX_5070TI", "2026-09-27T14:30:00", "2026-09-27T15:30:00")
+        self.assertEqual(len(diff_res), 0)
+
+    def test_conflict_rejection_and_force_override(self):
+        self.storage.create_calendar_event(
+            room_name="project-channel",
+            title="Active Run",
+            start_at="2026-09-27T10:00:00",
+            end_at="2026-09-27T12:00:00",
+            resource="RTX_5070TI",
+        )
+
+        # Categorical rejection on overlap
+        with self.assertRaises(ValueError) as ctx:
+            self.storage.create_calendar_event(
+                room_name="project-channel",
+                title="Conflicting Run",
+                start_at="2026-09-27T11:00:00",
+                end_at="2026-09-27T13:00:00",
+                resource="RTX_5070TI",
+                force=False,
+            )
+        self.assertIn("Conflito de recurso", str(ctx.exception))
+
+        # Human supervisor force=True override succeeds
+        forced = self.storage.create_calendar_event(
+            room_name="project-channel",
+            title="Forced Run by Rui",
+            start_at="2026-09-27T11:00:00",
+            end_at="2026-09-27T13:00:00",
+            resource="RTX_5070TI",
+            force=True,
+        )
+        self.assertGreater(forced["id"], 0)
+
+    def test_task_and_calendar_synergy(self):
+        # 1. Create a task with start_at, due_at, and resource
+        task = self.storage.create_task(
+            room_name="project-channel",
+            title="Inference Benchmark",
+            start_at="2026-09-27T18:00:00",
+            due_at="2026-09-27T19:00:00",
+            resource="RTX_3080",
+            created_by="Rui",
+        )
+        self.assertEqual(task["resource"], "RTX_3080")
+        self.assertEqual(task["start_at"], "2026-09-27T18:00:00")
+
+        # Verify auto-linked calendar event was created
+        events = self.storage.list_calendar_events("project-channel")
+        linked_ev = next((e for e in events if e.get("task_id") == task["id"]), None)
+        self.assertIsNotNone(linked_ev)
+        self.assertEqual(linked_ev["resource"], "RTX_3080")
+        self.assertEqual(linked_ev["status"], "scheduled")
+
+        # 2. Complete task -> linked calendar event automatically marks as completed
+        self.storage.update_task(task["id"], status="done")
+        updated_ev = self.storage.get_calendar_event_by_id(linked_ev["id"])
+        self.assertEqual(updated_ev["status"], "completed")
+
+        # 3. Reopen task -> calendar event reopens as scheduled
+        self.storage.update_task(task["id"], status="planned")
+        updated_ev2 = self.storage.get_calendar_event_by_id(linked_ev["id"])
+        self.assertEqual(updated_ev2["status"], "scheduled")
+
+        # 4. Cancel task -> calendar event marks as cancelled
+        self.storage.update_task(task["id"], status="cancelled")
+        updated_ev3 = self.storage.get_calendar_event_by_id(linked_ev["id"])
+        self.assertEqual(updated_ev3["status"], "cancelled")
+
+    def test_get_due_and_ending_events(self):
+        ev = self.storage.create_calendar_event(
+            room_name="project-channel",
+            title="Cron Check",
+            start_at="2026-09-27T08:00:00",
+            end_at="2026-09-27T09:00:00",
+            resource="RTX_3080",
+        )
+
+        # Check due at 08:05:00
+        due = self.storage.get_due_calendar_events("2026-09-27T08:05:00")
+        self.assertEqual(len(due), 1)
+        self.assertEqual(due[0]["id"], ev["id"])
+
+        # Mark notified start
+        self.storage.mark_event_start_notified(ev["id"])
+        due_after = self.storage.get_due_calendar_events("2026-09-27T08:05:00")
+        self.assertEqual(len(due_after), 0)
+
+        # Check ending at 09:05:00
+        ending = self.storage.get_ending_calendar_events("2026-09-27T09:05:00")
+        self.assertEqual(len(ending), 1)
+        self.assertEqual(ending[0]["id"], ev["id"])
+
+        # Mark notified end
+        self.storage.mark_event_end_notified(ev["id"])
+        ending_after = self.storage.get_ending_calendar_events("2026-09-27T09:05:00")
+        self.assertEqual(len(ending_after), 0)
+
+        # Status automatically became completed
+        final_ev = self.storage.get_calendar_event_by_id(ev["id"])
+        self.assertEqual(final_ev["status"], "completed")
+
+    def test_resource_status_reporting(self):
+        now = datetime.now()
+        start = (now - timedelta(minutes=10)).isoformat()
+        end = (now + timedelta(minutes=30)).isoformat()
+
+        self.storage.create_calendar_event(
+            room_name="project-channel",
+            title="Live GPU Task",
+            start_at=start,
+            end_at=end,
+            resource="RTX_3080",
+        )
+
+        statuses = self.storage.get_resource_status(["RTX_3080", "RTX_5070TI"])
+        rtx3080 = next(s for s in statuses if s["resource"] == "RTX_3080")
+        rtx5070 = next(s for s in statuses if s["resource"] == "RTX_5070TI")
+
+        self.assertTrue(rtx3080["is_busy"])
+        self.assertIsNotNone(rtx3080["active_event"])
+        self.assertEqual(rtx3080["active_event"]["title"], "Live GPU Task")
+
+        self.assertFalse(rtx5070["is_busy"])
+        self.assertIsNone(rtx5070["active_event"])
+
+
+class TestCalendarAPI(unittest.TestCase):
+    """Tests for Calendar REST endpoints, RFC 5545 iCal generator, and conflict 409 handling."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = Path(self.temp_dir) / "test_chat.db"
+        self.logs_dir = Path(self.temp_dir) / "logs"
+        self.storage = ChatStorage(db_path=self.db_path, logs_dir=self.logs_dir)
+        self.hub = hub
+        self.hub.storage = self.storage
+        self.hub.human_token = "test_human_cal_token"
+        self.room_name = "calendar-api-room"
+        self.storage.create_room(self.room_name)
+        self.app = create_app()
+        self.client = TestClient(self.app)
+
+    def tearDown(self):
+        self.storage.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_calendar_endpoints_crud_and_conflict_409(self):
+        # 1. Create Event
+        payload = {
+            "title": "API Benchmark",
+            "start_at": "2026-09-27T15:00:00",
+            "end_at": "2026-09-27T17:00:00",
+            "resource": "RTX_3080",
+            "description": "Running 1000 inferences",
+        }
+        resp = self.client.post(f"/api/rooms/{self.room_name}/calendar", json=payload)
+        self.assertEqual(resp.status_code, 201)
+        data = resp.json()
+        ev_id = data["event"]["id"]
+        self.assertEqual(data["event"]["title"], "API Benchmark")
+
+        # 2. Conflict attempt -> 409 Conflict
+        conflict_payload = {
+            "title": "Overlap Attempt",
+            "start_at": "2026-09-27T16:00:00",
+            "end_at": "2026-09-27T18:00:00",
+            "resource": "RTX_3080",
+        }
+        conflict_resp = self.client.post(f"/api/rooms/{self.room_name}/calendar", json=conflict_payload)
+        self.assertEqual(conflict_resp.status_code, 409)
+        conflict_data = conflict_resp.json()
+        self.assertIn("conflicts", conflict_data)
+        self.assertGreater(len(conflict_data["conflicts"]), 0)
+
+        # 3. Force attempt by human supervisor -> 201 Created
+        forced_payload = dict(conflict_payload, force=True)
+        forced_resp = self.client.post(
+            f"/api/rooms/{self.room_name}/calendar",
+            json=forced_payload,
+            headers={"x-human-token": "test_human_cal_token"},
+        )
+        self.assertEqual(forced_resp.status_code, 201)
+
+        # 4. List Events
+        list_resp = self.client.get(f"/api/rooms/{self.room_name}/calendar")
+        self.assertEqual(list_resp.status_code, 200)
+        self.assertEqual(len(list_resp.json()["events"]), 2)
+
+        # 5. Patch Event
+        patch_resp = self.client.patch(f"/api/calendar/events/{ev_id}", json={"status": "in_progress"})
+        self.assertEqual(patch_resp.status_code, 200)
+        self.assertEqual(patch_resp.json()["event"]["status"], "in_progress")
+
+        # 6. Delete Event
+        del_resp = self.client.delete(f"/api/calendar/events/{ev_id}")
+        self.assertEqual(del_resp.status_code, 200)
+        self.assertEqual(del_resp.json()["status"], "success")
+
+    def test_calendar_resources_endpoint(self):
+        resp = self.client.get("/api/calendar/resources")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("resources", data)
+        res_names = [r["resource"] for r in data["resources"]]
+        self.assertIn("RTX_3080", res_names)
+        self.assertIn("RTX_5070TI", res_names)
+
+    def test_calendar_ical_feed_export(self):
+        self.storage.create_calendar_event(
+            room_name=self.room_name,
+            title="Sprint Review",
+            start_at="2026-09-27T11:00:00",
+            end_at="2026-09-27T12:00:00",
+            description="Discussing v2.8 calendar release",
+            resource="ConferenceRoom",
+        )
+
+        # Test room feed
+        resp = self.client.get(f"/api/rooms/{self.room_name}/calendar.ics")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("text/calendar", resp.headers.get("content-type", ""))
+        body = resp.text
+        self.assertIn("BEGIN:VCALENDAR", body)
+        self.assertIn("BEGIN:VEVENT", body)
+        self.assertIn("SUMMARY:Sprint Review", body)
+        self.assertIn("LOCATION:ConferenceRoom", body)
+        self.assertIn("END:VEVENT", body)
+        self.assertIn("END:VCALENDAR", body)
+
+        # Test global feed
+        global_resp = self.client.get("/api/calendar.ics")
+        self.assertEqual(global_resp.status_code, 200)
+        self.assertIn("BEGIN:VCALENDAR", global_resp.text)
+
+
+class TestCalendarMCP(unittest.IsolatedAsyncioTestCase):
+    """Tests for MCP calendar tools."""
+
+    async def asyncSetUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.db_path = Path(self.temp_dir) / "test_chat.db"
+        self.logs_dir = Path(self.temp_dir) / "logs"
+        self.storage = ChatStorage(db_path=self.db_path, logs_dir=self.logs_dir)
+        self.hub = hub
+        self.hub.storage = self.storage
+        self.hub.human_token = "test_mcp_cal_human"
+        self.room_name = "cal-mcp-room"
+        self.storage.create_room(self.room_name)
+
+        agent = self.storage.register_agent_admin(callsign="CalAgent", role="developer")
+        self.agent_token = agent["token"]
+
+    async def asyncTearDown(self):
+        self.storage.close()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    async def test_mcp_calendar_tools(self):
+        # 1. Check availability on free resource
+        avail = json.loads(tool_check_resource_availability(
+            resource="RTX_3080",
+            start_at="2026-09-27T10:00:00",
+            end_at="2026-09-27T11:00:00",
+            agent_token=self.agent_token,
+        ))
+        self.assertEqual(avail["status"], "success")
+        self.assertTrue(avail["available"])
+
+        # 2. Schedule event via tool_create_calendar_event
+        created = json.loads(await tool_create_calendar_event(
+            room_name=self.room_name,
+            title="MCP Training",
+            start_at="2026-09-27T10:00:00",
+            end_at="2026-09-27T11:00:00",
+            resource="RTX_3080",
+            agent_token=self.agent_token,
+        ))
+        self.assertEqual(created["status"], "success")
+        ev_id = created["event"]["id"]
+
+        # 3. Check availability now shows occupied
+        avail_now = json.loads(tool_check_resource_availability(
+            resource="RTX_3080",
+            start_at="2026-09-27T10:30:00",
+            end_at="2026-09-27T11:30:00",
+            agent_token=self.agent_token,
+        ))
+        self.assertFalse(avail_now["available"])
+        self.assertEqual(avail_now["conflicts_count"], 1)
+
+        # 4. List calendar events
+        listed = json.loads(tool_list_calendar_events(
+            room_name=self.room_name,
+            agent_token=self.agent_token,
+        ))
+        self.assertEqual(listed["status"], "success")
+        self.assertEqual(len(listed["events"]), 1)
+
+        # 5. Update calendar event
+        updated = json.loads(await tool_update_calendar_event(
+            event_id=ev_id,
+            status="completed",
+            agent_token=self.agent_token,
+        ))
+        self.assertEqual(updated["status"], "success")
+        self.assertEqual(updated["event"]["status"], "completed")
+
+        # 6. Delete calendar event
+        deleted = json.loads(await tool_delete_calendar_event(
+            event_id=ev_id,
+            agent_token=self.agent_token,
+        ))
+        self.assertEqual(deleted["status"], "success")
 
 
 if __name__ == "__main__":

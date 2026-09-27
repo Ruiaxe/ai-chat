@@ -1562,6 +1562,9 @@ class ChatHub:
         message_id: int | None = None,
         uses_gpu: bool = False,
         gpu_est_min: int = 0,
+        start_at: str = "",
+        due_at: str = "",
+        resource: str = "",
         member_token: str = "",
         human_token: str = "",
         password: str = "",
@@ -1595,6 +1598,9 @@ class ChatHub:
             message_id=message_id,
             uses_gpu=uses_gpu,
             gpu_est_min=gpu_est_min,
+            start_at=start_at,
+            due_at=due_at,
+            resource=resource,
             created_by=effective_creator,
         )
         await self._broadcast_to_websockets(canonical_name, {
@@ -1748,3 +1754,220 @@ class ChatHub:
             "tasks": tasks,
         })
         return tasks
+
+    # -------------------------------------------------------------
+    # Calendar & Resource Management (v2.8)
+    # -------------------------------------------------------------
+    async def calendar_dispatcher_loop(self) -> None:
+        """
+        Background worker running on the Hub:
+        Periodically checks for calendar events reaching start_at or end_at.
+        Emits wake-up events to the room and broadcasts to WebSockets.
+        """
+        while True:
+            try:
+                now_iso = datetime.now().isoformat()
+                # 1. Trigger events reaching start_at
+                due_events = self.storage.get_due_calendar_events(now_iso)
+                for ev in due_events:
+                    self.storage.mark_event_start_notified(ev["id"])
+                    room = ev["room_name"]
+                    title = ev.get("title", "")
+                    res = ev.get("resource", "")
+                    target = ev.get("target_agent", "")
+
+                    self._notify_activity(room, event_type="calendar")
+                    await self._broadcast_to_websockets(
+                        room,
+                        {
+                            "type": "calendar_event_start",
+                            "room": room,
+                            "event": ev,
+                            "notice": f"⏰ Evento agendado iniciado: '{title}'" + (f" (Recurso: {res})" if res else "") + (f" [@{target}]" if target else ""),
+                        },
+                    )
+
+                # 2. Trigger events reaching end_at
+                ending_events = self.storage.get_ending_calendar_events(now_iso)
+                for ev in ending_events:
+                    self.storage.mark_event_end_notified(ev["id"])
+                    room = ev["room_name"]
+                    title = ev.get("title", "")
+                    res = ev.get("resource", "")
+
+                    self._notify_activity(room, event_type="calendar")
+                    await self._broadcast_to_websockets(
+                        room,
+                        {
+                            "type": "calendar_event_end",
+                            "room": room,
+                            "event": ev,
+                            "notice": f"🏁 Evento concluído: '{title}'" + (f" (Recurso '{res}' libertado)" if res else ""),
+                        },
+                    )
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
+
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                break
+
+    async def create_calendar_event(
+        self,
+        room_name: str,
+        title: str,
+        start_at: str,
+        end_at: str = "",
+        description: str = "",
+        event_type: str = "event",
+        task_id: int | None = None,
+        resource: str = "",
+        target_agent: str = "",
+        status: str = "scheduled",
+        wake_on_start: bool = True,
+        wake_on_end: bool = False,
+        member_token: str = "",
+        human_token: str = "",
+        password: str = "",
+        created_by: str = "",
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Creates a calendar event and broadcasts to room."""
+        canonical_name = self.get_canonical_room_name(room_name, password, requester_token=human_token or member_token)
+        clean_created_by = (created_by or "").strip()
+        clean_ht = (human_token or "").strip()
+        is_human = bool(clean_ht and secrets.compare_digest(clean_ht, self.human_token))
+
+        if is_human:
+            effective_creator = clean_created_by or "Rui"
+        elif clean_created_by:
+            valid, err = self.storage.verify_member_token(canonical_name, clean_created_by, member_token)
+            if not valid:
+                try:
+                    ident = self.authenticate_agent(member_token)
+                    effective_creator = ident["callsign"]
+                except Exception:
+                    effective_creator = clean_created_by
+            else:
+                effective_creator = clean_created_by
+        else:
+            effective_creator = "Agent"
+
+        allow_force = force and is_human
+
+        event = self.storage.create_calendar_event(
+            room_name=canonical_name,
+            title=title,
+            start_at=start_at,
+            end_at=end_at,
+            description=description,
+            event_type=event_type,
+            task_id=task_id,
+            resource=resource,
+            target_agent=target_agent,
+            status=status,
+            wake_on_start=wake_on_start,
+            wake_on_end=wake_on_end,
+            created_by=effective_creator,
+            force=allow_force,
+        )
+
+        await self._broadcast_to_websockets(canonical_name, {
+            "type": "calendar_event_created",
+            "room": canonical_name,
+            "event": event,
+        })
+        self._notify_activity(canonical_name, event_type="calendar")
+        return event
+
+    async def update_calendar_event(
+        self,
+        event_id: int,
+        member_token: str = "",
+        human_token: str = "",
+        password: str = "",
+        force: bool = False,
+        **fields,
+    ) -> dict[str, Any]:
+        """Updates a calendar event, validating permissions and resource conflicts."""
+        existing = self.storage.get_calendar_event_by_id(event_id)
+        if not existing:
+            raise ValueError(f"Evento #{event_id} não encontrado.")
+
+        room_name = existing["room_name"]
+        canonical_name = self.get_canonical_room_name(room_name, password, requester_token=human_token or member_token)
+
+        clean_ht = (human_token or "").strip()
+        is_human = bool(clean_ht and secrets.compare_digest(clean_ht, self.human_token))
+        allow_force = force and is_human
+
+        updated = self.storage.update_calendar_event(
+            event_id=event_id,
+            force=allow_force,
+            **fields,
+        )
+
+        await self._broadcast_to_websockets(canonical_name, {
+            "type": "calendar_event_updated",
+            "room": canonical_name,
+            "event": updated,
+        })
+        self._notify_activity(canonical_name, event_type="calendar")
+        return updated
+
+    async def delete_calendar_event(
+        self,
+        event_id: int,
+        member_token: str = "",
+        human_token: str = "",
+        password: str = "",
+    ) -> dict[str, Any]:
+        """Deletes a calendar event and broadcasts to room."""
+        existing = self.storage.get_calendar_event_by_id(event_id)
+        if not existing:
+            raise ValueError(f"Evento #{event_id} não encontrado.")
+
+        room_name = existing["room_name"]
+        canonical_name = self.get_canonical_room_name(room_name, password, requester_token=human_token or member_token)
+
+        self.storage.delete_calendar_event(event_id)
+        await self._broadcast_to_websockets(canonical_name, {
+            "type": "calendar_event_deleted",
+            "room": canonical_name,
+            "event_id": event_id,
+        })
+        self._notify_activity(canonical_name, event_type="calendar")
+        return {"status": "success", "event_id": event_id}
+
+    def list_calendar_events(
+        self,
+        room_name: str = "all",
+        start_from: str = "",
+        start_to: str = "",
+        resource: str = "",
+        status: str = "",
+        include_completed: bool = True,
+        password: str = "",
+        requester_token: str = "",
+    ) -> list[dict[str, Any]]:
+        """Lists calendar events with optional filtering."""
+        if room_name and room_name not in ("all", "*"):
+            canonical_name = self.get_canonical_room_name(room_name, password, requester_token=requester_token)
+        else:
+            canonical_name = "all"
+
+        return self.storage.list_calendar_events(
+            room_name=canonical_name,
+            start_from=start_from,
+            start_to=start_to,
+            resource=resource,
+            status=status,
+            include_completed=include_completed,
+        )
+
+    def get_resource_status(self, resources: list[str] | None = None) -> list[dict[str, Any]]:
+        """Returns hardware resource availability."""
+        return self.storage.get_resource_status(resources=resources)

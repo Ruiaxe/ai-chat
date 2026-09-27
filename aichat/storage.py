@@ -2,7 +2,7 @@ import json
 import sqlite3
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -234,6 +234,43 @@ class ChatStorage:
             except Exception:
                 pass
 
+            # Calendar Events table (v2.8)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS calendar_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    room_name TEXT NOT NULL COLLATE NOCASE,
+                    title TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    start_at TEXT NOT NULL,
+                    end_at TEXT DEFAULT '',
+                    event_type TEXT NOT NULL DEFAULT 'event',
+                    task_id INTEGER,
+                    resource TEXT DEFAULT '',
+                    target_agent TEXT DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'scheduled',
+                    wake_on_start INTEGER DEFAULT 1,
+                    wake_on_end INTEGER DEFAULT 0,
+                    notified_start INTEGER DEFAULT 0,
+                    notified_end INTEGER DEFAULT 0,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL
+                );
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_calendar_room_start 
+                ON calendar_events(room_name, start_at);
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_calendar_resource 
+                ON calendar_events(resource, start_at, end_at);
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_calendar_status 
+                ON calendar_events(status, notified_start, start_at);
+            """)
+
             # Auto-migrations for new features
             try:
                 conn.execute("ALTER TABLE messages ADD COLUMN is_verified INTEGER DEFAULT 0;")
@@ -265,6 +302,18 @@ class ChatStorage:
                 pass
             try:
                 conn.execute("ALTER TABLE tasks ADD COLUMN gpu_est_min INTEGER DEFAULT 0;")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE tasks ADD COLUMN start_at TEXT DEFAULT '';")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE tasks ADD COLUMN due_at TEXT DEFAULT '';")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE tasks ADD COLUMN resource TEXT DEFAULT '';")
             except sqlite3.OperationalError:
                 pass
 
@@ -1350,6 +1399,9 @@ class ChatStorage:
         message_id: int | None = None,
         uses_gpu: bool = False,
         gpu_est_min: int = 0,
+        start_at: str = "",
+        due_at: str = "",
+        resource: str = "",
         created_by: str = "System",
     ) -> dict[str, Any]:
         """Creates a new task in a room."""
@@ -1380,14 +1432,19 @@ class ChatStorage:
         else:
             calc_order = int(order_index)
 
+        clean_start = (start_at or "").strip()
+        clean_due = (due_at or "").strip()
+        clean_resource = (resource or "").strip()
+
         with conn:
             cursor = conn.execute(
                 """
                 INSERT INTO tasks (
                     room_name, title, description, status, assignee, waiting_for_agent,
                     priority, order_index, message_id, uses_gpu, gpu_est_min,
+                    start_at, due_at, resource,
                     created_by, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     clean_room,
@@ -1401,6 +1458,9 @@ class ChatStorage:
                     message_id if message_id and message_id > 0 else None,
                     1 if uses_gpu else 0,
                     max(0, int(gpu_est_min or 0)),
+                    clean_start,
+                    clean_due,
+                    clean_resource,
                     created_by.strip() or "System",
                     now,
                     now,
@@ -1414,6 +1474,23 @@ class ChatStorage:
                 """,
                 (task_id, created_by.strip() or "System", clean_status, clean_title, now),
             )
+
+        if clean_start:
+            try:
+                self.create_calendar_event(
+                    room_name=clean_room,
+                    title=clean_title,
+                    start_at=clean_start,
+                    end_at=clean_due,
+                    description=description.strip() if description else "",
+                    task_id=task_id,
+                    resource=clean_resource,
+                    target_agent=assignee.strip() if assignee else "",
+                    status="scheduled",
+                    created_by=created_by.strip() or "System",
+                )
+            except Exception:
+                pass
 
         task = self.get_task_by_id(task_id)
         if not task:
@@ -1434,6 +1511,9 @@ class ChatStorage:
         message_id: int | None = None,
         uses_gpu: bool | None = None,
         gpu_est_min: int | None = None,
+        start_at: str | None = None,
+        due_at: str | None = None,
+        resource: str | None = None,
     ) -> dict[str, Any]:
         """Updates fields of an existing task."""
         conn = self._get_connection()
@@ -1493,6 +1573,18 @@ class ChatStorage:
             updates.append("gpu_est_min = ?")
             params.append(max(0, int(gpu_est_min)))
 
+        if start_at is not None:
+            updates.append("start_at = ?")
+            params.append(start_at.strip())
+
+        if due_at is not None:
+            updates.append("due_at = ?")
+            params.append(due_at.strip())
+
+        if resource is not None:
+            updates.append("resource = ?")
+            params.append(resource.strip())
+
         if not updates:
             return task
 
@@ -1513,6 +1605,18 @@ class ChatStorage:
                     """,
                     (task_id, actor, old_status, new_status, f"Status updated to {new_status}", now),
                 )
+                if new_status in ("done", "cancelled"):
+                    cal_status = "completed" if new_status == "done" else "cancelled"
+                    conn.execute(
+                        "UPDATE calendar_events SET status = ?, updated_at = ? WHERE task_id = ?",
+                        (cal_status, now, task_id),
+                    )
+                elif new_status in ("planned", "in_progress"):
+                    cal_status = "scheduled" if new_status == "planned" else "active"
+                    conn.execute(
+                        "UPDATE calendar_events SET status = ?, updated_at = ? WHERE task_id = ?",
+                        (cal_status, now, task_id),
+                    )
             else:
                 conn.execute(
                     """
@@ -1739,3 +1843,434 @@ class ChatStorage:
         now = time.time()
         with conn:
             conn.execute("DELETE FROM human_sessions WHERE expires_at <= ?", (now,))
+
+    # -------------------------------------------------------------
+    # Calendar Events & Hardware Reservation Operations (v2.8)
+    # -------------------------------------------------------------
+    def check_resource_conflicts(
+        self,
+        resource: str,
+        start_at: str,
+        end_at: str = "",
+        exclude_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Detects if a specified hardware resource (e.g. 'RTX_3080') has overlapping reservations.
+        Overlap condition: new_start < existing_end AND new_end > existing_start.
+        """
+        clean_resource = (resource or "").strip().upper()
+        if not clean_resource:
+            return []
+
+        clean_start = (start_at or "").strip()
+        clean_end = (end_at or "").strip()
+        if not clean_start:
+            return []
+
+        try:
+            start_dt = datetime.fromisoformat(clean_start)
+        except Exception:
+            return []
+
+        if clean_end:
+            try:
+                end_dt = datetime.fromisoformat(clean_end)
+            except Exception:
+                end_dt = start_dt + timedelta(hours=1)
+        else:
+            end_dt = start_dt + timedelta(hours=1)
+
+        conn = self._get_connection()
+        query = """
+            SELECT * FROM calendar_events 
+            WHERE UPPER(resource) = ? 
+              AND status IN ('scheduled', 'active')
+        """
+        params: list[Any] = [clean_resource]
+        if exclude_id is not None:
+            query += " AND id != ?"
+            params.append(exclude_id)
+
+        rows = conn.execute(query, params).fetchall()
+        conflicts = []
+        for r in rows:
+            ev = dict(r)
+            ex_start_str = ev.get("start_at", "")
+            ex_end_str = ev.get("end_at", "")
+            try:
+                ex_start = datetime.fromisoformat(ex_start_str)
+            except Exception:
+                continue
+
+            if ex_end_str:
+                try:
+                    ex_end = datetime.fromisoformat(ex_end_str)
+                except Exception:
+                    ex_end = ex_start + timedelta(hours=1)
+            else:
+                ex_end = ex_start + timedelta(hours=1)
+
+            if start_dt < ex_end and end_dt > ex_start:
+                conflicts.append(ev)
+
+        return conflicts
+
+    def create_calendar_event(
+        self,
+        room_name: str,
+        title: str,
+        start_at: str,
+        end_at: str = "",
+        description: str = "",
+        event_type: str = "event",
+        task_id: int | None = None,
+        resource: str = "",
+        target_agent: str = "",
+        status: str = "scheduled",
+        wake_on_start: bool = True,
+        wake_on_end: bool = False,
+        created_by: str = "System",
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Creates a new calendar event, checking for resource collisions."""
+        clean_room = (room_name or "").strip()
+        clean_title = (title or "").strip()
+        if not clean_title:
+            raise ValueError("O título do evento não pode estar vazio.")
+        clean_start = (start_at or "").strip()
+        if not clean_start:
+            raise ValueError("A data de início ('start_at') é obrigatória.")
+
+        try:
+            datetime.fromisoformat(clean_start)
+        except Exception as e:
+            raise ValueError(f"Formato de data 'start_at' inválido ('{clean_start}'). Use ISO 8601 (YYYY-MM-DDTHH:MM:SS): {e}")
+
+        clean_end = (end_at or "").strip()
+        if clean_end:
+            try:
+                datetime.fromisoformat(clean_end)
+            except Exception as e:
+                raise ValueError(f"Formato de data 'end_at' inválido ('{clean_end}'). Use ISO 8601: {e}")
+
+        clean_resource = (resource or "").strip()
+        if clean_resource and not force:
+            conflicts = self.check_resource_conflicts(clean_resource, clean_start, clean_end)
+            if conflicts:
+                c = conflicts[0]
+                ex_by = c.get("created_by", "outro agente")
+                ex_title = c.get("title", "")
+                ex_s = c.get("start_at", "")
+                ex_e = c.get("end_at", "") or "indeterminado"
+                raise ValueError(
+                    f"Conflito de recurso: '{clean_resource}' já está reservado por @{ex_by} ('{ex_title}') das {ex_s} às {ex_e}. Use force=True com autorização para sobrepor."
+                )
+
+        clean_type = (event_type or "event").strip().lower()
+        clean_status = (status or "scheduled").strip().lower()
+        now = datetime.now().isoformat()
+
+        conn = self._get_connection()
+        with conn:
+            cur = conn.execute(
+                """
+                INSERT INTO calendar_events (
+                    room_name, title, description, start_at, end_at,
+                    event_type, task_id, resource, target_agent, status,
+                    wake_on_start, wake_on_end, notified_start, notified_end,
+                    created_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
+                """,
+                (
+                    clean_room,
+                    clean_title,
+                    description.strip() if description else "",
+                    clean_start,
+                    clean_end,
+                    clean_type,
+                    task_id if task_id and task_id > 0 else None,
+                    clean_resource,
+                    target_agent.strip() if target_agent else "",
+                    clean_status,
+                    1 if wake_on_start else 0,
+                    1 if wake_on_end else 0,
+                    created_by.strip() or "System",
+                    now,
+                    now,
+                ),
+            )
+            event_id = cur.lastrowid
+
+        ev = self.get_calendar_event_by_id(event_id)
+        if not ev:
+            raise RuntimeError(f"Falha ao recuperar evento #{event_id}")
+        return ev
+
+    def get_calendar_event_by_id(self, event_id: int) -> dict[str, Any] | None:
+        """Retrieves a single calendar event by ID."""
+        conn = self._get_connection()
+        cur = conn.execute("SELECT * FROM calendar_events WHERE id = ?", (event_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        ev = dict(row)
+        ev["wake_on_start"] = bool(ev.get("wake_on_start", 1))
+        ev["wake_on_end"] = bool(ev.get("wake_on_end", 0))
+        ev["notified_start"] = bool(ev.get("notified_start", 0))
+        ev["notified_end"] = bool(ev.get("notified_end", 0))
+        return ev
+
+    def list_calendar_events(
+        self,
+        room_name: str = "all",
+        start_from: str = "",
+        start_to: str = "",
+        resource: str = "",
+        status: str = "",
+        include_completed: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Lists calendar events with optional filtering."""
+        conn = self._get_connection()
+        query = "SELECT * FROM calendar_events WHERE 1=1"
+        params: list[Any] = []
+
+        clean_room = (room_name or "").strip().lower()
+        if clean_room and clean_room not in ("all", "*"):
+            query += " AND room_name = ? COLLATE NOCASE"
+            params.append(clean_room)
+
+        if start_from:
+            query += " AND (start_at >= ? OR (end_at != '' AND end_at >= ?))"
+            params.extend([start_from, start_from])
+
+        if start_to:
+            query += " AND start_at <= ?"
+            params.append(start_to)
+
+        if resource:
+            query += " AND UPPER(resource) = ?"
+            params.append(resource.strip().upper())
+
+        if status:
+            query += " AND status = ? COLLATE NOCASE"
+            params.append(status.strip().lower())
+        elif not include_completed:
+            query += " AND status NOT IN ('completed', 'cancelled')"
+
+        query += " ORDER BY start_at ASC"
+        cur = conn.execute(query, params)
+        events = []
+        for r in cur.fetchall():
+            ev = dict(r)
+            ev["wake_on_start"] = bool(ev.get("wake_on_start", 1))
+            ev["wake_on_end"] = bool(ev.get("wake_on_end", 0))
+            ev["notified_start"] = bool(ev.get("notified_start", 0))
+            ev["notified_end"] = bool(ev.get("notified_end", 0))
+            events.append(ev)
+        return events
+
+    def update_calendar_event(
+        self,
+        event_id: int,
+        title: str | None = None,
+        description: str | None = None,
+        start_at: str | None = None,
+        end_at: str | None = None,
+        event_type: str | None = None,
+        task_id: int | None = None,
+        resource: str | None = None,
+        target_agent: str | None = None,
+        status: str | None = None,
+        wake_on_start: bool | None = None,
+        wake_on_end: bool | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        """Updates a calendar event, checking for resource collisions if timing/resource changes."""
+        ev = self.get_calendar_event_by_id(event_id)
+        if not ev:
+            raise ValueError(f"Evento #{event_id} não encontrado.")
+
+        new_resource = resource.strip() if resource is not None else ev.get("resource", "")
+        new_start = start_at.strip() if start_at is not None else ev.get("start_at", "")
+        new_end = end_at.strip() if end_at is not None else ev.get("end_at", "")
+
+        if (start_at is not None or end_at is not None or resource is not None) and new_resource and not force:
+            conflicts = self.check_resource_conflicts(new_resource, new_start, new_end, exclude_id=event_id)
+            if conflicts:
+                c = conflicts[0]
+                raise ValueError(
+                    f"Conflito de recurso: '{new_resource}' já está reservado por @{c.get('created_by')} ('{c.get('title')}') das {c.get('start_at')} às {c.get('end_at') or 'indeterminado'}."
+                )
+
+        now = datetime.now().isoformat()
+        updates = ["updated_at = ?"]
+        params: list[Any] = [now]
+
+        if title is not None and title.strip():
+            updates.append("title = ?")
+            params.append(title.strip())
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description.strip())
+        if start_at is not None and start_at.strip():
+            updates.append("start_at = ?")
+            params.append(start_at.strip())
+            updates.append("notified_start = 0")
+        if end_at is not None:
+            updates.append("end_at = ?")
+            params.append(end_at.strip())
+            updates.append("notified_end = 0")
+        if event_type is not None:
+            updates.append("event_type = ?")
+            params.append(event_type.strip().lower())
+        if task_id is not None:
+            updates.append("task_id = ?")
+            params.append(task_id if task_id > 0 else None)
+        if resource is not None:
+            updates.append("resource = ?")
+            params.append(new_resource)
+        if target_agent is not None:
+            updates.append("target_agent = ?")
+            params.append(target_agent.strip())
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status.strip().lower())
+        if wake_on_start is not None:
+            updates.append("wake_on_start = ?")
+            params.append(1 if wake_on_start else 0)
+        if wake_on_end is not None:
+            updates.append("wake_on_end = ?")
+            params.append(1 if wake_on_end else 0)
+
+        params.append(event_id)
+        conn = self._get_connection()
+        with conn:
+            conn.execute(f"UPDATE calendar_events SET {', '.join(updates)} WHERE id = ?", params)
+
+        updated = self.get_calendar_event_by_id(event_id)
+        if not updated:
+            raise RuntimeError(f"Falha ao carregar evento atualizado #{event_id}")
+        return updated
+
+    def delete_calendar_event(self, event_id: int) -> bool:
+        """Deletes a calendar event by ID."""
+        conn = self._get_connection()
+        with conn:
+            cur = conn.execute("DELETE FROM calendar_events WHERE id = ?", (event_id,))
+            return cur.rowcount > 0
+
+    def get_due_calendar_events(self, now_iso: str) -> list[dict[str, Any]]:
+        """Returns scheduled events whose start_at has arrived and hasn't been notified yet."""
+        conn = self._get_connection()
+        cur = conn.execute(
+            """
+            SELECT * FROM calendar_events 
+            WHERE status = 'scheduled' 
+              AND wake_on_start = 1 
+              AND notified_start = 0 
+              AND start_at <= ?
+            ORDER BY start_at ASC
+            """,
+            (now_iso,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    def mark_event_start_notified(self, event_id: int) -> None:
+        """Marks event start as notified and updates status to 'active'."""
+        conn = self._get_connection()
+        now = datetime.now().isoformat()
+        with conn:
+            conn.execute(
+                "UPDATE calendar_events SET notified_start = 1, status = 'active', updated_at = ? WHERE id = ?",
+                (now, event_id),
+            )
+
+    def get_ending_calendar_events(self, now_iso: str) -> list[dict[str, Any]]:
+        """Returns active events whose end_at has passed and wake_on_end is requested."""
+        conn = self._get_connection()
+        cur = conn.execute(
+            """
+            SELECT * FROM calendar_events 
+            WHERE status = 'active' 
+              AND end_at != '' 
+              AND end_at <= ? 
+              AND notified_end = 0
+            ORDER BY end_at ASC
+            """,
+            (now_iso,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    def mark_event_end_notified(self, event_id: int) -> None:
+        """Marks event end as notified and marks it completed."""
+        conn = self._get_connection()
+        now = datetime.now().isoformat()
+        with conn:
+            conn.execute(
+                "UPDATE calendar_events SET notified_end = 1, status = 'completed', updated_at = ? WHERE id = ?",
+                (now, event_id),
+            )
+
+    def get_resource_status(self, resources: list[str] | None = None) -> list[dict[str, Any]]:
+        """Returns the current busy/free status of hardware resources."""
+        known_resources = resources or ["RTX_3080", "RTX_5070TI"]
+        conn = self._get_connection()
+        now = datetime.now().isoformat()
+        result = []
+
+        for res in known_resources:
+            clean_res = res.strip().upper()
+            cur = conn.execute(
+                """
+                SELECT * FROM calendar_events 
+                WHERE UPPER(resource) = ? 
+                  AND status IN ('scheduled', 'active')
+                  AND start_at <= ? 
+                  AND (end_at = '' OR end_at > ?)
+                ORDER BY start_at ASC LIMIT 1
+                """,
+                (clean_res, now, now),
+            )
+            active_row = cur.fetchone()
+
+            cur_next = conn.execute(
+                """
+                SELECT * FROM calendar_events 
+                WHERE UPPER(resource) = ? 
+                  AND status = 'scheduled' 
+                  AND start_at > ?
+                ORDER BY start_at ASC LIMIT 1
+                """,
+                (clean_res, now),
+            )
+            next_row = cur_next.fetchone()
+
+            if active_row:
+                ev = dict(active_row)
+                ev_data = {
+                    "id": ev["id"],
+                    "title": ev["title"],
+                    "room_name": ev["room_name"],
+                    "created_by": ev["created_by"],
+                    "start_at": ev["start_at"],
+                    "end_at": ev["end_at"],
+                }
+                result.append({
+                    "resource": clean_res,
+                    "available": False,
+                    "is_busy": True,
+                    "current_event": ev_data,
+                    "active_event": ev_data,
+                    "next_event": dict(next_row) if next_row else None,
+                })
+            else:
+                result.append({
+                    "resource": clean_res,
+                    "available": True,
+                    "is_busy": False,
+                    "current_event": None,
+                    "active_event": None,
+                    "next_event": dict(next_row) if next_row else None,
+                })
+        return result
+

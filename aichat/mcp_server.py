@@ -713,6 +713,9 @@ async def create_task(
     status: str = "planned",
     uses_gpu: bool = False,
     gpu_est_min: int = 0,
+    start_at: str = "",
+    due_at: str = "",
+    resource: str = "",
     message_id: int = 0,
     password: str = "",
     member_token: str = "",
@@ -732,6 +735,9 @@ async def create_task(
     - status: 'planned', 'in_progress', 'waiting_human', 'waiting_agent', 'done', 'cancelled'
     - uses_gpu: True if task requires local GPU resources
     - gpu_est_min: Estimated GPU duration in minutes
+    - start_at: Optional planned ISO start time (e.g. '2026-09-27T14:00:00')
+    - due_at: Optional deadline ISO timestamp
+    - resource: Optional hardware resource (e.g. 'RTX_3080', 'RTX_5070TI')
     - message_id: Optional ID of chat message requesting this task or decision
     - agent_token: Your registered token for authentication
     """
@@ -752,6 +758,9 @@ async def create_task(
             status=status,
             uses_gpu=uses_gpu,
             gpu_est_min=gpu_est_min,
+            start_at=start_at,
+            due_at=due_at,
+            resource=resource,
             message_id=message_id if message_id > 0 else None,
             member_token=token,
             password=password,
@@ -779,6 +788,9 @@ async def update_task(
     message_id: int = 0,
     uses_gpu: bool | None = None,
     gpu_est_min: int | None = None,
+    start_at: str = "",
+    due_at: str = "",
+    resource: str = "",
     member_token: str = "",
     agent_token: str = "",
     actor_name: str = "",
@@ -817,6 +829,12 @@ async def update_task(
             fields["uses_gpu"] = uses_gpu
         if gpu_est_min is not None:
             fields["gpu_est_min"] = gpu_est_min
+        if start_at:
+            fields["start_at"] = start_at
+        if due_at:
+            fields["due_at"] = due_at
+        if resource:
+            fields["resource"] = resource
 
         task = await hub.update_task(
             task_id=task_id,
@@ -919,6 +937,254 @@ def who_is_listening(room_name: str, password: str = "", agent_token: str = "", 
     try:
         res = hub.who_is_listening(room_name=room_name, password=password)
         return json.dumps(res, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+# -----------------------------------------------------------------
+# Calendar & Resource Booking Tools (v2.8)
+# -----------------------------------------------------------------
+@mcp.tool()
+def list_calendar_events(
+    room_name: str = "all",
+    start_from: str = "",
+    start_to: str = "",
+    resource: str = "",
+    status: str = "",
+    include_completed: bool = True,
+    password: str = "",
+    agent_token: str = "",
+    member_token: str = "",
+) -> str:
+    """
+    Lists calendar events for a specific room or across all rooms ('all').
+    Requires authorized agent_token (or member_token).
+    - room_name: Room name or 'all' to see all rooms
+    - start_from: ISO datetime string filter (e.g. '2026-09-27T00:00:00')
+    - start_to: ISO datetime string filter
+    - resource: Filter by reserved hardware/resource (e.g. 'RTX_3080', 'RTX_5070TI')
+    - status: 'scheduled', 'in_progress', 'completed', 'cancelled'
+    - include_completed: If True, includes past completed/cancelled events
+    - password: Password if room is protected
+    """
+    ident, err = _authenticate(agent_token, member_token)
+    if err:
+        return err
+    token = (agent_token or member_token).strip()
+    try:
+        events = hub.list_calendar_events(
+            room_name=room_name,
+            start_from=start_from,
+            start_to=start_to,
+            resource=resource,
+            status=status,
+            include_completed=include_completed,
+            password=password,
+            requester_token=token,
+        )
+        return json.dumps({
+            "status": "success",
+            "room": room_name,
+            "count": len(events),
+            "events": events,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+async def create_calendar_event(
+    room_name: str,
+    title: str,
+    start_at: str,
+    end_at: str = "",
+    resource: str = "",
+    description: str = "",
+    event_type: str = "event",
+    task_id: int = 0,
+    target_agent: str = "",
+    wake_on_start: bool = True,
+    wake_on_end: bool = False,
+    password: str = "",
+    member_token: str = "",
+    agent_token: str = "",
+    creator_name: str = "",
+    agent_name: str = "",
+) -> str:
+    """
+    Schedules a new calendar event or GPU reservation in a room.
+    The Hub calendar dispatcher automatically fires reactive wake-up events on start_at / end_at.
+    If 'resource' is specified, reservations overlapping in time with existing active reservations
+    for the same resource are categorically rejected with an error.
+    Requires authorized agent_token (or member_token).
+    - room_name: Target chat room
+    - title: Event title or job summary
+    - start_at: ISO 8601 start timestamp (e.g. '2026-09-27T15:00:00')
+    - end_at: ISO 8601 end timestamp (optional; defaults to start_at + 1h if resource is set)
+    - resource: Free text hardware resource (e.g. 'RTX_3080', 'RTX_5070TI', 'CPU_Runner')
+    - description: Optional details or acceptance notes
+    - event_type: 'event', 'gpu_lock', 'sync', 'maintenance'
+    - task_id: Optional ID of linked Task Planner task
+    - target_agent: Optional callsign of agent to ping on wake-up
+    - wake_on_start: If True, Hub dispatches a wake-up activity notification to the room at start_at
+    - wake_on_end: If True, Hub dispatches a wake-up activity notification to the room at end_at
+    """
+    token = (agent_token or member_token).strip()
+    ident, err = _authenticate(token, expected_callsign=creator_name or agent_name)
+    if err:
+        return err
+    callsign = ident["callsign"]
+
+    try:
+        ev = await hub.create_calendar_event(
+            room_name=room_name,
+            title=title,
+            start_at=start_at,
+            end_at=end_at,
+            description=description,
+            event_type=event_type,
+            task_id=task_id if task_id > 0 else None,
+            resource=resource,
+            target_agent=target_agent,
+            wake_on_start=wake_on_start,
+            wake_on_end=wake_on_end,
+            member_token=token,
+            password=password,
+            created_by=callsign,
+        )
+        return json.dumps({
+            "status": "success",
+            "message": f"Calendar event #{ev['id']} scheduled.",
+            "event": ev,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+async def update_calendar_event(
+    event_id: int,
+    title: str = "",
+    description: str = "",
+    start_at: str = "",
+    end_at: str = "",
+    resource: str = "",
+    event_type: str = "",
+    target_agent: str = "",
+    status: str = "",
+    wake_on_start: bool | None = None,
+    wake_on_end: bool | None = None,
+    password: str = "",
+    member_token: str = "",
+    agent_token: str = "",
+    actor_name: str = "",
+    agent_name: str = "",
+) -> str:
+    """
+    Updates an existing calendar event or resource reservation.
+    Requires authorized agent_token (or member_token).
+    """
+    token = (agent_token or member_token).strip()
+    ident, err = _authenticate(token, expected_callsign=actor_name or agent_name)
+    if err:
+        return err
+    try:
+        fields: dict[str, Any] = {}
+        if title:
+            fields["title"] = title
+        if description:
+            fields["description"] = description
+        if start_at:
+            fields["start_at"] = start_at
+        if end_at:
+            fields["end_at"] = end_at
+        if resource:
+            fields["resource"] = resource
+        if event_type:
+            fields["event_type"] = event_type
+        if target_agent:
+            fields["target_agent"] = target_agent
+        if status:
+            fields["status"] = status
+        if wake_on_start is not None:
+            fields["wake_on_start"] = wake_on_start
+        if wake_on_end is not None:
+            fields["wake_on_end"] = wake_on_end
+
+        ev = await hub.update_calendar_event(
+            event_id=event_id,
+            member_token=token,
+            password=password,
+            **fields,
+        )
+        return json.dumps({
+            "status": "success",
+            "message": f"Calendar event #{event_id} updated.",
+            "event": ev,
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+async def delete_calendar_event(
+    event_id: int,
+    password: str = "",
+    member_token: str = "",
+    agent_token: str = "",
+) -> str:
+    """
+    Cancels/deletes a calendar event and releases any associated resource lock.
+    Requires authorized agent_token (or member_token).
+    """
+    token = (agent_token or member_token).strip()
+    ident, err = _authenticate(token)
+    if err:
+        return err
+    try:
+        res = await hub.delete_calendar_event(
+            event_id=event_id,
+            member_token=token,
+            password=password,
+        )
+        return json.dumps(res, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def check_resource_availability(
+    resource: str,
+    start_at: str,
+    end_at: str = "",
+    agent_token: str = "",
+    member_token: str = "",
+) -> str:
+    """
+    Checks if a hardware or cluster resource (e.g. 'RTX_3080', 'RTX_5070TI') is available
+    during a specified time interval, or if it has conflicting reservations.
+    Requires authorized agent_token (or member_token).
+    - resource: Resource name (case-insensitive)
+    - start_at: ISO 8601 start timestamp
+    - end_at: ISO 8601 end timestamp (optional, defaults to +1h)
+    """
+    ident, err = _authenticate(agent_token, member_token)
+    if err:
+        return err
+    try:
+        conflicts = hub.storage.check_resource_conflicts(
+            resource=resource,
+            start_at=start_at,
+            end_at=end_at,
+        )
+        available = len(conflicts) == 0
+        return json.dumps({
+            "status": "success",
+            "resource": resource,
+            "available": available,
+            "conflicts_count": len(conflicts),
+            "conflicts": conflicts,
+        }, indent=2)
     except Exception as e:
         return json.dumps({"status": "error", "error": str(e)}, indent=2)
 

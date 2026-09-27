@@ -280,10 +280,10 @@
       <!-- Retractable Task Planner Side Panel (Split-View) -->
       <aside id="task-planner-panel" class="hidden w-80 md:w-96 bg-slate-900 border-l border-slate-800 flex-col h-full flex-shrink-0 shadow-2xl z-20">
         <!-- Panel Header -->
-        <div class="p-3.5 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
+        <div class="p-3.5 border-b border-slate-800 flex items-center justify-between bg-slate-950/60 flex-shrink-0">
           <div class="flex items-center space-x-2">
             <div class="p-1.5 rounded-lg bg-indigo-600/20 text-indigo-400 border border-indigo-500/30">
-              <i data-lucide="check-square" class="w-4 h-4"></i>
+              <i data-lucide="layout-grid" class="w-4 h-4"></i>
             </div>
             <div>
               <h3 class="font-bold text-sm text-white flex items-center gap-1.5">
@@ -293,9 +293,9 @@
             </div>
           </div>
           <div class="flex items-center space-x-1">
-            <button onclick="toggleNewTaskForm()" id="new-task-toggle-btn" title="Criar nova tarefa" class="p-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs transition shadow-sm flex items-center gap-1">
+            <button onclick="toggleSidePanelNewItem()" id="new-item-toggle-btn" title="Criar novo item" class="p-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs transition shadow-sm flex items-center gap-1">
               <i data-lucide="plus" class="w-3.5 h-3.5"></i>
-              <span class="text-[11px] font-semibold pr-1">Nova</span>
+              <span id="new-item-btn-label" class="text-[11px] font-semibold pr-1">Nova</span>
             </button>
             <button onclick="toggleTaskPlanner()" title="Fechar painel" class="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition">
               <i data-lucide="x" class="w-4 h-4"></i>
@@ -304,7 +304,7 @@
         </div>
 
         <!-- Collapsible Room Presence Section (À Escuta) -->
-        <div id="sidebar-presence-section" class="border-b border-slate-800 bg-slate-950/70">
+        <div id="sidebar-presence-section" class="border-b border-slate-800 bg-slate-950/70 flex-shrink-0">
           <button type="button" onclick="toggleSidebarPresence()" class="w-full px-3.5 py-2.5 flex items-center justify-between hover:bg-slate-800/40 transition select-none group">
             <div class="flex items-center space-x-2">
               <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -328,76 +328,168 @@
           </div>
         </div>
 
-        <!-- Active GPU Alert Banner -->
-        <div id="gpu-active-banner" class="hidden px-3 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-300 text-xs flex items-center justify-between animate-pulse">
-          <span class="flex items-center gap-1.5 font-semibold">
-            <i data-lucide="flame" class="w-3.5 h-3.5 text-amber-400"></i>
-            <span id="gpu-active-text">GPU em uso</span>
-          </span>
-          <span class="text-[10px] bg-amber-500/20 px-1.5 py-0.5 rounded font-mono">VRAM Ocupada</span>
+        <!-- Sidepanel Navigation Tabs: [ 📋 Tarefas ] [ 📅 Calendário ] -->
+        <div class="flex border-b border-slate-800 bg-slate-950/80 p-1.5 gap-1.5 flex-shrink-0">
+          <button id="tab-btn-tasks" onclick="switchSidebarTab('tasks')" class="flex-1 py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition bg-indigo-600 text-white shadow-sm">
+            <i data-lucide="check-square" class="w-3.5 h-3.5"></i>
+            <span>Tarefas</span>
+            <span id="tab-tasks-badge" class="px-1.5 py-0.2 rounded-full text-[10px] bg-indigo-800 text-indigo-200 font-mono">0</span>
+          </button>
+          <button id="tab-btn-calendar" onclick="switchSidebarTab('calendar')" class="flex-1 py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition bg-slate-900 text-slate-400 hover:text-slate-200">
+            <i data-lucide="calendar" class="w-3.5 h-3.5"></i>
+            <span>Calendário</span>
+            <span id="tab-calendar-badge" class="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-800 text-slate-400 font-mono">0</span>
+          </button>
         </div>
 
-        <!-- Filter Tabs & Hide Completed Option -->
-        <div class="p-2 border-b border-slate-800/80 bg-slate-950/40 space-y-1.5">
-          <!-- Filter Buttons -->
-          <div class="flex items-center space-x-1 overflow-x-auto text-[11px] pb-1 scrollbar-none">
-            <button onclick="setTaskFilter('all')" data-filter="all" class="task-filter-btn px-2.5 py-1 rounded-md font-semibold transition bg-indigo-600 text-white">Todas</button>
-            <button onclick="setTaskFilter('in_progress')" data-filter="in_progress" class="task-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">Em Curso</button>
-            <button onclick="setTaskFilter('waiting')" data-filter="waiting" class="task-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">À Espera</button>
-            <button onclick="setTaskFilter('gpu')" data-filter="gpu" class="task-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">GPU</button>
-            <button onclick="setTaskFilter('done')" data-filter="done" class="task-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">Concluídas</button>
+        <!-- TAB CONTENT: TASKS -->
+        <div id="tab-content-tasks" class="flex-1 flex flex-col min-h-0 overflow-hidden">
+          <!-- Active GPU Alert Banner -->
+          <div id="gpu-active-banner" class="hidden px-3 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-300 text-xs flex items-center justify-between animate-pulse flex-shrink-0">
+            <span class="flex items-center gap-1.5 font-semibold">
+              <i data-lucide="flame" class="w-3.5 h-3.5 text-amber-400"></i>
+              <span id="gpu-active-text">GPU em uso</span>
+            </span>
+            <span class="text-[10px] bg-amber-500/20 px-1.5 py-0.5 rounded font-mono">VRAM Ocupada</span>
           </div>
-          <!-- Hide Completed Checkbox -->
-          <div class="flex items-center justify-between pt-1 border-t border-slate-800/60 text-xs text-slate-400 px-1">
-            <label class="flex items-center space-x-2 cursor-pointer select-none">
-              <input type="checkbox" id="hide-completed-toggle" onchange="toggleHideCompleted(this.checked)" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 w-3.5 h-3.5" />
-              <span class="text-[11px] font-medium text-slate-300">Ocultar concluídas</span>
-            </label>
-            <button onclick="fetchTasks()" title="Atualizar tarefas" class="text-slate-500 hover:text-slate-300 transition">
-              <i data-lucide="rotate-cw" class="w-3 h-3"></i>
-            </button>
+
+          <!-- Filter Tabs & Hide Completed Option -->
+          <div class="p-2 border-b border-slate-800/80 bg-slate-950/40 space-y-1.5 flex-shrink-0">
+            <!-- Filter Buttons -->
+            <div class="flex items-center space-x-1 overflow-x-auto text-[11px] pb-1 scrollbar-none">
+              <button onclick="setTaskFilter('all')" data-filter="all" class="task-filter-btn px-2.5 py-1 rounded-md font-semibold transition bg-indigo-600 text-white">Todas</button>
+              <button onclick="setTaskFilter('in_progress')" data-filter="in_progress" class="task-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">Em Curso</button>
+              <button onclick="setTaskFilter('waiting')" data-filter="waiting" class="task-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">À Espera</button>
+              <button onclick="setTaskFilter('gpu')" data-filter="gpu" class="task-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">GPU</button>
+              <button onclick="setTaskFilter('done')" data-filter="done" class="task-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">Concluídas</button>
+            </div>
+            <!-- Hide Completed Checkbox -->
+            <div class="flex items-center justify-between pt-1 border-t border-slate-800/60 text-xs text-slate-400 px-1">
+              <label class="flex items-center space-x-2 cursor-pointer select-none">
+                <input type="checkbox" id="hide-completed-toggle" onchange="toggleHideCompleted(this.checked)" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 w-3.5 h-3.5" />
+                <span class="text-[11px] font-medium text-slate-300">Ocultar concluídas</span>
+              </label>
+              <button onclick="fetchTasks()" title="Atualizar tarefas" class="text-slate-500 hover:text-slate-300 transition">
+                <i data-lucide="rotate-cw" class="w-3 h-3"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- Inline New Task Form (collapsible) -->
+          <div id="new-task-form" class="hidden p-3 border-b border-slate-800 bg-slate-950/80 space-y-2.5 text-xs flex-shrink-0">
+            <div class="flex items-center justify-between font-semibold text-slate-300">
+              <span>Criar Nova Tarefa</span>
+              <button onclick="toggleNewTaskForm()" class="text-slate-500 hover:text-slate-300"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>
+            </div>
+            <input id="task-input-title" type="text" placeholder="Título da tarefa *" class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700/80 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500" />
+            <textarea id="task-input-desc" rows="2" placeholder="Descrição / critérios de aceitação (opcional)..." class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700/80 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500 resize-none"></textarea>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Prioridade</label>
+                <select id="task-input-priority" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-xs">
+                  <option value="urgent">🔴 Urgente</option>
+                  <option value="high">🟠 Alta</option>
+                  <option value="medium" selected>🔵 Média</option>
+                  <option value="low">⚪ Baixa</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Responsável</label>
+                <input id="task-input-assignee" type="text" placeholder="ex: Claude, Rui" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-xs" />
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Início Agendado</label>
+                <input id="task-input-start" type="datetime-local" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-[11px]" />
+              </div>
+              <div>
+                <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Recurso / GPU</label>
+                <input id="task-input-resource" type="text" placeholder="ex: RTX_3080" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-xs" />
+              </div>
+            </div>
+            <div class="flex items-center justify-between pt-1">
+              <label class="flex items-center space-x-1.5 cursor-pointer">
+                <input type="checkbox" id="task-input-gpu" onchange="document.getElementById('task-gpu-min-box').classList.toggle('hidden', !this.checked)" class="rounded bg-slate-900 border-slate-700 text-amber-500 focus:ring-0 w-3.5 h-3.5" />
+                <span class="text-[11px] text-amber-400 font-medium">Usa GPU</span>
+              </label>
+              <div id="task-gpu-min-box" class="hidden flex items-center space-x-1">
+                <span class="text-[10px] text-slate-500">Min:</span>
+                <input id="task-input-gpu-min" type="number" min="1" value="10" class="w-12 bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-slate-200 text-center text-xs" />
+              </div>
+              <button onclick="submitNewTask()" class="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition shadow">Criar Tarefa</button>
+            </div>
+          </div>
+
+          <!-- Task Cards Container -->
+          <div id="tasks-list-container" class="flex-1 overflow-y-auto p-3 space-y-2.5">
+            <div class="text-center text-slate-500 py-12 text-xs">A carregar tarefas...</div>
           </div>
         </div>
 
-        <!-- Inline New Task Form (collapsible) -->
-        <div id="new-task-form" class="hidden p-3 border-b border-slate-800 bg-slate-950/80 space-y-2.5 text-xs">
-          <div class="flex items-center justify-between font-semibold text-slate-300">
-            <span>Criar Nova Tarefa</span>
-            <button onclick="toggleNewTaskForm()" class="text-slate-500 hover:text-slate-300"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>
-          </div>
-          <input id="task-input-title" type="text" placeholder="Título da tarefa *" class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700/80 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500" />
-          <textarea id="task-input-desc" rows="2" placeholder="Descrição / critérios de aceitação (opcional)..." class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700/80 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500 resize-none"></textarea>
-          <div class="grid grid-cols-2 gap-2">
-            <div>
-              <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Prioridade</label>
-              <select id="task-input-priority" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-xs">
-                <option value="urgent">🔴 Urgente</option>
-                <option value="high">🟠 Alta</option>
-                <option value="medium" selected>🔵 Média</option>
-                <option value="low">⚪ Baixa</option>
-              </select>
+        <!-- TAB CONTENT: CALENDAR -->
+        <div id="tab-content-calendar" class="hidden flex-1 flex flex-col min-h-0 overflow-hidden">
+          <!-- Live Resource Status Bar -->
+          <div class="p-2.5 border-b border-slate-800 bg-slate-950/40 flex-shrink-0">
+            <div class="flex items-center justify-between text-[11px] text-slate-400 mb-1.5 px-0.5">
+              <span class="font-semibold uppercase tracking-wider text-[10px] text-slate-400 flex items-center gap-1.5">
+                <i data-lucide="cpu" class="w-3.5 h-3.5 text-cyan-400"></i>
+                Hardware &amp; Recursos
+              </span>
+              <button onclick="downloadCalendarIcs()" title="Exportar calendário em formato .ics (compatível com Google Calendar / Outlook)" class="text-[10px] text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 transition px-1.5 py-0.5 rounded bg-indigo-950/60 border border-indigo-500/30">
+                <i data-lucide="calendar" class="w-3 h-3"></i>
+                <span>Feed .ics</span>
+              </button>
             </div>
-            <div>
-              <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Responsável</label>
-              <input id="task-input-assignee" type="text" placeholder="ex: Claude, Rui" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-xs" />
+            <div id="calendar-resource-strip" class="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
+              <span class="text-[10px] text-slate-500 italic">A verificar recursos...</span>
             </div>
           </div>
-          <div class="flex items-center justify-between pt-1">
-            <label class="flex items-center space-x-1.5 cursor-pointer">
-              <input type="checkbox" id="task-input-gpu" onchange="document.getElementById('task-gpu-min-box').classList.toggle('hidden', !this.checked)" class="rounded bg-slate-900 border-slate-700 text-amber-500 focus:ring-0 w-3.5 h-3.5" />
-              <span class="text-[11px] text-amber-400 font-medium">Usa GPU</span>
-            </label>
-            <div id="task-gpu-min-box" class="hidden flex items-center space-x-1">
-              <span class="text-[10px] text-slate-500">Min:</span>
-              <input id="task-input-gpu-min" type="number" min="1" value="10" class="w-12 bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-slate-200 text-center text-xs" />
-            </div>
-            <button onclick="submitNewTask()" class="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition shadow">Criar Tarefa</button>
-          </div>
-        </div>
 
-        <!-- Task Cards Container -->
-        <div id="tasks-list-container" class="flex-1 overflow-y-auto p-3 space-y-2.5">
-          <div class="text-center text-slate-500 py-12 text-xs">A carregar tarefas...</div>
+          <!-- Inline New Event Form (collapsible) -->
+          <div id="new-calendar-event-form" class="hidden p-3 border-b border-slate-800 bg-slate-950/80 space-y-2.5 text-xs flex-shrink-0">
+            <div class="flex items-center justify-between font-semibold text-slate-300">
+              <span class="flex items-center gap-1.5">
+                <i data-lucide="calendar-plus" class="w-3.5 h-3.5 text-indigo-400"></i>
+                Novo Evento / Reserva
+              </span>
+              <button onclick="toggleNewCalendarEventForm()" class="text-slate-500 hover:text-slate-300"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>
+            </div>
+            <input id="cal-input-title" type="text" placeholder="Título / Tarefa agendada *" class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700/80 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500" />
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Início *</label>
+                <input id="cal-input-start" type="datetime-local" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-[11px]" />
+              </div>
+              <div>
+                <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Fim</label>
+                <input id="cal-input-end" type="datetime-local" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-[11px]" />
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Recurso (ex: GPU)</label>
+                <input id="cal-input-resource" type="text" placeholder="ex: RTX_3080, RTX_5070TI" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-xs" />
+              </div>
+              <div>
+                <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Agente Alvo</label>
+                <input id="cal-input-target-agent" type="text" placeholder="ex: Claude, Codex" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-xs" />
+              </div>
+            </div>
+            <textarea id="cal-input-desc" rows="2" placeholder="Notas ou comandos para executar quando acordar..." class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700/80 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500 resize-none"></textarea>
+            <div class="flex items-center justify-between pt-1">
+              <label class="flex items-center space-x-1.5 cursor-pointer">
+                <input type="checkbox" id="cal-input-wake-start" checked class="rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-0 w-3.5 h-3.5" />
+                <span class="text-[11px] text-indigo-300 font-medium">Acordar canal no início</span>
+              </label>
+              <button onclick="submitNewCalendarEvent()" class="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition shadow">Agendar</button>
+            </div>
+          </div>
+
+          <!-- Calendar Events List Container -->
+          <div id="calendar-events-list-container" class="flex-1 overflow-y-auto p-3 space-y-2.5">
+            <div class="text-center text-slate-500 py-12 text-xs">A carregar eventos do calendário...</div>
+          </div>
         </div>
       </aside>
     </div>
@@ -1654,6 +1746,8 @@
         connectWebSocket(room.name);
         fetchPresence();
         fetchTasks();
+        fetchCalendarEvents();
+        fetchResourceStatus();
         return true;
       } catch (err) {
         console.error('Error loading room:', err);
@@ -2285,6 +2379,12 @@
             if (currentRoom && data.room && data.room.toLowerCase() === currentRoom.name.toLowerCase()) {
               renderPresence(data.presence);
             }
+          } else if (data.type === 'calendar_event_created' || data.type === 'calendar_event_updated' || data.type === 'calendar_event_deleted' || data.type === 'calendar_event_start' || data.type === 'calendar_event_end') {
+            if (!data.room || (currentRoom && data.room.toLowerCase() === currentRoom.name.toLowerCase())) {
+              fetchCalendarEvents();
+              fetchResourceStatus();
+              fetchTasks();
+            }
           }
         } catch (e) {
           console.error('WS parse error:', e);
@@ -2386,6 +2486,57 @@
     // Task Planner & Real-Time Presence Operations (v2.5)
     // =============================================================
 
+    let sidebarActiveTab = 'tasks';
+    let roomCalendarEvents = [];
+    let roomResources = [];
+
+    function switchSidebarTab(tab) {
+      sidebarActiveTab = tab;
+      const tasksTabBtn = document.getElementById('tab-btn-tasks');
+      const calTabBtn = document.getElementById('tab-btn-calendar');
+      const tasksContent = document.getElementById('tab-content-tasks');
+      const calContent = document.getElementById('tab-content-calendar');
+      const newItemLabel = document.getElementById('new-item-btn-label');
+
+      if (tab === 'calendar') {
+        if (calTabBtn) calTabBtn.className = 'flex-1 py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition bg-indigo-600 text-white shadow-sm';
+        if (tasksTabBtn) tasksTabBtn.className = 'flex-1 py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition bg-slate-900 text-slate-400 hover:text-slate-200';
+        if (calContent) {
+          calContent.classList.remove('hidden');
+          calContent.classList.add('flex', 'flex-col');
+        }
+        if (tasksContent) {
+          tasksContent.classList.add('hidden');
+          tasksContent.classList.remove('flex');
+        }
+        if (newItemLabel) newItemLabel.textContent = 'Novo';
+        fetchCalendarEvents();
+        fetchResourceStatus();
+      } else {
+        if (tasksTabBtn) tasksTabBtn.className = 'flex-1 py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition bg-indigo-600 text-white shadow-sm';
+        if (calTabBtn) calTabBtn.className = 'flex-1 py-1.5 px-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition bg-slate-900 text-slate-400 hover:text-slate-200';
+        if (tasksContent) {
+          tasksContent.classList.remove('hidden');
+          tasksContent.classList.add('flex', 'flex-col');
+        }
+        if (calContent) {
+          calContent.classList.add('hidden');
+          calContent.classList.remove('flex');
+        }
+        if (newItemLabel) newItemLabel.textContent = 'Nova';
+        fetchTasks();
+      }
+      lucide.createIcons();
+    }
+
+    function toggleSidePanelNewItem() {
+      if (sidebarActiveTab === 'calendar') {
+        toggleNewCalendarEventForm();
+      } else {
+        toggleNewTaskForm();
+      }
+    }
+
     function toggleTaskPlanner() {
       taskPlannerOpen = !taskPlannerOpen;
       const panel = document.getElementById('task-planner-panel');
@@ -2398,7 +2549,12 @@
         const hideCompletedToggle = document.getElementById('hide-completed-toggle');
         if (hideCompletedToggle) hideCompletedToggle.checked = hideCompletedTasks;
         applySidebarPresenceState();
-        fetchTasks();
+        if (sidebarActiveTab === 'calendar') {
+          fetchCalendarEvents();
+          fetchResourceStatus();
+        } else {
+          fetchTasks();
+        }
         fetchPresence();
       } else {
         panel.classList.add('hidden');
@@ -2414,6 +2570,21 @@
         form.classList.toggle('hidden');
         if (!form.classList.contains('hidden')) {
           document.getElementById('task-input-title').focus();
+        }
+      }
+    }
+
+    function toggleNewCalendarEventForm() {
+      const form = document.getElementById('new-calendar-event-form');
+      if (form) {
+        form.classList.toggle('hidden');
+        if (!form.classList.contains('hidden')) {
+          const startInput = document.getElementById('cal-input-start');
+          if (startInput && !startInput.value) {
+            const now = new Date(Date.now() + 5 * 60000);
+            startInput.value = now.toISOString().slice(0, 16);
+          }
+          document.getElementById('cal-input-title').focus();
         }
       }
     }
@@ -2449,7 +2620,9 @@
         const activeCount = roomTasks.filter(t => t.status !== 'done' && t.status !== 'cancelled').length;
         const badge = document.getElementById('task-count-badge');
         const headerBadge = document.getElementById('header-tasks-badge');
+        const tabTasksBadge = document.getElementById('tab-tasks-badge');
         if (badge) badge.textContent = activeCount;
+        if (tabTasksBadge) tabTasksBadge.textContent = activeCount;
         if (headerBadge) {
           headerBadge.textContent = activeCount;
           if (activeCount > 0) headerBadge.classList.remove('hidden');
@@ -2547,6 +2720,19 @@
           </span>
         ` : '';
 
+        // Resource & Start badges
+        const resBadge = t.resource ? `
+          <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 flex items-center gap-1">
+            <i data-lucide="cpu" class="w-2.5 h-2.5"></i> ${escapeHtml(t.resource)}
+          </span>
+        ` : '';
+
+        const startBadge = t.start_at ? `
+          <span class="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1 font-mono">
+            <i data-lucide="calendar" class="w-2.5 h-2.5 text-indigo-400"></i> ${escapeHtml(t.start_at.slice(5, 16).replace('T', ' '))}
+          </span>
+        ` : '';
+
         // Message Link
         const messageLinkBtn = ((t.status === 'waiting_human' || t.status === 'waiting_agent') && t.message_id) ? `
           <button onclick="scrollToMessage(${t.message_id})" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/40 flex items-center gap-1 transition shadow-sm active:scale-95" title="Ir para a mensagem no chat">
@@ -2565,6 +2751,8 @@
                 ${statusBadge}
                 ${staleBadge}
                 ${gpuBadge}
+                ${resBadge}
+                ${startBadge}
               </div>
               <div class="flex items-center space-x-1 opacity-60 group-hover:opacity-100 transition">
                 <button onclick="handleMoveTask(${t.id}, -1)" title="Mover para cima" class="p-0.5 text-slate-400 hover:text-white transition">
@@ -2621,6 +2809,8 @@
       const assigneeInput = document.getElementById('task-input-assignee');
       const gpuCheckbox = document.getElementById('task-input-gpu');
       const gpuMinInput = document.getElementById('task-input-gpu-min');
+      const startInput = document.getElementById('task-input-start');
+      const resourceInput = document.getElementById('task-input-resource');
 
       const title = titleInput.value.trim();
       if (!title) {
@@ -2641,6 +2831,8 @@
             assignee: assigneeInput.value.trim(),
             uses_gpu: gpuCheckbox.checked,
             gpu_est_min: parseInt(gpuMinInput.value || 0),
+            start_at: startInput ? startInput.value.trim() : '',
+            resource: resourceInput ? resourceInput.value.trim() : '',
             password: pwd,
           })
         });
@@ -2654,6 +2846,8 @@
         titleInput.value = '';
         descInput.value = '';
         assigneeInput.value = '';
+        if (startInput) startInput.value = '';
+        if (resourceInput) resourceInput.value = '';
         gpuCheckbox.checked = false;
         document.getElementById('task-gpu-min-box').classList.add('hidden');
         toggleNewTaskForm();
@@ -2661,6 +2855,307 @@
       } catch (err) {
         alert('Erro de rede ao criar tarefa: ' + err.message);
       }
+    }
+
+    // =============================================================
+    // Calendar & Resource Scheduling Operations (v2.8)
+    // =============================================================
+
+    async function fetchCalendarEvents() {
+      if (!currentRoom) return;
+      const pwd = getSavedPassword(currentRoom.name);
+      try {
+        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/calendar?password=${encodeURIComponent(pwd)}&include_completed=true`);
+        if (!res.ok) return;
+        const data = await res.json();
+        roomCalendarEvents = data.events || [];
+        const badge = document.getElementById('tab-calendar-badge');
+        if (badge) {
+          const upcoming = roomCalendarEvents.filter(e => e.status !== 'completed' && e.status !== 'cancelled').length;
+          badge.textContent = upcoming;
+        }
+        renderCalendarEvents(roomCalendarEvents);
+      } catch (err) {
+        console.error('Error fetching calendar events:', err);
+      }
+    }
+
+    async function fetchResourceStatus() {
+      try {
+        const res = await fetch('/api/calendar/resources');
+        if (!res.ok) return;
+        const data = await res.json();
+        roomResources = data.resources || [];
+        renderResourceStatus(roomResources);
+      } catch (err) {
+        console.error('Error fetching resource status:', err);
+      }
+    }
+
+    function renderResourceStatus(resources) {
+      const strip = document.getElementById('calendar-resource-strip');
+      if (!strip) return;
+      if (!resources || resources.length === 0) {
+        strip.innerHTML = '<span class="text-[10px] text-slate-500 italic">Nenhum recurso registado.</span>';
+        return;
+      }
+      strip.innerHTML = resources.map(r => {
+        const isBusy = r.is_busy;
+        const ev = r.active_event;
+        const title = isBusy && ev ? `Ocupado por '${ev.title}' (#${ev.room_name})` : 'Disponível';
+        return `
+          <div title="${escapeHtml(title)}" class="flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-medium border flex-shrink-0 transition cursor-help ${
+            isBusy 
+              ? 'bg-rose-500/10 text-rose-300 border-rose-500/30' 
+              : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+          }">
+            <span class="w-1.5 h-1.5 rounded-full ${isBusy ? 'bg-rose-400 animate-pulse' : 'bg-emerald-400'}"></span>
+            <span class="font-bold">${escapeHtml(r.resource)}</span>
+            <span class="text-[9px] opacity-75">${isBusy ? 'Ocupado' : 'Livre'}</span>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderCalendarEvents(events) {
+      const container = document.getElementById('calendar-events-list-container');
+      if (!container) return;
+      if (!events || events.length === 0) {
+        container.innerHTML = `
+          <div class="text-center text-slate-500 py-12 text-xs space-y-2">
+            <i data-lucide="calendar" class="w-8 h-8 stroke-[1.2] mx-auto text-slate-600"></i>
+            <p>Nenhum evento agendado para esta sala.</p>
+          </div>
+        `;
+        lucide.createIcons();
+        return;
+      }
+
+      container.innerHTML = events.map(ev => {
+        const isCompleted = ev.status === 'completed';
+        const isCancelled = ev.status === 'cancelled';
+        const isInProgress = ev.status === 'in_progress';
+
+        let statusBadge = '';
+        if (isInProgress) {
+          statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">🟢 Em Execução</span>';
+        } else if (isCompleted) {
+          statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-900 text-slate-400 border border-slate-800 flex items-center gap-1">✓ Concluído</span>';
+        } else if (isCancelled) {
+          statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-900 text-rose-400/80 border border-slate-800 flex items-center gap-1">✕ Cancelado</span>';
+        } else {
+          statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 flex items-center gap-1">⏰ Agendado</span>';
+        }
+
+        const resBadge = ev.resource ? `
+          <span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 flex items-center gap-1">
+            <i data-lucide="cpu" class="w-2.5 h-2.5"></i> ${escapeHtml(ev.resource)}
+          </span>
+        ` : '';
+
+        const agentBadge = ev.target_agent ? `
+          <span class="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1">
+            @${escapeHtml(ev.target_agent)}
+          </span>
+        ` : '';
+
+        let timeStr = ev.start_at || '';
+        try {
+          const s = new Date(ev.start_at);
+          timeStr = s.toLocaleString('pt-PT', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+          if (ev.end_at) {
+            const e = new Date(ev.end_at);
+            timeStr += ` → ${e.toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' })}`;
+          }
+        } catch (_) {}
+
+        const cardBg = isCompleted || isCancelled 
+          ? 'bg-slate-900/40 border-slate-800/50 opacity-75' 
+          : (isInProgress ? 'bg-emerald-950/20 border-emerald-500/40' : 'bg-slate-900/90 border-slate-800');
+
+        return `
+          <div class="p-3 rounded-xl border ${cardBg} transition space-y-2 hover:border-slate-700 group shadow-sm">
+            <div class="flex items-center justify-between gap-1 flex-wrap">
+              <div class="flex items-center gap-1 flex-wrap">
+                ${statusBadge}
+                ${resBadge}
+                ${agentBadge}
+              </div>
+              <div class="flex items-center space-x-1 opacity-60 group-hover:opacity-100 transition">
+                <button onclick="handleDeleteCalendarEvent(${ev.id})" title="Eliminar evento" class="p-0.5 text-slate-400 hover:text-rose-400 transition">
+                  <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <h4 class="font-semibold text-xs ${isCompleted ? 'line-through text-slate-400' : 'text-slate-100'}">${escapeHtml(ev.title)}</h4>
+              ${ev.description ? `<p class="text-[11px] text-slate-400 mt-1 leading-snug whitespace-pre-wrap">${escapeHtml(ev.description)}</p>` : ''}
+            </div>
+
+            <div class="pt-1.5 border-t border-slate-800/60 flex items-center justify-between gap-2 flex-wrap text-[11px]">
+              <span class="text-slate-400 font-mono text-[10px] flex items-center gap-1">
+                <i data-lucide="clock" class="w-3 h-3 text-indigo-400"></i>
+                ${timeStr}
+              </span>
+              <div class="flex items-center gap-1">
+                ${!isCompleted && !isCancelled && !isInProgress ? `
+                  <button onclick="handleUpdateCalendarEventStatus(${ev.id}, 'in_progress')" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 flex items-center gap-1 transition">
+                    <i data-lucide="play" class="w-2.5 h-2.5"></i> Iniciar
+                  </button>
+                ` : ''}
+                ${!isCompleted && !isCancelled ? `
+                  <button onclick="handleUpdateCalendarEventStatus(${ev.id}, 'completed')" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 hover:bg-emerald-600/30 text-slate-300 hover:text-emerald-300 border border-slate-700 hover:border-emerald-500/40 flex items-center gap-1 transition">
+                    <i data-lucide="check" class="w-2.5 h-2.5"></i> Concluir
+                  </button>
+                ` : `
+                  <button onclick="handleUpdateCalendarEventStatus(${ev.id}, 'scheduled')" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 hover:bg-slate-700 text-slate-400 flex items-center gap-1 transition">
+                    <i data-lucide="rotate-ccw" class="w-2.5 h-2.5"></i> Reagendar
+                  </button>
+                `}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      lucide.createIcons();
+    }
+
+    async function submitNewCalendarEvent(force = false) {
+      if (!currentRoom) return;
+      const titleInput = document.getElementById('cal-input-title');
+      const startInput = document.getElementById('cal-input-start');
+      const endInput = document.getElementById('cal-input-end');
+      const resInput = document.getElementById('cal-input-resource');
+      const targetInput = document.getElementById('cal-input-target-agent');
+      const descInput = document.getElementById('cal-input-desc');
+      const wakeStartCheck = document.getElementById('cal-input-wake-start');
+
+      const title = titleInput.value.trim();
+      const startAt = startInput.value.trim();
+      if (!title) {
+        alert('Por favor introduza o título do evento.');
+        titleInput.focus();
+        return;
+      }
+      if (!startAt) {
+        alert('Por favor selecione a data/hora de início.');
+        startInput.focus();
+        return;
+      }
+
+      const pwd = getSavedPassword(currentRoom.name);
+      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+      const headers = { 'Content-Type': 'application/json' };
+      if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
+
+      try {
+        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/calendar`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            title: title,
+            start_at: startAt,
+            end_at: endInput.value.trim() || undefined,
+            resource: resInput.value.trim(),
+            target_agent: targetInput.value.trim(),
+            description: descInput.value.trim(),
+            wake_on_start: wakeStartCheck ? wakeStartCheck.checked : true,
+            force: force,
+            password: pwd,
+          })
+        });
+
+        if (res.status === 409) {
+          const err = await res.json();
+          const cMsg = (err.conflicts || []).map(c => `• [${c.resource}] '${c.title}' (${c.start_at} → ${c.end_at || '...'})\n  Sala: #${c.room_name} por @${c.created_by || 'agente'}`).join('\n\n');
+          if (confirm(`⚠️ CONFLITO DE RECURSO DETETADO!\n${err.error}\n\nConflito com:\n${cMsg}\n\nPretendes forçar a reserva (apenas humano)?`)) {
+            await submitNewCalendarEvent(true);
+          }
+          return;
+        }
+
+        if (!res.ok) {
+          const err = await res.json();
+          alert('Erro ao criar agendamento: ' + (err.error || 'Erro desconhecido'));
+          return;
+        }
+
+        titleInput.value = '';
+        startInput.value = '';
+        endInput.value = '';
+        resInput.value = '';
+        targetInput.value = '';
+        descInput.value = '';
+        toggleNewCalendarEventForm();
+        await fetchCalendarEvents();
+        await fetchResourceStatus();
+      } catch (err) {
+        alert('Erro de rede: ' + err.message);
+      }
+    }
+
+    async function handleUpdateCalendarEventStatus(eventId, newStatus) {
+      if (!currentRoom) return;
+      const pwd = getSavedPassword(currentRoom.name);
+      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+      const headers = { 'Content-Type': 'application/json' };
+      if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
+
+      try {
+        const res = await fetch(`/api/calendar/events/${eventId}`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify({
+            status: newStatus,
+            password: pwd,
+          })
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          alert('Erro ao atualizar evento: ' + (err.error || 'Erro'));
+          return;
+        }
+        await fetchCalendarEvents();
+        await fetchResourceStatus();
+        await fetchTasks();
+      } catch (err) {
+        console.error('Error updating event:', err);
+      }
+    }
+
+    async function handleDeleteCalendarEvent(eventId) {
+      if (!confirm('Deseja eliminar este agendamento?')) return;
+      if (!currentRoom) return;
+      const pwd = getSavedPassword(currentRoom.name);
+      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+      const headers = {};
+      if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
+
+      try {
+        const res = await fetch(`/api/calendar/events/${eventId}?password=${encodeURIComponent(pwd)}`, {
+          method: 'DELETE',
+          headers,
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          alert('Erro ao eliminar agendamento: ' + (err.error || 'Erro'));
+          return;
+        }
+        await fetchCalendarEvents();
+        await fetchResourceStatus();
+        await fetchTasks();
+      } catch (err) {
+        console.error('Error deleting event:', err);
+      }
+    }
+
+    function downloadCalendarIcs() {
+      if (!currentRoom) return;
+      const pwd = getSavedPassword(currentRoom.name);
+      const url = `/api/rooms/${encodeURIComponent(currentRoom.name)}/calendar.ics?password=${encodeURIComponent(pwd)}`;
+      window.open(url, '_blank');
     }
 
     async function handleUpdateTaskStatus(taskId, newStatus) {

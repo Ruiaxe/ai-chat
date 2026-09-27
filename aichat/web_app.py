@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -1000,6 +1001,9 @@ async def endpoint_create_task(request: Request) -> Response:
             message_id=data.get("message_id"),
             uses_gpu=bool(data.get("uses_gpu", False)),
             gpu_est_min=safe_int(data.get("gpu_est_min"), default=0, min_val=0),
+            start_at=data.get("start_at", ""),
+            due_at=data.get("due_at", ""),
+            resource=data.get("resource", ""),
             member_token=member_tok,
             human_token=human_tok,
             password=data.get("password", ""),
@@ -1029,7 +1033,8 @@ async def endpoint_update_task(request: Request) -> Response:
 
     allowed_fields = [
         "title", "description", "status", "assignee", "waiting_for_agent",
-        "priority", "order_index", "message_id", "uses_gpu", "gpu_est_min"
+        "priority", "order_index", "message_id", "uses_gpu", "gpu_est_min",
+        "start_at", "due_at", "resource",
     ]
     kwargs = {k: v for k, v in data.items() if k in allowed_fields}
 
@@ -1108,6 +1113,268 @@ async def endpoint_reorder_tasks(request: Request) -> Response:
         return JSONResponse({"error": str(ve)}, status_code=404)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# --- Calendar & Resource Reservation Endpoints (v2.8) ---
+
+def generate_ical_feed(events: list[dict[str, Any]], cal_name: str = "ai-chat Calendar") -> str:
+    """Generates standard RFC 5545 iCalendar (.ics) format."""
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//ai-chat//Calendar v2.8//PT",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        f"X-WR-CALNAME:{cal_name}",
+        "X-WR-TIMEZONE:UTC",
+    ]
+    for ev in events:
+        lines.append("BEGIN:VEVENT")
+        lines.append(f"UID:aichat-event-{ev['id']}@aichat")
+        created_str = (ev.get("created_at") or datetime.now().isoformat()).replace("-", "").replace(":", "")[:15] + "Z"
+        lines.append(f"DTSTAMP:{created_str}")
+
+        start_raw = ev.get("start_at", "")
+        if start_raw:
+            try:
+                s_dt = datetime.fromisoformat(start_raw)
+                s_formatted = s_dt.strftime("%Y%m%dT%H%M%SZ")
+            except Exception:
+                s_formatted = start_raw.replace("-", "").replace(":", "")[:15] + "Z"
+            lines.append(f"DTSTART:{s_formatted}")
+
+        end_raw = ev.get("end_at", "")
+        if end_raw:
+            try:
+                e_dt = datetime.fromisoformat(end_raw)
+                e_formatted = e_dt.strftime("%Y%m%dT%H%M%SZ")
+            except Exception:
+                e_formatted = end_raw.replace("-", "").replace(":", "")[:15] + "Z"
+            lines.append(f"DTEND:{e_formatted}")
+
+        summary = ev.get("title", "Evento")
+        if ev.get("resource"):
+            summary += f" [{ev['resource']}]"
+        lines.append(f"SUMMARY:{summary}")
+
+        desc_parts = []
+        if ev.get("description"):
+            desc_parts.append(ev["description"])
+        if ev.get("resource"):
+            desc_parts.append(f"Recurso: {ev['resource']}")
+        if ev.get("target_agent"):
+            desc_parts.append(f"Agente Alvo: @{ev['target_agent']}")
+        if ev.get("created_by"):
+            desc_parts.append(f"Criado por: @{ev['created_by']}")
+        desc = "\\n".join(desc_parts).replace("\r", "")
+        lines.append(f"DESCRIPTION:{desc}")
+        loc = ev.get("resource") or f"#{ev.get('room_name', 'geral')}"
+        lines.append(f"LOCATION:{loc}")
+        lines.append(f"STATUS:{'CONFIRMED' if ev.get('status') != 'cancelled' else 'CANCELLED'}")
+
+        if ev.get("wake_on_start"):
+            lines.extend([
+                "BEGIN:VALARM",
+                "TRIGGER:-PT5M",
+                "ACTION:DISPLAY",
+                f"DESCRIPTION:Lembrete: {summary}",
+                "END:VALARM",
+            ])
+        lines.append("END:VEVENT")
+
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(lines) + "\r\n"
+
+
+async def endpoint_get_calendar_events(request: Request) -> Response:
+    """Lists calendar events for room or all rooms."""
+    is_human = is_authenticated_human(request)
+    auth = get_request_auth(request)
+    effective_tok = hub.human_token if is_human else (auth["token"] if auth else "")
+
+    room_name = request.path_params.get("room_name") or request.query_params.get("room") or "all"
+    start_from = request.query_params.get("start_from", "")
+    start_to = request.query_params.get("start_to", "")
+    resource = request.query_params.get("resource", "")
+    status = request.query_params.get("status", "")
+    include_completed = request.query_params.get("include_completed", "true").lower() in ("true", "1")
+    password = request.query_params.get("password", "")
+
+    try:
+        events = hub.list_calendar_events(
+            room_name=room_name,
+            start_from=start_from,
+            start_to=start_to,
+            resource=resource,
+            status=status,
+            include_completed=include_completed,
+            password=password,
+            requester_token=effective_tok,
+        )
+        return JSONResponse({"status": "success", "count": len(events), "events": events})
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_create_calendar_event(request: Request) -> Response:
+    """Creates a new calendar event with resource collision detection."""
+    room_name = request.path_params.get("room_name") or "general"
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    title = (data.get("title") or "").strip()
+    if not title:
+        return JSONResponse({"error": "O título do evento é obrigatório."}, status_code=400)
+    start_at = (data.get("start_at") or "").strip()
+    if not start_at:
+        return JSONResponse({"error": "A data/hora de início ('start_at') é obrigatória."}, status_code=400)
+
+    is_human = is_authenticated_human(request)
+    auth = get_request_auth(request)
+    human_tok = hub.human_token if is_human else ""
+    member_tok = data.get("member_token", "") or (auth["token"] if auth and not is_human else "")
+    creator = "Rui" if is_human else (auth["name"] if auth else (data.get("created_by") or "WebUser"))
+    force = bool(data.get("force", False))
+
+    try:
+        event = await hub.create_calendar_event(
+            room_name=room_name,
+            title=title,
+            start_at=start_at,
+            end_at=data.get("end_at", ""),
+            description=data.get("description", ""),
+            event_type=data.get("event_type", "event"),
+            task_id=data.get("task_id"),
+            resource=data.get("resource", ""),
+            target_agent=data.get("target_agent", ""),
+            status=data.get("status", "scheduled"),
+            wake_on_start=bool(data.get("wake_on_start", True)),
+            wake_on_end=bool(data.get("wake_on_end", False)),
+            member_token=member_tok,
+            human_token=human_tok,
+            password=data.get("password", ""),
+            created_by=creator,
+            force=force,
+        )
+        return JSONResponse({"status": "success", "event": event}, status_code=201)
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except ValueError as ve:
+        err_msg = str(ve)
+        status_code = 409 if "Conflito de recurso" in err_msg else 400
+        conflicts = hub.storage.check_resource_conflicts(
+            resource=data.get("resource", ""),
+            start_at=start_at,
+            end_at=data.get("end_at", ""),
+        )
+        return JSONResponse({"error": err_msg, "conflicts": conflicts}, status_code=status_code)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_update_calendar_event(request: Request) -> Response:
+    """Updates a calendar event."""
+    event_id = int(request.path_params["event_id"])
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    is_human = is_authenticated_human(request)
+    auth = get_request_auth(request)
+    human_tok = hub.human_token if is_human else ""
+    member_tok = data.get("member_token", "") or (auth["token"] if auth and not is_human else "")
+    force = bool(data.get("force", False))
+
+    allowed_fields = [
+        "title", "description", "start_at", "end_at", "event_type",
+        "task_id", "resource", "target_agent", "status", "wake_on_start", "wake_on_end"
+    ]
+    kwargs = {k: v for k, v in data.items() if k in allowed_fields}
+
+    try:
+        updated = await hub.update_calendar_event(
+            event_id=event_id,
+            member_token=member_tok,
+            human_token=human_tok,
+            password=data.get("password", ""),
+            force=force,
+            **kwargs,
+        )
+        return JSONResponse({"status": "success", "event": updated})
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except ValueError as ve:
+        err_msg = str(ve)
+        status_code = 409 if "Conflito de recurso" in err_msg else 404
+        return JSONResponse({"error": err_msg}, status_code=status_code)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_delete_calendar_event(request: Request) -> Response:
+    """Deletes a calendar event."""
+    event_id = int(request.path_params["event_id"])
+    is_human = is_authenticated_human(request)
+    auth = get_request_auth(request)
+    human_tok = hub.human_token if is_human else ""
+    member_tok = request.query_params.get("member_token", "") or (auth["token"] if auth and not is_human else "")
+    password = request.query_params.get("password", "")
+
+    try:
+        res = await hub.delete_calendar_event(
+            event_id=event_id,
+            member_token=member_tok,
+            human_token=human_tok,
+            password=password,
+        )
+        return JSONResponse(res)
+    except PermissionError as pe:
+        return JSONResponse({"error": str(pe)}, status_code=403)
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_get_calendar_resources(request: Request) -> Response:
+    """Returns hardware resource availability."""
+    raw_resources = request.query_params.get("resources", "")
+    res_list = [r.strip() for r in raw_resources.split(",") if r.strip()] if raw_resources else None
+    status = hub.get_resource_status(resources=res_list)
+    return JSONResponse({"status": "success", "resources": status})
+
+
+async def endpoint_get_calendar_ics(request: Request) -> Response:
+    """Exports events as standard RFC 5545 iCalendar (.ics) format."""
+    is_human = is_authenticated_human(request)
+    auth = get_request_auth(request)
+    effective_tok = hub.human_token if is_human else (auth["token"] if auth else "")
+    password = request.query_params.get("password", "")
+
+    room_name = request.path_params.get("room_name") or request.query_params.get("room") or "all"
+    try:
+        events = hub.list_calendar_events(
+            room_name=room_name,
+            include_completed=True,
+            password=password,
+            requester_token=effective_tok,
+        )
+    except PermissionError as pe:
+        return PlainTextResponse(str(pe), status_code=403)
+    except ValueError as ve:
+        return PlainTextResponse(str(ve), status_code=404)
+
+    ics_body = generate_ical_feed(events, cal_name=f"ai-chat #{room_name}")
+    return Response(
+        content=ics_body,
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="aichat_{room_name}_calendar.ics"'},
+    )
 
 
 # --- Agent Registry Management Endpoints (v2.7) ---
@@ -1359,8 +1626,16 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def app_lifespan(app: Starlette):
     """Manages background tasks and Streamable HTTP session manager."""
-    async with mcp.session_manager.run():
-        yield
+    cal_task = asyncio.create_task(hub.calendar_dispatcher_loop())
+    try:
+        async with mcp.session_manager.run():
+            yield
+    finally:
+        cal_task.cancel()
+        try:
+            await cal_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 def create_app(allowed_hosts: list[str] | None = None) -> Starlette:
@@ -1417,6 +1692,14 @@ def create_app(allowed_hosts: list[str] | None = None) -> Starlette:
         Route("/api/tasks/{task_id:int}", endpoint=endpoint_update_task, methods=["PATCH", "POST"]),
         Route("/api/tasks/{task_id:int}", endpoint=endpoint_delete_task, methods=["DELETE"]),
         Route("/api/rooms/{room_name}/tasks/reorder", endpoint=endpoint_reorder_tasks, methods=["POST"]),
+        Route("/api/rooms/{room_name}/calendar", endpoint=endpoint_get_calendar_events, methods=["GET"]),
+        Route("/api/rooms/{room_name}/calendar", endpoint=endpoint_create_calendar_event, methods=["POST"]),
+        Route("/api/calendar/events", endpoint=endpoint_get_calendar_events, methods=["GET"]),
+        Route("/api/calendar/events/{event_id:int}", endpoint=endpoint_update_calendar_event, methods=["PATCH", "POST"]),
+        Route("/api/calendar/events/{event_id:int}", endpoint=endpoint_delete_calendar_event, methods=["DELETE"]),
+        Route("/api/calendar/resources", endpoint=endpoint_get_calendar_resources, methods=["GET"]),
+        Route("/api/rooms/{room_name}/calendar.ics", endpoint=endpoint_get_calendar_ics, methods=["GET"]),
+        Route("/api/calendar.ics", endpoint=endpoint_get_calendar_ics, methods=["GET"]),
         Route("/api/rooms/{room_name}/log", endpoint=endpoint_download_log, methods=["GET"]),
         Route("/api/rooms/{room_name}/jsonl", endpoint=endpoint_download_jsonl, methods=["GET"]),
         Route("/api/rooms/{room_name}/stream", endpoint=endpoint_room_sse_stream, methods=["GET"]),
