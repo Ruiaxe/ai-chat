@@ -16,7 +16,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route, WebSocketRoute
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 import edge_tts
@@ -132,6 +132,42 @@ class SecurityHardeningMiddleware:
                             return
 
         await self.app(scope, receive, send)
+
+
+class CleanShutdownMiddleware:
+    """Outermost ASGI middleware suppressing duplicate response start errors and handling graceful disconnects during shutdown."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.app, name)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        response_started = False
+
+        async def safe_send(message: Message) -> None:
+            nonlocal response_started
+            msg_type = message.get("type")
+            if msg_type == "http.response.start":
+                if response_started:
+                    # Ignore duplicate response start during disconnect or server error fallback
+                    return
+                response_started = True
+            try:
+                await send(message)
+            except (RuntimeError, asyncio.CancelledError):
+                pass
+
+        try:
+            await self.app(scope, receive, safe_send)
+        except (RuntimeError, asyncio.CancelledError):
+            pass
+
 
 
 def is_authenticated_human(request: Request) -> bool:
@@ -1638,7 +1674,7 @@ async def app_lifespan(app: Starlette):
             pass
 
 
-def create_app(allowed_hosts: list[str] | None = None) -> Starlette:
+def create_app(allowed_hosts: list[str] | None = None) -> Any:
     """Builds and returns the combined Starlette ASGI application with security middleware."""
     if allowed_hosts is None:
         is_testing = os.environ.get("AICHAT_TESTING") == "1"
@@ -1719,4 +1755,5 @@ def create_app(allowed_hosts: list[str] | None = None) -> Starlette:
         Middleware(SecurityHardeningMiddleware),
     ]
 
-    return Starlette(debug=False, routes=routes, middleware=middleware, lifespan=app_lifespan)
+    app = Starlette(debug=False, routes=routes, middleware=middleware, lifespan=app_lifespan)
+    return CleanShutdownMiddleware(app)

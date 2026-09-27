@@ -152,7 +152,8 @@ def main():
         host=host,
         port=port,
         log_level="warning",  # Keep console clean so our chat messages stand out
-        timeout_keep_alive=600,
+        timeout_keep_alive=5,
+        timeout_graceful_shutdown=2,
     )
 
 
