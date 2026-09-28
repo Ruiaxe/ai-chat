@@ -1239,6 +1239,9 @@ async def endpoint_get_calendar_events(request: Request) -> Response:
     resource = request.query_params.get("resource", "")
     status = request.query_params.get("status", "")
     include_completed = request.query_params.get("include_completed", "true").lower() in ("true", "1")
+    hide_completed = request.query_params.get("hide_completed", "").lower() in ("true", "1")
+    if hide_completed:
+        include_completed = False
     password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
 
     try:

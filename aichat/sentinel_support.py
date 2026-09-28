@@ -24,6 +24,7 @@ ROOMS = [
     "ai-chat support",
     "CL-LLM Support",
     "CL-Neural",
+    "cl-llm",
 ]
 MY_NAMES = {"antigravity-hub", "antigravity", "maintenancebot", "sentinelsupport"}
 

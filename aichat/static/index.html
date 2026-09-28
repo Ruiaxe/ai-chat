@@ -446,6 +446,33 @@
             </div>
           </div>
 
+          <!-- Calendar Filter Tabs & Hide Completed Option -->
+          <div class="p-2 border-b border-slate-800/80 bg-slate-950/40 space-y-1.5 flex-shrink-0">
+            <!-- Filter Buttons: Todos, Agendados, Em Execução, Concluídos -->
+            <div class="flex items-center space-x-1 overflow-x-auto text-[11px] pb-1 scrollbar-none">
+              <button onclick="setCalendarFilter('all')" data-cal-filter="all" class="cal-filter-btn px-2.5 py-1 rounded-md font-semibold transition bg-indigo-600 text-white">Todos</button>
+              <button onclick="setCalendarFilter('upcoming')" data-cal-filter="upcoming" class="cal-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">Agendados</button>
+              <button onclick="setCalendarFilter('in_progress')" data-cal-filter="in_progress" class="cal-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">Em Execução</button>
+              <button onclick="setCalendarFilter('completed')" data-cal-filter="completed" class="cal-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">Concluídos</button>
+            </div>
+            <!-- Hide Completed Checkbox -->
+            <div class="flex items-center justify-between pt-1 border-t border-slate-800/60 text-xs text-slate-400 px-1">
+              <label class="flex items-center space-x-2 cursor-pointer select-none">
+                <input type="checkbox" id="hide-completed-calendar-toggle" checked onchange="toggleHideCompletedCalendar(this.checked)" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 w-3.5 h-3.5" />
+                <span class="text-[11px] font-medium text-slate-300">Ocultar concluídos</span>
+              </label>
+              <div class="flex items-center space-x-2">
+                <button onclick="toggleNewCalendarEventForm()" title="Novo Evento / Reserva" class="text-indigo-400 hover:text-indigo-300 transition text-[11px] font-medium flex items-center gap-1">
+                  <i data-lucide="plus" class="w-3 h-3"></i>
+                  <span>Novo</span>
+                </button>
+                <button onclick="fetchCalendarEvents(); fetchResourceStatus();" title="Atualizar calendário" class="text-slate-500 hover:text-slate-300 transition">
+                  <i data-lucide="rotate-cw" class="w-3 h-3"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+
           <!-- Inline New Event Form (collapsible) -->
           <div id="new-calendar-event-form" class="hidden p-3 border-b border-slate-800 bg-slate-950/80 space-y-2.5 text-xs flex-shrink-0">
             <div class="flex items-center justify-between font-semibold text-slate-300">
@@ -962,6 +989,8 @@
     let roomTasks = [];
     let activeTaskFilter = 'all'; // 'all', 'in_progress', 'waiting', 'gpu', 'done'
     let hideCompletedTasks = localStorage.getItem('ai_chat_hide_completed') === 'true';
+    let activeCalendarFilter = 'all'; // 'all', 'upcoming', 'in_progress', 'completed'
+    let hideCompletedCalendar = localStorage.getItem('ai_chat_hide_completed_calendar') !== null ? localStorage.getItem('ai_chat_hide_completed_calendar') === 'true' : true;
     let currentPresence = null;
     let sidebarPresenceOpen = localStorage.getItem('sidebar_presence_open') !== 'false';
     let presencePopoverOpen = false;
@@ -2510,6 +2539,8 @@
           tasksContent.classList.remove('flex');
         }
         if (newItemLabel) newItemLabel.textContent = 'Novo';
+        const hideCompletedCalToggle = document.getElementById('hide-completed-calendar-toggle');
+        if (hideCompletedCalToggle) hideCompletedCalToggle.checked = hideCompletedCalendar;
         fetchCalendarEvents();
         fetchResourceStatus();
       } else {
@@ -2524,6 +2555,8 @@
           calContent.classList.remove('flex');
         }
         if (newItemLabel) newItemLabel.textContent = 'Nova';
+        const hideCompletedToggle = document.getElementById('hide-completed-toggle');
+        if (hideCompletedToggle) hideCompletedToggle.checked = hideCompletedTasks;
         fetchTasks();
       }
       lucide.createIcons();
@@ -2548,6 +2581,8 @@
         // Restore saved hide completed checkbox state
         const hideCompletedToggle = document.getElementById('hide-completed-toggle');
         if (hideCompletedToggle) hideCompletedToggle.checked = hideCompletedTasks;
+        const hideCompletedCalToggle = document.getElementById('hide-completed-calendar-toggle');
+        if (hideCompletedCalToggle) hideCompletedCalToggle.checked = hideCompletedCalendar;
         applySidebarPresenceState();
         if (sidebarActiveTab === 'calendar') {
           fetchCalendarEvents();
@@ -2917,6 +2952,24 @@
       }).join('');
     }
 
+    function setCalendarFilter(filter) {
+      activeCalendarFilter = filter;
+      document.querySelectorAll('.cal-filter-btn').forEach(btn => {
+        if (btn.getAttribute('data-cal-filter') === filter) {
+          btn.className = 'cal-filter-btn px-2.5 py-1 rounded-md font-semibold transition bg-indigo-600 text-white';
+        } else {
+          btn.className = 'cal-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white';
+        }
+      });
+      renderCalendarEvents(roomCalendarEvents);
+    }
+
+    function toggleHideCompletedCalendar(checked) {
+      hideCompletedCalendar = checked;
+      localStorage.setItem('ai_chat_hide_completed_calendar', checked ? 'true' : 'false');
+      renderCalendarEvents(roomCalendarEvents);
+    }
+
     function renderCalendarEvents(events) {
       const container = document.getElementById('calendar-events-list-container');
       if (!container) return;
@@ -2931,7 +2984,29 @@
         return;
       }
 
-      container.innerHTML = events.map(ev => {
+      let filtered = [...events];
+      if (activeCalendarFilter === 'upcoming') {
+        filtered = filtered.filter(e => e.status === 'scheduled');
+      } else if (activeCalendarFilter === 'in_progress') {
+        filtered = filtered.filter(e => e.status === 'in_progress');
+      } else if (activeCalendarFilter === 'completed') {
+        filtered = filtered.filter(e => e.status === 'completed');
+      } else if (hideCompletedCalendar) {
+        filtered = filtered.filter(e => e.status !== 'completed' && e.status !== 'cancelled');
+      }
+
+      if (filtered.length === 0) {
+        container.innerHTML = `
+          <div class="text-center text-slate-500 py-12 text-xs space-y-2">
+            <i data-lucide="calendar" class="w-8 h-8 stroke-[1.2] mx-auto text-slate-600"></i>
+            <p>Nenhum evento encontrado neste filtro.</p>
+          </div>
+        `;
+        lucide.createIcons();
+        return;
+      }
+
+      container.innerHTML = filtered.map(ev => {
         const isCompleted = ev.status === 'completed';
         const isCancelled = ev.status === 'cancelled';
         const isInProgress = ev.status === 'in_progress';

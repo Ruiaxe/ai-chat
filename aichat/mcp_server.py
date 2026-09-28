@@ -952,6 +952,7 @@ def list_calendar_events(
     resource: str = "",
     status: str = "",
     include_completed: bool = True,
+    hide_completed: bool = False,
     password: str = "",
     agent_token: str = "",
     member_token: str = "",
@@ -965,12 +966,15 @@ def list_calendar_events(
     - resource: Filter by reserved hardware/resource (e.g. 'RTX_3080', 'RTX_5070TI')
     - status: 'scheduled', 'in_progress', 'completed', 'cancelled'
     - include_completed: If True, includes past completed/cancelled events
+    - hide_completed: If True, excludes completed and cancelled events
     - password: Password if room is protected
     """
     ident, err = _authenticate(agent_token, member_token)
     if err:
         return err
     token = (agent_token or member_token).strip()
+    if hide_completed:
+        include_completed = False
     try:
         events = hub.list_calendar_events(
             room_name=room_name,

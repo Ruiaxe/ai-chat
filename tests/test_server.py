@@ -2031,6 +2031,23 @@ class TestCalendarAPI(unittest.TestCase):
         in_prog_resp = self.client.post(f"/api/rooms/{self.room_name}/calendar", json=conflict_payload, headers=self.agent_headers)
         self.assertEqual(in_prog_resp.status_code, 409)
 
+        # 5c. Mark event as completed and test hide_completed / include_completed filters
+        self.client.patch(f"/api/calendar/events/{ev_id}", json={"status": "completed"}, headers=self.agent_headers)
+
+        # Default includes completed events
+        res_all = self.client.get(f"/api/rooms/{self.room_name}/calendar", headers=self.agent_headers)
+        self.assertEqual(len(res_all.json()["events"]), 2)
+
+        # include_completed=false filters out completed
+        res_hide1 = self.client.get(f"/api/rooms/{self.room_name}/calendar?include_completed=false", headers=self.agent_headers)
+        self.assertEqual(len(res_hide1.json()["events"]), 1)
+        self.assertNotEqual(res_hide1.json()["events"][0]["id"], ev_id)
+
+        # hide_completed=true filters out completed
+        res_hide2 = self.client.get(f"/api/rooms/{self.room_name}/calendar?hide_completed=true", headers=self.agent_headers)
+        self.assertEqual(len(res_hide2.json()["events"]), 1)
+        self.assertNotEqual(res_hide2.json()["events"][0]["id"], ev_id)
+
         # 6. Delete Event
         del_resp = self.client.delete(f"/api/calendar/events/{ev_id}", headers=self.agent_headers)
         self.assertEqual(del_resp.status_code, 200)
