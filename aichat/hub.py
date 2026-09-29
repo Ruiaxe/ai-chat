@@ -572,6 +572,7 @@ class ChatHub:
         message_type: str = "text",
         metadata: dict[str, Any] | None = None,
         human_token: str = "",
+        to: str | list[str] = "all",
     ) -> dict[str, Any]:
         """
         Sends a message to the room.
@@ -637,6 +638,19 @@ class ChatHub:
                 if valid:
                     is_verified = True
 
+        # Agent Cycle Protection:
+        if role == "agent" and hasattr(self.storage, "is_v3") and self.storage.is_v3():
+            max_cycles = int(os.environ.get("AICHAT_MAX_AGENT_CYCLES", "10"))
+            r_obj = self.storage.v3.get_room_by_name(canonical_name)
+            if r_obj:
+                consecutive = self.storage.v3.count_consecutive_agent_messages(r_obj["id"])
+                if consecutive >= max_cycles:
+                    raise ValueError(
+                        f"Proteção de ciclo ativada: limite de {max_cycles} mensagens consecutivas de agentes "
+                        f"atingido na sala '{canonical_name}' sem intervenção humana. "
+                        f"Conversação entre agentes pausada até intervenção do utilizador humano."
+                    )
+
         # Save to database and log files
         msg = self.storage.add_message(
             room_name=canonical_name,
@@ -646,6 +660,7 @@ class ChatHub:
             is_verified=is_verified,
             message_type=message_type,
             metadata=metadata,
+            to=to,
         )
 
         # Print to console with clear timestamp, badge, and verification tag
@@ -661,7 +676,7 @@ class ChatHub:
         })
 
         # Wake up any agents long-polling for new messages
-        self._notify_listeners(canonical_name)
+        self._notify_listeners(canonical_name, message=msg)
 
         return msg
 
@@ -1032,34 +1047,84 @@ class ChatHub:
         """
         target_rooms = self._resolve_target_rooms(room_name, agent_name, password)
         clean_agent = agent_name.strip().lower() if agent_name else ""
+        is_v3 = hasattr(self.storage, "is_v3") and self.storage.is_v3()
+        principal = self.storage.v3.get_principal_by_name(agent_name) if (is_v3 and agent_name) else None
 
         # Map each room to its effective since_id
         room_since_ids: dict[str, int] = {}
         for r in target_rooms:
             max_id = self.storage.get_max_message_id(r)
-            if len(target_rooms) == 1 and since_id > 0:
-                room_since_ids[r] = since_id
+            if is_v3 and principal:
+                r_obj = self.storage.v3.get_room_by_name(r)
+                if r_obj:
+                    has_cur = self.storage.v3.has_read_cursor(principal["id"], r_obj["id"])
+                    cursor = self.storage.v3.get_read_cursor(principal["id"], r_obj["id"])
+                    if since_id > 0:
+                        room_since_ids[r] = since_id
+                    elif has_cur:
+                        room_since_ids[r] = cursor
+                    else:
+                        # First time connecting to this room: initialize cursor to max_id and wait for future messages
+                        self.storage.v3.update_read_cursor(principal["id"], r_obj["id"], max_id)
+                        room_since_ids[r] = max_id
+                else:
+                    room_since_ids[r] = max_id
             else:
-                room_since_ids[r] = max_id
+                if len(target_rooms) == 1 and since_id > 0:
+                    room_since_ids[r] = since_id
+                else:
+                    room_since_ids[r] = max_id
 
         # Record the reaction sequence at start
         start_reaction_seq = self._reaction_seq
 
-        # If since_id was explicitly provided for a single room and unread messages already exist, return them immediately
-        if len(target_rooms) == 1 and since_id > 0:
-            current_msgs = self.storage.get_messages(target_rooms[0], since_id=since_id, limit=50)
-            external_msgs = [
-                m for m in current_msgs
-                if not clean_agent or m["sender"].strip().lower() != clean_agent
-            ]
-            if external_msgs:
-                return {
-                    "status": "new_messages",
-                    "room": target_rooms[0],
-                    "count": len(external_msgs),
-                    "messages": external_msgs,
-                    "last_id": max(m["id"] for m in current_msgs),
-                }
+        # Check for unread messages already available (if since_id > 0 or v3 cursor is behind max_id)
+        immediate_msgs: list[dict[str, Any]] = []
+        for r in target_rooms:
+            eff_since = room_since_ids[r]
+            max_id = self.storage.get_max_message_id(r)
+            if eff_since < max_id or (len(target_rooms) == 1 and since_id > 0):
+                cand = self.storage.get_messages(r, since_id=eff_since, limit=50)
+                if is_v3 and principal:
+                    r_obj = self.storage.v3.get_room_by_name(r)
+                    r_id = r_obj["id"] if r_obj else None
+                    for m in cand:
+                        if self.storage.v3.is_message_for_principal(m, principal, r_id):
+                            immediate_msgs.append(m)
+                else:
+                    for m in cand:
+                        if not clean_agent or m["sender"].strip().lower() != clean_agent:
+                            immediate_msgs.append(m)
+
+        if immediate_msgs:
+            immediate_msgs.sort(key=lambda m: m["id"])
+            distinct_rooms = {m["room_name"].lower() for m in immediate_msgs}
+            first_room = immediate_msgs[0]["room_name"]
+
+            if is_v3 and principal:
+                for r in target_rooms:
+                    r_msgs = [m for m in immediate_msgs if m["room_name"].lower() == r.lower()]
+                    if r_msgs:
+                        self.storage.v3.update_read_cursor(principal["id"], r, max(m["id"] for m in r_msgs))
+
+            role_reminder = None
+            if is_v3 and principal:
+                r_obj = self.storage.v3.get_room_by_name(first_room)
+                if r_obj:
+                    r_info = self.storage.v3.get_agent_role_in_room(principal["id"], r_obj["id"])
+                    if r_info and r_info.get("reminder_text"):
+                        role_reminder = r_info["reminder_text"]
+
+            res = {
+                "status": "new_messages",
+                "room": first_room if len(distinct_rooms) == 1 else "subscribed",
+                "count": len(immediate_msgs),
+                "messages": immediate_msgs,
+                "last_id": immediate_msgs[-1]["id"],
+            }
+            if role_reminder:
+                res["role_reminder"] = role_reminder
+            return res
 
         # Create an event and register on all target rooms
         event = asyncio.Event()
@@ -1112,30 +1177,51 @@ class ChatHub:
 
                 # Event fired! Collect all new messages from ALL target_rooms
                 all_found_messages = []
-                last_room_found = ""
                 for r in target_rooms:
                     effective_since = room_since_ids[r]
                     new_msgs = self.storage.get_messages(r, since_id=effective_since, limit=50)
-                    external_new = [
-                        m for m in new_msgs
-                        if not clean_agent or m["sender"].strip().lower() != clean_agent
-                    ]
-                    if external_new:
-                        all_found_messages.extend(external_new)
-                        last_room_found = r
+                    if is_v3 and principal:
+                        r_obj = self.storage.v3.get_room_by_name(r)
+                        r_id = r_obj["id"] if r_obj else None
+                        for m in new_msgs:
+                            if self.storage.v3.is_message_for_principal(m, principal, r_id):
+                                all_found_messages.append(m)
+                    else:
+                        for m in new_msgs:
+                            if not clean_agent or m["sender"].strip().lower() != clean_agent:
+                                all_found_messages.append(m)
                     if new_msgs:
                         room_since_ids[r] = max(m["id"] for m in new_msgs)
 
                 if all_found_messages:
                     all_found_messages.sort(key=lambda m: m["id"])
                     distinct_rooms = {m["room_name"].lower() for m in all_found_messages}
-                    return {
+                    first_room = all_found_messages[0]["room_name"]
+
+                    if is_v3 and principal:
+                        for r in target_rooms:
+                            r_msgs = [m for m in all_found_messages if m["room_name"].lower() == r.lower()]
+                            if r_msgs:
+                                self.storage.v3.update_read_cursor(principal["id"], r, max(m["id"] for m in r_msgs))
+
+                    role_reminder = None
+                    if is_v3 and principal:
+                        r_obj = self.storage.v3.get_room_by_name(first_room)
+                        if r_obj:
+                            r_info = self.storage.v3.get_agent_role_in_room(principal["id"], r_obj["id"])
+                            if r_info and r_info.get("reminder_text"):
+                                role_reminder = r_info["reminder_text"]
+
+                    res = {
                         "status": "new_messages",
-                        "room": all_found_messages[0]["room_name"] if len(distinct_rooms) == 1 else "subscribed",
+                        "room": first_room if len(distinct_rooms) == 1 else "subscribed",
                         "count": len(all_found_messages),
                         "messages": all_found_messages,
                         "last_id": all_found_messages[-1]["id"],
                     }
+                    if role_reminder:
+                        res["role_reminder"] = role_reminder
+                    return res
 
                 # If no new messages, check for new reaction events in target rooms
                 target_room_set = {r.strip().lower() for r in target_rooms}
@@ -1188,6 +1274,9 @@ class ChatHub:
         """
         target_rooms = self._resolve_target_rooms(room_name, agent_name, password)
         clean_agent = agent_name.strip().lower() if agent_name else ""
+        is_v3 = hasattr(self.storage, "is_v3") and self.storage.is_v3()
+        principal = self.storage.v3.get_principal_by_name(agent_name) if (is_v3 and agent_name) else None
+
         if agent_name:
             for r in target_rooms:
                 self.record_presence(r, agent_name.strip(), client="mcp_poll")
@@ -1199,13 +1288,28 @@ class ChatHub:
             max_id = self.storage.get_max_message_id(r)
             last_id = max(last_id, max_id)
             effective_since = since_id if since_id > 0 else 0
-            if effective_since > 0:
+            has_cur = False
+            if is_v3 and principal and effective_since == 0:
+                r_obj = self.storage.v3.get_room_by_name(r)
+                if r_obj:
+                    has_cur = self.storage.v3.has_read_cursor(principal["id"], r_obj["id"])
+                    if has_cur:
+                        effective_since = self.storage.v3.get_read_cursor(principal["id"], r_obj["id"])
+
+            if effective_since > 0 or (is_v3 and principal and has_cur):
                 msgs = self.storage.get_messages(r, since_id=effective_since, limit=50)
-                external = [
-                    m for m in msgs
-                    if not clean_agent or m["sender"].strip().lower() != clean_agent
-                ]
-                all_new.extend(external)
+                if is_v3 and principal:
+                    r_obj = self.storage.v3.get_room_by_name(r)
+                    r_id = r_obj["id"] if r_obj else None
+                    for m in msgs:
+                        if self.storage.v3.is_message_for_principal(m, principal, r_id):
+                            all_new.append(m)
+                else:
+                    external = [
+                        m for m in msgs
+                        if not clean_agent or m["sender"].strip().lower() != clean_agent
+                    ]
+                    all_new.extend(external)
 
         target_room_set = {r.strip().lower() for r in target_rooms}
         recent_reactions = [
@@ -1215,8 +1319,16 @@ class ChatHub:
             and (since_id == 0 or ev.get("message_id", 0) > since_id or ev.get("seq", 0) > since_id)
         ]
 
+        role_reminder = None
+        if is_v3 and principal and target_rooms:
+            r_obj = self.storage.v3.get_room_by_name(target_rooms[0])
+            if r_obj:
+                r_info = self.storage.v3.get_agent_role_in_room(principal["id"], r_obj["id"])
+                if r_info and r_info.get("reminder_text"):
+                    role_reminder = r_info["reminder_text"]
+
         if since_id > 0 and len(target_rooms) == 1:
-            return {
+            res = {
                 "status": "success",
                 "room": target_rooms[0],
                 "has_new": len(all_new) > 0,
@@ -1227,22 +1339,28 @@ class ChatHub:
                 "last_id": max(m["id"] for m in all_new) if all_new else since_id,
                 "room_max_id": self.storage.get_max_message_id(target_rooms[0]),
             }
+            if role_reminder:
+                res["role_reminder"] = role_reminder
+            return res
         elif len(target_rooms) == 1:
             recent = self.storage.get_messages(target_rooms[0], since_id=0, limit=20)
-            return {
+            res = {
                 "status": "success",
                 "room": target_rooms[0],
-                "has_new": False,
-                "count": len(recent),
-                "messages": recent,
+                "has_new": len(all_new) > 0,
+                "count": len(all_new) if all_new else len(recent),
+                "messages": all_new if all_new else recent,
                 "has_new_reactions": len(recent_reactions) > 0,
                 "recent_reactions": recent_reactions,
                 "last_id": last_id,
                 "room_max_id": last_id,
                 "hint": f"Room currently has {len(recent)} recent messages up to ID #{last_id}.",
             }
+            if role_reminder:
+                res["role_reminder"] = role_reminder
+            return res
         else:
-            return {
+            res = {
                 "status": "success",
                 "rooms": target_rooms,
                 "has_new": len(all_new) > 0,
@@ -1253,13 +1371,24 @@ class ChatHub:
                 "last_id": last_id,
                 "hint": f"Checked {len(target_rooms)} subscribed rooms.",
             }
+            if role_reminder:
+                res["role_reminder"] = role_reminder
+            return res
 
-    def _notify_listeners(self, room_name: str) -> None:
-        """Triggers all waiting asyncio events for this room."""
+    def _notify_listeners(self, room_name: str, message: dict[str, Any] | None = None) -> None:
+        """Triggers all waiting asyncio events for this room, respecting selective wake-up."""
         room_key = room_name.strip().lower()
         listeners = self._room_listeners.get(room_key, [])
+        is_v3 = hasattr(self.storage, "is_v3") and self.storage.is_v3()
+        r_obj = self.storage.v3.get_room_by_name(room_name) if is_v3 else None
         for entry in list(listeners):
             try:
+                if message and is_v3 and r_obj:
+                    ag_name = entry.get("agent_name", "") if isinstance(entry, dict) else ""
+                    if ag_name:
+                        p = self.storage.v3.get_principal_by_name(ag_name)
+                        if p and not self.storage.v3.is_message_for_principal(message, p, r_obj["id"]):
+                            continue  # Observer or not targeted -> do not wake up!
                 if isinstance(entry, dict) and "event" in entry:
                     entry["event"].set()
                 elif hasattr(entry, "set"):

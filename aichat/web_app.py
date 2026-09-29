@@ -723,6 +723,7 @@ async def endpoint_post_message(request: Request) -> Response:
     content = data.get("content", "").strip()
     password = data.get("password", "")
     member_token = data.get("member_token", "") or (auth["token"] if not auth["is_human"] else "")
+    to = data.get("to") or data.get("recipients") or "all"
 
     if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
         p = auth.get("principal")
@@ -738,23 +739,40 @@ async def endpoint_post_message(request: Request) -> Response:
 
         role = "human" if p.get("kind") == "human" else "agent"
         clean_sender = p.get("display_name") or p.get("username") or p.get("name") or "Agent"
-        msg = hub.storage.v3.add_message(
-            room_name_or_id=room["id"],
-            sender=clean_sender,
-            role=role,
-            content=content,
-            is_verified=True,
-            sender_id=p["id"],
-        )
+
+        if role == "agent":
+            max_cycles = int(os.environ.get("AICHAT_MAX_AGENT_CYCLES", "10"))
+            consecutive = hub.storage.v3.count_consecutive_agent_messages(room["id"])
+            if consecutive >= max_cycles:
+                return JSONResponse({
+                    "error": (
+                        f"Proteção de ciclo ativada: limite de {max_cycles} mensagens consecutivas de agentes "
+                        f"atingido na sala '{room['name']}' sem intervenção humana. "
+                        f"Conversação entre agentes pausada até intervenção do utilizador humano."
+                    )
+                }, status_code=400)
+
         try:
-            await hub._broadcast_to_websockets(room["name"], {
-                "type": "new_message",
-                "message": msg,
-            })
-            hub._notify_listeners(room["name"])
-        except Exception:
-            pass
-        return JSONResponse(msg, status_code=201)
+            msg = hub.storage.v3.add_message(
+                room_name_or_id=room["id"],
+                sender=clean_sender,
+                role=role,
+                content=content,
+                is_verified=True,
+                sender_id=p["id"],
+                to=to,
+            )
+            try:
+                await hub._broadcast_to_websockets(room["name"], {
+                    "type": "new_message",
+                    "message": msg,
+                })
+                hub._notify_listeners(room["name"], message=msg)
+            except Exception:
+                pass
+            return JSONResponse(msg, status_code=201)
+        except ValueError as ve:
+            return JSONResponse({"error": str(ve)}, status_code=400)
 
     is_human = auth["is_human"]
     sender_norm = "".join(c for c in sender.lower() if c.isalnum())
@@ -789,6 +807,7 @@ async def endpoint_post_message(request: Request) -> Response:
             password=password,
             member_token=member_token,
             human_token=effective_ht,
+            to=to,
         )
         return JSONResponse(msg, status_code=201)
     except PermissionError as pe:

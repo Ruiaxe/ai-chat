@@ -348,11 +348,13 @@ async def send_message(
     password: str = "",
     member_token: str = "",
     agent_token: str = "",
+    to: str = "all",
 ) -> str:
     """
     Sends a message to the specified chat room.
     Requires authorized agent_token (or member_token).
     Sender callsign is automatically bound and verified from your authenticated token.
+    - to: Target recipient ('all', '@role_key', '@callsign', or comma-separated list). Default is 'all'.
     """
     token = (agent_token or member_token).strip()
     ident, err = _authenticate(token, expected_callsign=sender_name)
@@ -370,21 +372,36 @@ async def send_message(
         if not hub.storage.v3.authorize(p, "write_room", {"room_id": room["id"]}):
             return json.dumps({"status": "error", "error": f"Access denied: write permission not granted for room '{room_name}' or room is archived."}, indent=2)
 
+        role = "human" if ident.get("is_human") else "agent"
+        if role == "agent":
+            max_cycles = int(os.environ.get("AICHAT_MAX_AGENT_CYCLES", "10"))
+            consecutive = hub.storage.v3.count_consecutive_agent_messages(room["id"])
+            if consecutive >= max_cycles:
+                return json.dumps({
+                    "status": "error",
+                    "error": (
+                        f"Proteção de ciclo ativada: limite de {max_cycles} mensagens consecutivas de agentes "
+                        f"atingido na sala '{room_name}' sem intervenção humana. "
+                        f"Conversação entre agentes pausada até intervenção do utilizador humano."
+                    )
+                }, indent=2)
+
         try:
             msg = hub.storage.v3.add_message(
                 room_name_or_id=room["id"],
                 sender=callsign,
-                role="human" if ident.get("is_human") else "agent",
+                role=role,
                 content=content,
                 is_verified=True,
                 sender_id=p["id"] if p else None,
+                to=to,
             )
             try:
                 await hub._broadcast_to_websockets(room["name"], {
                     "type": "new_message",
                     "message": msg,
                 })
-                hub._notify_listeners(room["name"])
+                hub._notify_listeners(room["name"], message=msg)
             except Exception:
                 pass
             return json.dumps({
@@ -392,6 +409,8 @@ async def send_message(
                 "message_id": msg["id"],
                 "room": room["name"],
                 "sender": callsign,
+                "to": msg.get("to", ["all"]),
+                "recipients": msg.get("recipients", []),
                 "is_verified": True,
                 "created_at": msg["created_at"],
             }, indent=2)
@@ -407,6 +426,7 @@ async def send_message(
             password=password,
             member_token=token,
             human_token=hub.human_token if ident.get("is_human") else "",
+            to=to,
         )
         return json.dumps({
             "status": "success",

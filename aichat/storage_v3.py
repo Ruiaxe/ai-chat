@@ -771,13 +771,19 @@ class StorageV3:
 
     def grant_room_access(
         self,
-        room_id: int,
-        principal_id: int,
+        room_id: int | str | dict[str, Any],
+        principal_id: int | str | dict[str, Any],
         role_id: int | None = None,
         can_write: int = 1,
         granted_by_id: int | None = None,
     ) -> None:
         """Grants or updates room access for a principal with specific role and write permission."""
+        room = self._resolve_room(room_id)
+        if not room:
+            raise ValueError(f"Sala '{room_id}' não encontrada.")
+        principal = self._resolve_principal(principal_id)
+        if not principal:
+            raise ValueError(f"Principal '{principal_id}' não encontrado.")
         conn = self._get_connection()
         now_str = utc_now()
         with conn:
@@ -791,7 +797,7 @@ class StorageV3:
                     granted_by = excluded.granted_by,
                     granted_at = excluded.granted_at;
                 """,
-                (room_id, principal_id, role_id, can_write, granted_by_id, now_str),
+                (room["id"], principal["id"], role_id, can_write, granted_by_id, now_str),
             )
 
     def revoke_room_access(self, room_id: int, principal_id: int) -> bool:
@@ -970,6 +976,147 @@ class StorageV3:
             f.write(json.dumps(msg_data, ensure_ascii=False) + "\n")
 
     # ------------------------------------------------------------------ Messages & Addressing
+    def resolve_recipients(self, to_input: str | list[Any] | None = None) -> list[dict[str, Any]]:
+        """
+        Resolves recipient definitions (e.g. 'all', '@developer', '@Sentinel', or comma-separated list)
+        into validated list of target dictionaries:
+        [{"target_kind": "all"|"role"|"principal", "target_id": int | None, "target_name": str}]
+        """
+        if to_input is None or to_input == "" or to_input == "all" or to_input == ["all"]:
+            return [{"target_kind": "all", "target_id": None, "target_name": "all"}]
+
+        raw_items: list[Any] = []
+        if isinstance(to_input, str):
+            raw_items = [s.strip() for s in to_input.split(",") if s.strip()]
+        elif isinstance(to_input, (list, tuple, set)):
+            for item in to_input:
+                if isinstance(item, str):
+                    raw_items.extend([s.strip() for s in item.split(",") if s.strip()])
+                elif isinstance(item, dict):
+                    raw_items.append(item)
+                else:
+                    raw_items.append(str(item).strip())
+        else:
+            raw_items = [str(to_input).strip()]
+
+        if not raw_items:
+            return [{"target_kind": "all", "target_id": None, "target_name": "all"}]
+
+        conn = self._get_connection()
+        resolved: list[dict[str, Any]] = []
+        seen = set()
+
+        for item in raw_items:
+            if isinstance(item, dict):
+                t_kind = item.get("target_kind", "all")
+                t_id = item.get("target_id") if t_kind != "all" else None
+                t_name = item.get("target_name") or str(t_id or "all")
+                key = (t_kind, t_id)
+                if key not in seen:
+                    seen.add(key)
+                    resolved.append({"target_kind": t_kind, "target_id": t_id, "target_name": t_name})
+                continue
+
+            clean = str(item).strip()
+            if clean.startswith("@"):
+                clean = clean[1:].strip()
+            if not clean or clean.lower() == "all":
+                if ("all", None) not in seen:
+                    seen.add(("all", None))
+                    resolved.append({"target_kind": "all", "target_id": None, "target_name": "all"})
+                continue
+
+            # Check agent_roles first
+            role_row = conn.execute(
+                "SELECT id, role_key, display_name FROM agent_roles WHERE role_key = ? COLLATE NOCASE;",
+                (clean,),
+            ).fetchone()
+            if role_row:
+                key = ("role", role_row["id"])
+                if key not in seen:
+                    seen.add(key)
+                    resolved.append({
+                        "target_kind": "role",
+                        "target_id": role_row["id"],
+                        "target_name": role_row["role_key"],
+                    })
+                continue
+
+            # Check principals (agent or human)
+            princ_row = conn.execute(
+                "SELECT id, name, display_name FROM principals WHERE name = ? COLLATE NOCASE;",
+                (clean,),
+            ).fetchone()
+            if princ_row:
+                key = ("principal", princ_row["id"])
+                if key not in seen:
+                    seen.add(key)
+                    resolved.append({
+                        "target_kind": "principal",
+                        "target_id": princ_row["id"],
+                        "target_name": princ_row["name"],
+                    })
+                continue
+
+            raise ValueError(f"Destinatário '{item}' não encontrado como papel ou agente/utilizador.")
+
+        if any(r["target_kind"] == "all" for r in resolved):
+            return [{"target_kind": "all", "target_id": None, "target_name": "all"}]
+
+        return resolved
+
+    @staticmethod
+    def _format_to_list(recipients: list[dict[str, Any]]) -> list[str]:
+        if not recipients:
+            return ["all"]
+        out = []
+        for r in recipients:
+            k = r.get("target_kind")
+            name = r.get("target_name") or ""
+            if k == "all":
+                out.append("all")
+            elif k in ("role", "principal"):
+                out.append(f"@{name}" if not name.startswith("@") else name)
+            else:
+                out.append(name or "all")
+        return out or ["all"]
+
+    def _get_recipients_map(self, message_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+        if not message_ids:
+            return {}
+        conn = self._get_connection()
+        placeholders = ",".join("?" for _ in message_ids)
+        rows = conn.execute(
+            f"""
+            SELECT mr.message_id, mr.target_kind, mr.target_id,
+                   ar.role_key as target_role_key,
+                   p.name as target_principal_name
+            FROM message_recipients mr
+            LEFT JOIN agent_roles ar ON mr.target_kind = 'role' AND mr.target_id = ar.id
+            LEFT JOIN principals p ON mr.target_kind = 'principal' AND mr.target_id = p.id
+            WHERE mr.message_id IN ({placeholders})
+            ORDER BY mr.message_id ASC, mr.target_kind ASC;
+            """,
+            message_ids,
+        ).fetchall()
+        result: dict[int, list[dict[str, Any]]] = {}
+        for r in rows:
+            mid = r["message_id"]
+            t_kind = r["target_kind"]
+            t_id = r["target_id"]
+            if t_kind == "role":
+                t_name = r["target_role_key"] or str(t_id)
+            elif t_kind == "principal":
+                t_name = r["target_principal_name"] or str(t_id)
+            else:
+                t_name = "all"
+            result.setdefault(mid, []).append({
+                "target_kind": t_kind,
+                "target_id": t_id,
+                "target_name": t_name,
+            })
+        return result
+
     def add_message(
         self,
         room_name_or_id: int | str | None = None,
@@ -980,6 +1127,7 @@ class StorageV3:
         metadata: dict[str, Any] | None = None,
         is_verified: int | bool = 1,
         recipients: list[dict[str, Any]] | None = None,
+        to: str | list[Any] | None = None,
         *,
         room_id: int | None = None,
         room_name: str | None = None,
@@ -1007,6 +1155,8 @@ class StorageV3:
         meta_json = json.dumps(metadata or {}, ensure_ascii=False)
         verified_int = 1 if is_verified else 0
 
+        target_list = self.resolve_recipients(to if to is not None else recipients)
+
         conn = self._get_connection()
         with conn:
             cursor = conn.execute(
@@ -1019,7 +1169,6 @@ class StorageV3:
             msg_id = cursor.lastrowid
 
             # Handle recipients
-            target_list = recipients if recipients else [{"target_kind": "all", "target_id": None}]
             for r in target_list:
                 t_kind = r.get("target_kind", "all")
                 t_id = r.get("target_id") if t_kind != "all" else None
@@ -1065,8 +1214,10 @@ class StorageV3:
         msg["role"] = msg["sender_kind"]
 
         # Fetch recipients
-        r_rows = conn.execute("SELECT target_kind, target_id FROM message_recipients WHERE message_id = ?;", (message_id,)).fetchall()
-        msg["recipients"] = [dict(r) for r in r_rows]
+        recips_map = self._get_recipients_map([message_id])
+        recips = recips_map.get(message_id, [{"target_kind": "all", "target_id": None, "target_name": "all"}])
+        msg["recipients"] = recips
+        msg["to"] = self._format_to_list(recips)
 
         # Fetch reactions
         msg["reactions"] = self.get_message_reactions(message_id)
@@ -1139,6 +1290,7 @@ class StorageV3:
 
         msg_ids = [r["id"] for r in rows]
         reactions_map = self._get_reactions_map(msg_ids)
+        recipients_map = self._get_recipients_map(msg_ids)
 
         result = []
         for r in rows:
@@ -1147,6 +1299,9 @@ class StorageV3:
             m["sender"] = m["sender_name"]
             m["role"] = m["sender_kind"]
             m["reactions"] = reactions_map.get(m["id"], [])
+            recips = recipients_map.get(m["id"], [{"target_kind": "all", "target_id": None, "target_name": "all"}])
+            m["recipients"] = recips
+            m["to"] = self._format_to_list(recips)
             result.append(m)
         return result
 
@@ -1202,6 +1357,153 @@ class StorageV3:
             (int(p_id), room["id"]),
         ).fetchone()
         return row["last_message_id"] if row else 0
+
+    def has_read_cursor(self, principal_id: int | str, room_name_or_id: int | str) -> bool:
+        """Checks whether a read cursor record exists for a principal in a room."""
+        room = self._resolve_room(room_name_or_id)
+        p = self._resolve_principal(principal_id)
+        if not room or not p:
+            return False
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT 1 FROM read_cursors WHERE principal_id = ? AND room_id = ?;",
+            (p["id"], room["id"]),
+        ).fetchone()
+        return row is not None
+
+    def get_agent_role_in_room(self, principal_id: int | str, room_name_or_id: int | str) -> dict[str, Any] | None:
+        """Retrieves effective role for an agent in a room (room_access.role_id with fallback to agents.default_role_id)."""
+        p = self._resolve_principal(principal_id)
+        if not p:
+            return None
+        room = self._resolve_room(room_name_or_id)
+        if not room:
+            return None
+        conn = self._get_connection()
+        row = conn.execute(
+            """
+            SELECT ar.*
+            FROM room_access ra
+            JOIN agent_roles ar ON ra.role_id = ar.id
+            WHERE ra.room_id = ? AND ra.principal_id = ?;
+            """,
+            (room["id"], p["id"]),
+        ).fetchone()
+        if row:
+            return dict(row)
+        fallback = conn.execute(
+            """
+            SELECT ar.*
+            FROM agents a
+            JOIN agent_roles ar ON a.default_role_id = ar.id
+            WHERE a.principal_id = ?;
+            """,
+            (p["id"],),
+        ).fetchone()
+        return dict(fallback) if fallback else None
+
+    def is_message_for_principal(
+        self,
+        msg: dict[str, Any],
+        principal: dict[str, Any] | int | str,
+        room_name_or_id: int | str | None = None,
+    ) -> bool:
+        """
+        Determines whether a message in a room should be delivered to / wake up a principal.
+        Rules:
+        - Sender never receives own message.
+        - Human admins receive all messages.
+        - Observers (can_write == 0 in room_access) NEVER wake on 'all' messages; only when explicitly targeted.
+        - Targeted messages only wake matching principal_id or matching role_id in this room.
+        - Active members (can_write == 1) wake on 'all' and on messages targeting their principal_id or role_id.
+        """
+        p = self._resolve_principal(principal)
+        if not p:
+            return False
+
+        # 1. Senders never wake on own messages
+        sender_id = msg.get("sender_id")
+        if sender_id is not None and sender_id == p["id"]:
+            return False
+        sender_name = msg.get("sender_name") or msg.get("sender") or ""
+        if sender_name and sender_name.strip().lower() == p["name"].strip().lower():
+            return False
+
+        # 2. Human admins see/receive everything
+        if p.get("kind") == "human" and p.get("access_role") == "admin":
+            return True
+
+        target_room = room_name_or_id if room_name_or_id is not None else msg.get("room_id", msg.get("room_name"))
+        room = self._resolve_room(target_room) if target_room is not None else None
+        if not room:
+            return True
+
+        # Check room membership and observer status
+        access = self.get_room_access(room["id"], p["id"])
+        if not access:
+            # Not a member of the room
+            return False
+
+        is_observer = (access.get("can_write", 1) == 0)
+
+        # Check recipients
+        recipients = msg.get("recipients", [])
+        if not recipients:
+            # Default or legacy = "all"
+            return not is_observer
+
+        # Check if explicitly targeted by principal_id
+        for r in recipients:
+            t_kind = r.get("target_kind")
+            t_id = r.get("target_id")
+            if t_kind == "principal" and t_id == p["id"]:
+                return True
+
+        # Check if explicitly targeted by role_id in this room
+        agent_role = self.get_agent_role_in_room(p["id"], room["id"])
+        if agent_role:
+            for r in recipients:
+                t_kind = r.get("target_kind")
+                t_id = r.get("target_id")
+                if t_kind == "role" and t_id == agent_role["id"]:
+                    return True
+
+        # Check if broadcast to 'all'
+        for r in recipients:
+            if r.get("target_kind") == "all":
+                if is_observer:
+                    return False  # Observers never wake on 'all'
+                return True
+
+        return False
+
+    def count_consecutive_agent_messages(self, room_name_or_id: int | str) -> int:
+        """
+        Counts the number of consecutive agent messages in a room since the last human message.
+        System messages do not count towards agent messages, nor do they reset the counter.
+        """
+        room = self._resolve_room(room_name_or_id)
+        if not room:
+            return 0
+        conn = self._get_connection()
+        rows = conn.execute(
+            """
+            SELECT sender_kind FROM messages
+            WHERE room_id = ?
+            ORDER BY id DESC
+            LIMIT 100;
+            """,
+            (room["id"],),
+        ).fetchall()
+        count = 0
+        for r in rows:
+            kind = r["sender_kind"]
+            if kind == "agent":
+                count += 1
+            elif kind == "human":
+                break
+        return count
+
 
     # ------------------------------------------------------------------ Reactions
     def _get_reactions_map(self, message_ids: list[int]) -> dict[int, list[dict[str, Any]]]:

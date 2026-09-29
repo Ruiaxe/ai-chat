@@ -96,6 +96,10 @@ class ChatStorage:
             self._v3_storage = StorageV3(self.db_path, self.logs_dir)
         return self._v3_storage
 
+    @v3.setter
+    def v3(self, val: Any) -> None:
+        self._v3_storage = val
+
     # -------------------------------------------------------------- v3 delegation methods
     def create_principal(self, *args, **kwargs):
         return self.v3.create_principal(*args, **kwargs)
@@ -177,6 +181,9 @@ class ChatStorage:
 
     def get_read_cursor(self, *args, **kwargs):
         return self.v3.get_read_cursor(*args, **kwargs)
+
+    def has_read_cursor(self, *args, **kwargs):
+        return self.v3.has_read_cursor(*args, **kwargs)
 
     def update_read_cursor(self, *args, **kwargs):
         return self.v3.update_read_cursor(*args, **kwargs)
@@ -807,6 +814,12 @@ class ChatStorage:
 
     def get_member_rooms(self, member_name: str) -> list[str]:
         """Returns the list of room names a member has joined."""
+        if self.is_v3():
+            p = self.v3.get_principal_by_name(member_name)
+            if not p:
+                return []
+            rooms = self.v3.list_rooms_for_principal(p)
+            return [r["name"] for r in rooms]
         conn = self._get_connection()
         cursor = conn.execute(
             """
@@ -1278,6 +1291,8 @@ class ChatStorage:
         is_verified: bool = False,
         message_type: str = "text",
         metadata: dict[str, Any] | None = None,
+        to: str | list[Any] | None = None,
+        recipients: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Saves a message to SQLite and appends to .log and .jsonl files."""
         if self.is_v3():
@@ -1289,6 +1304,8 @@ class ChatStorage:
                 is_verified=is_verified,
                 message_type=message_type,
                 metadata=metadata,
+                to=to,
+                recipients=recipients,
             )
         now = datetime.now().isoformat()
         conn = self._get_connection()
@@ -1315,6 +1332,8 @@ class ChatStorage:
             "message_type": message_type,
             "metadata": meta_dict,
             "reactions": [],
+            "recipients": [{"target_kind": "all", "target_id": None, "target_name": "all"}],
+            "to": ["all"],
             "created_at": now,
         }
 
