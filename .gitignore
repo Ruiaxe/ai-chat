@@ -12,6 +12,7 @@ data/.human_token
 data/.*
 data/*.json
 *.sql
+!migrations/**/*.sql
 .server_info.json
 
 # Transcripts and Room Logs
