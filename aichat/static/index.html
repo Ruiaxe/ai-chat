@@ -415,9 +415,23 @@
                 <input id="task-input-start" type="datetime-local" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-[11px]" />
               </div>
               <div>
+                <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Prazo / Fim (Gantt)</label>
+                <input id="task-input-due" type="datetime-local" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-[11px]" />
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Progresso (0-100%)</label>
+                <input id="task-input-progress" type="number" min="0" max="100" value="0" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-xs" />
+              </div>
+              <div>
                 <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Recurso / GPU</label>
                 <input id="task-input-resource" type="text" placeholder="ex: RTX_3080" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-xs" />
               </div>
+            </div>
+            <div>
+              <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Dependências (IDs separados por vírgula, ex: 1, 2)</label>
+              <input id="task-input-deps" type="text" placeholder="ex: 1, 3" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-xs" />
             </div>
             <div class="flex items-center justify-between pt-1">
               <label class="flex items-center space-x-1.5 cursor-pointer">
@@ -429,6 +443,19 @@
                 <input id="task-input-gpu-min" type="number" min="1" value="10" class="w-12 bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-slate-200 text-center text-xs" />
               </div>
               <button onclick="submitNewTask()" class="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition shadow">Criar Tarefa</button>
+            </div>
+          </div>
+
+          <!-- View switcher: Kanban vs Gantt -->
+          <div class="flex items-center justify-between px-3 py-1.5 border-b border-slate-800 bg-slate-950/60 text-xs flex-shrink-0">
+            <span class="text-[10px] uppercase font-bold text-slate-500">Vista:</span>
+            <div class="flex items-center space-x-1">
+              <button onclick="setTaskViewMode('kanban')" id="task-view-kanban-btn" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-600 text-white flex items-center gap-1 transition">
+                <i data-lucide="layout-grid" class="w-3 h-3"></i> Kanban
+              </button>
+              <button onclick="setTaskViewMode('gantt')" id="task-view-gantt-btn" class="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-400 hover:text-white flex items-center gap-1 transition">
+                <i data-lucide="bar-chart-horizontal" class="w-3 h-3"></i> Gantt
+              </button>
             </div>
           </div>
 
@@ -459,8 +486,16 @@
 
           <!-- Calendar Filter Tabs & Hide Completed Option -->
           <div class="p-2 border-b border-slate-800/80 bg-slate-950/40 space-y-1.5 flex-shrink-0">
+            <!-- Scope Filter Buttons: Todas, Sala, Pessoais, Recursos -->
+            <div class="flex items-center space-x-1 overflow-x-auto text-[10px] pb-1 scrollbar-none border-b border-slate-800/60">
+              <span class="text-[9px] uppercase font-bold text-slate-500 mr-1">Âmbito:</span>
+              <button onclick="setCalendarScope('')" id="cal-scope-all-btn" class="cal-scope-btn px-2 py-0.5 rounded font-semibold transition bg-indigo-600 text-white">Todas</button>
+              <button onclick="setCalendarScope('room')" id="cal-scope-room-btn" class="cal-scope-btn px-2 py-0.5 rounded font-medium transition bg-slate-800 text-slate-300 hover:text-white">Sala</button>
+              <button onclick="setCalendarScope('personal')" id="cal-scope-personal-btn" class="cal-scope-btn px-2 py-0.5 rounded font-medium transition bg-slate-800 text-slate-300 hover:text-white">Pessoais</button>
+              <button onclick="setCalendarScope('resource')" id="cal-scope-resource-btn" class="cal-scope-btn px-2 py-0.5 rounded font-medium transition bg-slate-800 text-slate-300 hover:text-white">Recursos</button>
+            </div>
             <!-- Filter Buttons: Todos, Agendados, Em Execução, Concluídos -->
-            <div class="flex items-center space-x-1 overflow-x-auto text-[11px] pb-1 scrollbar-none">
+            <div class="flex items-center space-x-1 overflow-x-auto text-[11px] pb-0.5 scrollbar-none">
               <button onclick="setCalendarFilter('all')" data-cal-filter="all" class="cal-filter-btn px-2.5 py-1 rounded-md font-semibold transition bg-indigo-600 text-white">Todos</button>
               <button onclick="setCalendarFilter('upcoming')" data-cal-filter="upcoming" class="cal-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">Agendados</button>
               <button onclick="setCalendarFilter('in_progress')" data-cal-filter="in_progress" class="cal-filter-btn px-2.5 py-1 rounded-md font-medium transition bg-slate-800 text-slate-300 hover:text-white">Em Execução</button>
@@ -516,10 +551,16 @@
             </div>
             <textarea id="cal-input-desc" rows="2" placeholder="Notas ou comandos para executar quando acordar..." class="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-700/80 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500 resize-none"></textarea>
             <div class="flex items-center justify-between pt-1">
-              <label class="flex items-center space-x-1.5 cursor-pointer">
-                <input type="checkbox" id="cal-input-wake-start" checked class="rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-0 w-3.5 h-3.5" />
-                <span class="text-[11px] text-indigo-300 font-medium">Acordar canal no início</span>
-              </label>
+              <div class="flex items-center space-x-3">
+                <label class="flex items-center space-x-1.5 cursor-pointer">
+                  <input type="checkbox" id="cal-input-wake-start" checked class="rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-0 w-3.5 h-3.5" />
+                  <span class="text-[11px] text-indigo-300 font-medium">Acordar canal</span>
+                </label>
+                <label class="flex items-center space-x-1.5 cursor-pointer">
+                  <input type="checkbox" id="cal-input-is-personal" class="rounded bg-slate-900 border-slate-700 text-purple-500 focus:ring-0 w-3.5 h-3.5" />
+                  <span class="text-[11px] text-purple-300 font-medium">Pessoal (privado)</span>
+                </label>
+              </div>
               <button onclick="submitNewCalendarEvent()" class="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition shadow">Agendar</button>
             </div>
           </div>
@@ -2873,6 +2914,25 @@
       }
     }
 
+    let taskViewMode = localStorage.getItem('ai_chat_task_view') || 'kanban';
+
+    function setTaskViewMode(mode) {
+      taskViewMode = mode;
+      localStorage.setItem('ai_chat_task_view', mode);
+      const kanbanBtn = document.getElementById('task-view-kanban-btn');
+      const ganttBtn = document.getElementById('task-view-gantt-btn');
+      if (kanbanBtn && ganttBtn) {
+        if (mode === 'gantt') {
+          ganttBtn.className = 'px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-600 text-white flex items-center gap-1 transition';
+          kanbanBtn.className = 'px-2 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-400 hover:text-white flex items-center gap-1 transition';
+        } else {
+          kanbanBtn.className = 'px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-600 text-white flex items-center gap-1 transition';
+          ganttBtn.className = 'px-2 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-400 hover:text-white flex items-center gap-1 transition';
+        }
+      }
+      renderTasks();
+    }
+
     function setTaskFilter(filter) {
       activeTaskFilter = filter;
       document.querySelectorAll('.task-filter-btn').forEach(btn => {
@@ -2961,6 +3021,11 @@
         return;
       }
 
+      if (taskViewMode === 'gantt') {
+        renderGanttChart(filtered, container);
+        return;
+      }
+
       container.innerHTML = filtered.map(t => {
         // Priority
         let priorityBadge = '';
@@ -3026,6 +3091,7 @@
 
         const isDone = t.status === 'done';
         const cardBg = isDone ? 'bg-slate-900/40 border-slate-800/50 opacity-75' : (t.is_stale ? 'bg-amber-950/20 border-amber-500/40' : 'bg-slate-900/90 border-slate-800');
+        const progress = Math.max(0, Math.min(100, t.progress_percent || (isDone ? 100 : 0)));
 
         return `
           <div class="p-3 rounded-xl border ${cardBg} transition space-y-2 hover:border-slate-700 group shadow-sm">
@@ -3056,6 +3122,23 @@
               ${t.description ? `<p class="text-[11px] text-slate-400 mt-1 leading-snug whitespace-pre-wrap">${escapeHtml(t.description)}</p>` : ''}
             </div>
 
+            <!-- Gantt Progress Bar -->
+            <div class="space-y-1">
+              <div class="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden border border-slate-800">
+                <div class="h-full ${isDone ? 'bg-emerald-500' : 'bg-indigo-500'} transition-all" style="width: ${progress}%"></div>
+              </div>
+              <div class="flex items-center justify-between text-[10px] text-slate-500">
+                <span>Progresso: <strong class="text-slate-300 font-mono">${progress}%</strong></span>
+                ${t.due_at ? `<span class="font-mono text-slate-400">Prazo: ${escapeHtml(t.due_at.slice(5, 16).replace('T', ' '))}</span>` : ''}
+              </div>
+            </div>
+            ${(t.dependencies && t.dependencies.length > 0) ? `
+              <div class="flex items-center gap-1 flex-wrap text-[10px] text-slate-400">
+                <span>Depende de:</span>
+                ${t.dependencies.map(d => `<span class="px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 font-mono text-[9px] border border-purple-500/30">#${d}</span>`).join('')}
+              </div>
+            ` : ''}
+
             <div class="pt-1.5 border-t border-slate-800/60 flex items-center justify-between gap-2 flex-wrap text-[11px]">
               <div class="flex items-center gap-2">
                 <span class="text-slate-500 text-[10px]">Resp: <strong class="text-slate-300 font-medium">${t.assignee ? '@' + escapeHtml(t.assignee) : 'Livre'}</strong></span>
@@ -3085,6 +3168,97 @@
       lucide.createIcons();
     }
 
+    function renderGanttChart(tasks, container) {
+      if (!tasks || tasks.length === 0) {
+        container.innerHTML = `
+          <div class="text-center text-slate-500 py-12 text-xs space-y-2">
+            <i data-lucide="bar-chart-horizontal" class="w-8 h-8 stroke-[1.2] mx-auto text-slate-600"></i>
+            <p>Nenhuma tarefa para o gráfico de Gantt.</p>
+          </div>
+        `;
+        lucide.createIcons();
+        return;
+      }
+
+      container.innerHTML = `
+        <div class="space-y-3 p-1">
+          <div class="text-[11px] text-slate-400 flex items-center justify-between pb-1 border-b border-slate-800">
+            <span class="font-bold text-slate-300">Cronograma Gantt (${tasks.length})</span>
+            <span class="text-[10px] text-slate-500">Progresso &amp; Dependências</span>
+          </div>
+          <div class="space-y-2">
+            ${tasks.map(t => {
+              const isDone = t.status === 'done';
+              const isInProgress = t.status === 'in_progress';
+              const progress = Math.max(0, Math.min(100, t.progress_percent || (isDone ? 100 : 0)));
+              const barColor = isDone ? 'bg-emerald-500' : (isInProgress ? 'bg-indigo-500' : 'bg-amber-500');
+              const dates = (t.start_at || t.due_at) ? `
+                <div class="text-[10px] font-mono text-slate-400 flex items-center gap-2">
+                  ${t.start_at ? `<span>Início: ${escapeHtml(t.start_at.slice(5, 16).replace('T', ' '))}</span>` : ''}
+                  ${t.due_at ? `<span>Fim: ${escapeHtml(t.due_at.slice(5, 16).replace('T', ' '))}</span>` : ''}
+                </div>
+              ` : '';
+              const deps = (t.dependencies && t.dependencies.length > 0) ? `
+                <div class="flex items-center gap-1 flex-wrap text-[10px] text-slate-500 mt-1">
+                  <span>Bloqueada por:</span>
+                  ${t.dependencies.map(d => `<span class="px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 font-mono text-[9px] border border-purple-500/30">#${d}</span>`).join('')}
+                </div>
+              ` : '';
+
+              return `
+                <div class="p-2.5 rounded-xl border border-slate-800 bg-slate-900/90 space-y-1.5 hover:border-slate-700 transition">
+                  <div class="flex items-center justify-between text-xs">
+                    <div class="flex items-center gap-2 font-semibold">
+                      <span class="font-mono text-slate-400 text-[10px]">#${t.id}</span>
+                      <span class="${isDone ? 'line-through text-slate-400' : 'text-slate-200'}">${escapeHtml(t.title)}</span>
+                    </div>
+                    <span class="text-[10px] font-bold text-slate-300 font-mono">${progress}%</span>
+                  </div>
+                  <!-- Progress Bar -->
+                  <div class="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden border border-slate-800">
+                    <div class="h-full ${barColor} transition-all duration-300 rounded-full" style="width: ${progress}%"></div>
+                  </div>
+                  <div class="flex items-center justify-between pt-0.5 text-[10px]">
+                    <span class="text-slate-500">Resp: <strong class="text-slate-300 font-medium">${t.assignee ? '@' + escapeHtml(t.assignee) : 'Livre'}</strong></span>
+                    ${dates}
+                  </div>
+                  ${deps}
+                  <div class="flex items-center justify-end gap-1 pt-1 border-t border-slate-800/40">
+                    <button onclick="handleQuickProgress(${t.id}, ${Math.min(100, progress + 25)})" class="px-2 py-0.5 rounded text-[9px] font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition">
+                      +25%
+                    </button>
+                    ${!isDone ? `
+                      <button onclick="handleUpdateTaskStatus(${t.id}, 'done')" class="px-2 py-0.5 rounded text-[9px] font-semibold bg-emerald-950/60 hover:bg-emerald-900 text-emerald-400 border border-emerald-800/60 transition">
+                        ✓ Concluir
+                      </button>
+                    ` : ''}
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+      lucide.createIcons();
+    }
+
+    async function handleQuickProgress(taskId, newProgress) {
+      if (!currentRoom) return;
+      const pwd = getSavedPassword(currentRoom.name);
+      try {
+        const body = { progress_percent: newProgress, password: pwd };
+        if (newProgress >= 100) body.status = 'done';
+        await fetch(`/api/tasks/${taskId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        fetchTasks();
+      } catch (err) {
+        console.error('Error updating task progress:', err);
+      }
+    }
+
     async function submitNewTask() {
       if (!currentRoom) return;
       const titleInput = document.getElementById('task-input-title');
@@ -3094,6 +3268,9 @@
       const gpuCheckbox = document.getElementById('task-input-gpu');
       const gpuMinInput = document.getElementById('task-input-gpu-min');
       const startInput = document.getElementById('task-input-start');
+      const dueInput = document.getElementById('task-input-due');
+      const progressInput = document.getElementById('task-input-progress');
+      const depsInput = document.getElementById('task-input-deps');
       const resourceInput = document.getElementById('task-input-resource');
 
       const title = titleInput.value.trim();
@@ -3102,6 +3279,11 @@
         titleInput.focus();
         return;
       }
+
+      const dueAt = dueInput ? dueInput.value.trim() : '';
+      const progressPercent = progressInput ? parseInt(progressInput.value || 0) : 0;
+      const depsRaw = depsInput ? depsInput.value.trim() : '';
+      const dependencies = depsRaw ? depsRaw.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n) && n > 0) : [];
 
       const pwd = getSavedPassword(currentRoom.name);
       try {
@@ -3116,6 +3298,9 @@
             uses_gpu: gpuCheckbox.checked,
             gpu_est_min: parseInt(gpuMinInput.value || 0),
             start_at: startInput ? startInput.value.trim() : '',
+            due_at: dueAt,
+            progress_percent: progressPercent,
+            dependencies: dependencies.length > 0 ? dependencies : undefined,
             resource: resourceInput ? resourceInput.value.trim() : '',
             password: pwd,
           })
@@ -3131,6 +3316,9 @@
         descInput.value = '';
         assigneeInput.value = '';
         if (startInput) startInput.value = '';
+        if (dueInput) dueInput.value = '';
+        if (progressInput) progressInput.value = '0';
+        if (depsInput) depsInput.value = '';
         if (resourceInput) resourceInput.value = '';
         gpuCheckbox.checked = false;
         document.getElementById('task-gpu-min-box').classList.add('hidden');
@@ -3145,11 +3333,28 @@
     // Calendar & Resource Scheduling Operations (v2.8)
     // =============================================================
 
+    let activeCalendarScope = '';
+
+    function setCalendarScope(scope) {
+      activeCalendarScope = scope;
+      document.querySelectorAll('.cal-scope-btn').forEach(btn => {
+        btn.className = 'cal-scope-btn px-2 py-0.5 rounded font-medium transition bg-slate-800 text-slate-300 hover:text-white';
+      });
+      const activeBtn = document.getElementById(
+        scope === 'room' ? 'cal-scope-room-btn' :
+        scope === 'personal' ? 'cal-scope-personal-btn' :
+        scope === 'resource' ? 'cal-scope-resource-btn' : 'cal-scope-all-btn'
+      );
+      if (activeBtn) activeBtn.className = 'cal-scope-btn px-2 py-0.5 rounded font-semibold transition bg-indigo-600 text-white';
+      fetchCalendarEvents();
+    }
+
     async function fetchCalendarEvents() {
       if (!currentRoom) return;
       const pwd = getSavedPassword(currentRoom.name);
       try {
-        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/calendar?password=${encodeURIComponent(pwd)}&include_completed=true`);
+        const scopeParam = activeCalendarScope ? `&scope=${encodeURIComponent(activeCalendarScope)}` : '';
+        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/calendar?password=${encodeURIComponent(pwd)}&include_completed=true${scopeParam}`);
         if (!res.ok) return;
         const data = await res.json();
         roomCalendarEvents = data.events || [];
@@ -3283,6 +3488,12 @@
           </span>
         ` : '';
 
+        const personalBadge = ev.is_personal ? `
+          <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+            <i data-lucide="lock" class="w-2.5 h-2.5"></i> Pessoal
+          </span>
+        ` : '';
+
         let timeStr = ev.start_at || '';
         try {
           const s = new Date(ev.start_at);
@@ -3302,6 +3513,7 @@
             <div class="flex items-center justify-between gap-1 flex-wrap">
               <div class="flex items-center gap-1 flex-wrap">
                 ${statusBadge}
+                ${personalBadge}
                 ${resBadge}
                 ${agentBadge}
               </div>
@@ -3355,6 +3567,7 @@
       const targetInput = document.getElementById('cal-input-target-agent');
       const descInput = document.getElementById('cal-input-desc');
       const wakeStartCheck = document.getElementById('cal-input-wake-start');
+      const personalCheck = document.getElementById('cal-input-is-personal');
 
       const title = titleInput.value.trim();
       const startAt = startInput.value.trim();
@@ -3385,6 +3598,7 @@
             resource: resInput.value.trim(),
             target_agent: targetInput.value.trim(),
             description: descInput.value.trim(),
+            is_personal: personalCheck ? personalCheck.checked : false,
             wake_on_start: wakeStartCheck ? wakeStartCheck.checked : true,
             force: force,
             password: pwd,
@@ -3412,6 +3626,7 @@
         resInput.value = '';
         targetInput.value = '';
         descInput.value = '';
+        if (personalCheck) personalCheck.checked = false;
         toggleNewCalendarEventForm();
         await fetchCalendarEvents();
         await fetchResourceStatus();

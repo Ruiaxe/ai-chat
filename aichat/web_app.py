@@ -1572,6 +1572,19 @@ async def endpoint_create_task(request: Request) -> Response:
     human_name = (p.get("display_name") or p.get("name") if p else auth.get("name")) if auth else hub.human_name
     creator = human_name if is_human else (data.get("created_by") or data.get("creator") or "WebUser")
 
+    parent_task_id = data.get("parent_task_id")
+    if parent_task_id is not None:
+        try:
+            parent_task_id = int(parent_task_id) if int(parent_task_id) > 0 else None
+        except Exception:
+            parent_task_id = None
+    dependencies = data.get("dependencies")
+    if isinstance(dependencies, list):
+        dependencies = [int(x) for x in dependencies if str(x).isdigit()]
+    else:
+        dependencies = None
+    progress_percent = safe_int(data.get("progress_percent"), default=0, min_val=0)
+
     try:
         task = await hub.create_task(
             room_name=room_name,
@@ -1592,6 +1605,9 @@ async def endpoint_create_task(request: Request) -> Response:
             human_token=human_tok,
             password=data.get("password", ""),
             created_by=creator,
+            parent_task_id=parent_task_id,
+            dependencies=dependencies,
+            progress_percent=progress_percent,
         )
         return JSONResponse(task, status_code=201)
     except PermissionError as pe:
@@ -1621,9 +1637,13 @@ async def endpoint_update_task(request: Request) -> Response:
     allowed_fields = [
         "title", "description", "status", "assignee", "waiting_for_agent",
         "priority", "order_index", "message_id", "uses_gpu", "gpu_est_min",
-        "start_at", "due_at", "resource",
+        "start_at", "due_at", "resource", "parent_task_id", "dependencies", "progress_percent",
     ]
     kwargs = {k: v for k, v in data.items() if k in allowed_fields}
+    if "progress_percent" in kwargs and kwargs["progress_percent"] is not None:
+        kwargs["progress_percent"] = safe_int(kwargs["progress_percent"], default=0, min_val=0)
+    if "dependencies" in kwargs and isinstance(kwargs["dependencies"], list):
+        kwargs["dependencies"] = [int(x) for x in kwargs["dependencies"] if str(x).isdigit()]
 
     try:
         task = await hub.update_task(
@@ -1638,7 +1658,45 @@ async def endpoint_update_task(request: Request) -> Response:
     except PermissionError as pe:
         return JSONResponse({"error": str(pe)}, status_code=403)
     except ValueError as ve:
-        return JSONResponse({"error": str(ve)}, status_code=404)
+        if "não encontrada" in str(ve).lower():
+            return JSONResponse({"error": str(ve)}, status_code=404)
+        return JSONResponse({"error": str(ve)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_add_task_dependency(request: Request) -> Response:
+    """Adds a prerequisite dependency to a task with cycle detection."""
+    task_id = int(request.path_params["task_id"])
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    dep_id = data.get("depends_on_task_id") or data.get("dep_id")
+    if not dep_id:
+        return JSONResponse({"error": "O campo 'depends_on_task_id' é obrigatório."}, status_code=400)
+    try:
+        dep_id = int(dep_id)
+    except Exception:
+        return JSONResponse({"error": "ID de dependência inválido."}, status_code=400)
+
+    try:
+        res = await hub.add_task_dependency(task_id, dep_id)
+        return JSONResponse(res, status_code=201)
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_remove_task_dependency(request: Request) -> Response:
+    """Removes a prerequisite dependency from a task."""
+    task_id = int(request.path_params["task_id"])
+    dep_id = int(request.path_params["dep_id"])
+    try:
+        res = await hub.remove_task_dependency(task_id, dep_id)
+        return JSONResponse(res)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -1786,6 +1844,7 @@ async def endpoint_get_calendar_events(request: Request) -> Response:
         )
     is_human = auth["is_human"]
     effective_tok = hub.human_token if is_human else auth["token"]
+    p = auth.get("principal") if auth else None
 
     room_name = request.path_params.get("room_name") or request.query_params.get("room_name") or request.query_params.get("room") or "all"
     start_from = request.query_params.get("start_from", "")
@@ -1796,6 +1855,7 @@ async def endpoint_get_calendar_events(request: Request) -> Response:
     hide_completed = request.query_params.get("hide_completed", "").lower() in ("true", "1")
     if hide_completed:
         include_completed = False
+    filter_type = request.query_params.get("filter_type") or request.query_params.get("scope") or ""
     password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
 
     try:
@@ -1808,6 +1868,8 @@ async def endpoint_get_calendar_events(request: Request) -> Response:
             include_completed=include_completed,
             password=password,
             requester_token=effective_tok,
+            filter_type=filter_type,
+            requester_principal=p,
         )
         return JSONResponse({"status": "success", "count": len(events), "events": events})
     except PermissionError as pe:
@@ -1845,6 +1907,7 @@ async def endpoint_create_calendar_event(request: Request) -> Response:
     creator = human_name if is_human else (auth["name"] or data.get("created_by") or "WebUser")
     password = data.get("password", "") or request.headers.get("x-room-password", "")
     force = bool(data.get("force", False))
+    is_personal = bool(data.get("is_personal", False))
 
     try:
         event = await hub.create_calendar_event(
@@ -1865,13 +1928,14 @@ async def endpoint_create_calendar_event(request: Request) -> Response:
             password=password,
             created_by=creator,
             force=force,
+            is_personal=is_personal,
         )
         return JSONResponse({"status": "success", "event": event}, status_code=201)
     except PermissionError as pe:
         return JSONResponse({"error": str(pe)}, status_code=403)
     except ValueError as ve:
         err_msg = str(ve)
-        status_code = 409 if "Conflito de recurso" in err_msg else 400
+        status_code = 409 if ("Conflito" in err_msg or "já está reservado" in err_msg) else 400
         conflicts = hub.storage.check_resource_conflicts(
             resource=data.get("resource", ""),
             start_at=start_at,
@@ -1922,7 +1986,7 @@ async def endpoint_update_calendar_event(request: Request) -> Response:
         return JSONResponse({"error": str(pe)}, status_code=403)
     except ValueError as ve:
         err_msg = str(ve)
-        status_code = 409 if "Conflito de recurso" in err_msg else 404
+        status_code = 409 if ("Conflito" in err_msg or "já está reservado" in err_msg) else (404 if "não encontrado" in err_msg.lower() else 400)
         return JSONResponse({"error": err_msg}, status_code=status_code)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -2951,6 +3015,8 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
         Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_create_task, methods=["POST"]),
         Route("/api/tasks/{task_id:int}", endpoint=endpoint_update_task, methods=["PATCH", "POST"]),
         Route("/api/tasks/{task_id:int}", endpoint=endpoint_delete_task, methods=["DELETE"]),
+        Route("/api/tasks/{task_id:int}/dependencies", endpoint=endpoint_add_task_dependency, methods=["POST"]),
+        Route("/api/tasks/{task_id:int}/dependencies/{dep_id:int}", endpoint=endpoint_remove_task_dependency, methods=["DELETE"]),
         Route("/api/rooms/{room_name}/tasks/reorder", endpoint=endpoint_reorder_tasks, methods=["POST"]),
         Route("/api/rooms/{room_name}/calendar", endpoint=endpoint_get_calendar_events, methods=["GET"]),
         Route("/api/rooms/{room_name}/calendar", endpoint=endpoint_create_calendar_event, methods=["POST"]),

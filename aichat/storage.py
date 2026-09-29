@@ -1815,6 +1815,9 @@ class ChatStorage:
         due_at: str = "",
         resource: str = "",
         created_by: str = "System",
+        parent_task_id: int | None = None,
+        dependencies: list[int] | None = None,
+        progress_percent: int = 0,
     ) -> dict[str, Any]:
         """Creates a new task in a room."""
         clean_room = room_name.strip()
@@ -1839,6 +1842,9 @@ class ChatStorage:
                 start_at=start_at,
                 due_at=due_at,
                 created_by=created_by,
+                parent_task_id=parent_task_id,
+                dependencies=dependencies,
+                progress_percent=progress_percent,
             )
 
         valid_priorities = ("urgent", "high", "medium", "low")
@@ -1945,6 +1951,9 @@ class ChatStorage:
         start_at: str | None = None,
         due_at: str | None = None,
         resource: str | None = None,
+        parent_task_id: int | None = None,
+        dependencies: list[int] | None = None,
+        progress_percent: int | None = None,
     ) -> dict[str, Any]:
         """Updates fields of an existing task."""
         if self.is_v3():
@@ -1964,6 +1973,9 @@ class ChatStorage:
                 start_at=start_at,
                 due_at=due_at,
                 resource=resource,
+                parent_task_id=parent_task_id,
+                dependencies=dependencies,
+                progress_percent=progress_percent,
             )
 
         conn = self._get_connection()
@@ -2090,6 +2102,29 @@ class ChatStorage:
             cursor = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
             conn.execute("DELETE FROM task_history WHERE task_id = ?", (task_id,))
             return cursor.rowcount > 0
+
+    def add_task_dependency(self, task_id: int, depends_on_task_id: int) -> None:
+        """Adds a dependency between tasks with cycle detection."""
+        if self.is_v3():
+            self.v3.add_task_dependency(task_id, depends_on_task_id)
+
+    def remove_task_dependency(self, task_id: int, depends_on_task_id: int) -> bool:
+        """Removes a dependency between tasks."""
+        if self.is_v3():
+            return self.v3.remove_task_dependency(task_id, depends_on_task_id)
+        return False
+
+    def get_task_dependencies(self, task_id: int) -> list[int]:
+        """Retrieves IDs of tasks this task depends on."""
+        if self.is_v3():
+            return self.v3.get_task_dependencies(task_id)
+        return []
+
+    def get_unblocked_tasks_on_completion(self, completed_task_id: int) -> list[dict[str, Any]]:
+        """Retrieves tasks unblocked by completing a prerequisite task."""
+        if self.is_v3():
+            return self.v3.get_unblocked_tasks_on_completion(completed_task_id)
+        return []
 
     def get_task_by_id(self, task_id: int) -> dict[str, Any] | None:
         """Retrieves a single task by ID with staleness computation and history."""
@@ -2396,6 +2431,7 @@ class ChatStorage:
         wake_on_end: bool = False,
         created_by: str = "System",
         force: bool = False,
+        is_personal: bool = False,
     ) -> dict[str, Any]:
         """Creates a new calendar event, checking for resource collisions."""
         clean_room = (room_name or "").strip()
@@ -2445,6 +2481,8 @@ class ChatStorage:
                 wake_on_start=1 if wake_on_start else 0,
                 wake_on_end=1 if wake_on_end else 0,
                 created_by_id_or_name=created_by,
+                force=force,
+                is_personal=is_personal,
             )
 
         if clean_resource and not force:
@@ -2523,6 +2561,8 @@ class ChatStorage:
         resource: str = "",
         status: str = "",
         include_completed: bool = True,
+        filter_type: str | None = None,
+        requester_id_or_name: Any = None,
     ) -> list[dict[str, Any]]:
         """Lists calendar events with optional filtering."""
         clean_room = (room_name or "").strip().lower()
@@ -2534,6 +2574,8 @@ class ChatStorage:
                 start_after=start_from or None,
                 end_before=start_to or None,
                 hide_completed=not include_completed,
+                filter_type=filter_type or None,
+                requester_id_or_name=requester_id_or_name,
             )
 
         conn = self._get_connection()

@@ -1616,6 +1616,11 @@ class StorageV3:
                         f"Destinatário '{item}' é ambíguo: existe como papel e como agente/utilizador. "
                         f"Especifique com prefixo '@role:{clean}' ou '@agent:{clean}'."
                     )
+                if not role_row and not princ_row:
+                    princ_row = conn.execute(
+                        "SELECT id, name, display_name FROM principals WHERE display_name = ? COLLATE NOCASE;",
+                        (clean,),
+                    ).fetchone()
 
             if role_row:
                 key = ("role", role_row["id"])
@@ -1930,6 +1935,10 @@ class StorageV3:
             m["to"] = self._format_to_list(recips)
             result.append(m)
         return result
+
+    def list_messages(self, room_name_or_id: int | str, **kwargs: Any) -> list[dict[str, Any]]:
+        """Alias for get_messages."""
+        return self.get_messages(room_name_or_id, **kwargs)
 
     def get_max_message_id(self, room_name_or_id: int | str) -> int:
         """Returns the highest message ID in the room, or 0 if empty."""
@@ -2429,8 +2438,8 @@ class StorageV3:
     # ------------------------------------------------------------------ Tasks (Gantt-ready)
     def create_task(
         self,
-        room_name_or_id: int | str,
-        title: str,
+        room_name_or_id: int | str | None = None,
+        title: str = "",
         description: str = "",
         status: str = "planned",
         priority: str = "medium",
@@ -2446,11 +2455,17 @@ class StorageV3:
         created_by: int | str | dict[str, Any] | None = None,
         parent_task_id: int | None = None,
         progress_percent: int = 0,
+        dependencies: list[int] | None = None,
+        *,
+        room_name: str | None = None,
+        room_id: int | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         """Creates a new task in a room."""
-        room = self._resolve_room(room_name_or_id)
+        target_room = room_name_or_id if room_name_or_id is not None else (room_name if room_name is not None else room_id)
+        room = self._resolve_room(target_room)
         if not room:
-            raise ValueError(f"Sala '{room_name_or_id}' não encontrada.")
+            raise ValueError(f"Sala '{target_room}' não encontrada.")
         if room.get("is_archived"):
             raise ValueError(f"Sala '{room['name']}' está arquivada: escrita não permitida.")
 
@@ -2500,6 +2515,17 @@ class StorageV3:
                 """,
                 (task_id, creator_id, actor_name, status, title.strip(), now_str),
             )
+
+        if dependencies:
+            try:
+                for dep_id in dependencies:
+                    self.add_task_dependency(task_id, int(dep_id))
+            except Exception:
+                with conn:
+                    conn.execute("DELETE FROM task_history WHERE task_id = ?;", (task_id,))
+                    conn.execute("DELETE FROM task_dependencies WHERE task_id = ?;", (task_id,))
+                    conn.execute("DELETE FROM tasks WHERE id = ?;", (task_id,))
+                raise
 
         if start_at and start_at.strip():
             try:
@@ -2555,8 +2581,10 @@ class StorageV3:
             "priority": t["priority"],
             "assignee_id": t["assignee_id"],
             "assignee": t["assignee_display"] or t["assignee_name"] or "",
+            "assignee_name": t["assignee_name"] or "",
             "waiting_for_id": t["waiting_for_id"],
             "waiting_for_agent": t["waiting_display"] or t["waiting_name"] or "",
+            "waiting_name": t["waiting_name"] or "",
             "order_index": t["order_index"],
             "message_id": t["message_id"],
             "uses_gpu": bool(t["uses_gpu"]),
@@ -2567,6 +2595,7 @@ class StorageV3:
             "progress_percent": t["progress_percent"],
             "created_by": t["created_by"],
             "creator": t["creator_display"] or t["creator_name"] or "System",
+            "creator_name": t["creator_name"] or "",
             "created_at": t["created_at"],
             "updated_at": t["updated_at"],
             "dependencies": deps,
@@ -2629,8 +2658,10 @@ class StorageV3:
                 "priority": t["priority"],
                 "assignee_id": t["assignee_id"],
                 "assignee": t["assignee_display"] or t["assignee_name"] or "",
+                "assignee_name": t["assignee_name"] or "",
                 "waiting_for_id": t["waiting_for_id"],
                 "waiting_for_agent": t["waiting_display"] or t["waiting_name"] or "",
+                "waiting_name": t["waiting_name"] or "",
                 "order_index": t["order_index"],
                 "message_id": t["message_id"],
                 "uses_gpu": bool(t["uses_gpu"]),
@@ -2641,6 +2672,7 @@ class StorageV3:
                 "progress_percent": t["progress_percent"],
                 "created_by": t["created_by"],
                 "creator": t["creator_display"] or t["creator_name"] or "System",
+                "creator_name": t["creator_name"] or "",
                 "created_at": t["created_at"],
                 "updated_at": t["updated_at"],
                 "dependencies": deps_map.get(t["id"], []),
@@ -2665,6 +2697,8 @@ class StorageV3:
         due_at: str | None = None,
         resource: str | None = None,
         progress_percent: int | None = None,
+        parent_task_id: int | None = None,
+        dependencies: list[int] | None = None,
     ) -> dict[str, Any]:
         """Updates fields of an existing task and logs history."""
         task = self.get_task_by_id(task_id)
@@ -2724,26 +2758,43 @@ class StorageV3:
         if progress_percent is not None:
             updates.append("progress_percent = ?")
             params.append(max(0, min(100, int(progress_percent))))
-
-        if not updates:
-            return task
-
-        updates.append("updated_at = ?")
-        params.append(now_str)
-        params.append(task_id)
+        if parent_task_id is not None:
+            updates.append("parent_task_id = ?")
+            params.append(int(parent_task_id) if int(parent_task_id) > 0 else None)
 
         conn = self._get_connection()
-        with conn:
-            conn.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?;", params)
-            new_status = status.strip() if status and status.strip() else old_status
-            action = "status_change" if (status and status != old_status) else "updated"
-            conn.execute(
-                """
-                INSERT INTO task_history (task_id, action, actor_id, actor_name, from_status, to_status, details, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                (task_id, action, actor_id, actor_name, old_status, new_status, f"Updated fields: {', '.join(updates)}", now_str),
-            )
+        if dependencies is not None:
+            old_deps = self.get_task_dependencies(task_id)
+            with conn:
+                conn.execute("DELETE FROM task_dependencies WHERE task_id = ?;", (task_id,))
+            try:
+                for dep_id in dependencies:
+                    self.add_task_dependency(task_id, int(dep_id))
+            except Exception:
+                with conn:
+                    conn.execute("DELETE FROM task_dependencies WHERE task_id = ?;", (task_id,))
+                    for od in old_deps:
+                        conn.execute("INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?);", (task_id, od))
+                raise
+
+        if not updates and dependencies is None:
+            return task
+
+        if updates:
+            updates.append("updated_at = ?")
+            params.append(now_str)
+            params.append(task_id)
+            with conn:
+                conn.execute(f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?;", params)
+                new_status = status.strip() if status and status.strip() else old_status
+                action = "status_change" if (status and status != old_status) else "updated"
+                conn.execute(
+                    """
+                    INSERT INTO task_history (task_id, action, actor_id, actor_name, from_status, to_status, details, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (task_id, action, actor_id, actor_name, old_status, new_status, f"Updated fields: {', '.join(updates)}", now_str),
+                )
         return self.get_task_by_id(task_id)  # type: ignore
 
     def delete_task(self, task_id: int) -> bool:
@@ -2770,22 +2821,30 @@ class StorageV3:
 
     def add_task_dependency(self, task_id: int, depends_on_task_id: int) -> None:
         """Adds a dependency between tasks with cycle detection."""
-        if task_id == depends_on_task_id:
+        tid = int(task_id)
+        dep_id = int(depends_on_task_id)
+        if tid == dep_id:
             raise ValueError("Uma tarefa não pode depender de si própria.")
+
         conn = self._get_connection()
-        # Cycle detection: check if task_id can reach depends_on_task_id
+        t1 = conn.execute("SELECT id FROM tasks WHERE id = ?;", (tid,)).fetchone()
+        t2 = conn.execute("SELECT id FROM tasks WHERE id = ?;", (dep_id,)).fetchone()
+        if not t1 or not t2:
+            raise ValueError(f"Uma das tarefas (#{tid}, #{dep_id}) não existe.")
+
+        # Cycle detection: verify if dep_id can already reach tid
         visited = set()
-        queue = [task_id]
+        queue = [dep_id]
         while queue:
             curr = queue.pop(0)
-            if curr == depends_on_task_id:
-                raise ValueError("Dependência circular detetada: não é possível adicionar esta dependência.")
+            if curr == tid:
+                raise ValueError(f"Dependência circular detetada: a tarefa #{tid} não pode depender da tarefa #{dep_id}.")
             visited.add(curr)
             cur = conn.execute("SELECT depends_on_task_id FROM task_dependencies WHERE task_id = ?;", (curr,))
             for r in cur.fetchall():
-                dep = r[0]
-                if dep not in visited:
-                    queue.append(dep)
+                next_dep = r[0]
+                if next_dep not in visited:
+                    queue.append(next_dep)
 
         with conn:
             conn.execute(
@@ -2793,8 +2852,58 @@ class StorageV3:
                 INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_task_id)
                 VALUES (?, ?);
                 """,
-                (task_id, depends_on_task_id),
+                (tid, dep_id),
             )
+
+    def remove_task_dependency(self, task_id: int, depends_on_task_id: int) -> bool:
+        """Removes a dependency between tasks."""
+        conn = self._get_connection()
+        with conn:
+            cur = conn.execute(
+                "DELETE FROM task_dependencies WHERE task_id = ? AND depends_on_task_id = ?;",
+                (int(task_id), int(depends_on_task_id)),
+            )
+            return cur.rowcount > 0
+
+    def get_task_dependencies(self, task_id: int) -> list[int]:
+        """Retrieves IDs of tasks this task depends on."""
+        conn = self._get_connection()
+        cur = conn.execute("SELECT depends_on_task_id FROM task_dependencies WHERE task_id = ?;", (int(task_id),))
+        return [r[0] for r in cur.fetchall()]
+
+    def get_unblocked_tasks_on_completion(self, completed_task_id: int) -> list[dict[str, Any]]:
+        """
+        Finds tasks that were blocked by completed_task_id and now have ALL their dependencies satisfied (status == 'done').
+        """
+        conn = self._get_connection()
+        cur = conn.execute(
+            """
+            SELECT td.task_id
+            FROM task_dependencies td
+            JOIN tasks t ON td.task_id = t.id
+            WHERE td.depends_on_task_id = ?
+              AND t.status NOT IN ('done', 'cancelled');
+            """,
+            (int(completed_task_id),),
+        )
+        dependent_task_ids = [r[0] for r in cur.fetchall()]
+        unblocked = []
+        for tid in dependent_task_ids:
+            unfinished = conn.execute(
+                """
+                SELECT 1
+                FROM task_dependencies td
+                JOIN tasks t ON td.depends_on_task_id = t.id
+                WHERE td.task_id = ? AND t.status != 'done' AND td.depends_on_task_id != ?
+                LIMIT 1;
+                """,
+                (tid, int(completed_task_id)),
+            ).fetchone()
+            if not unfinished:
+                task_obj = self.get_task_by_id(tid)
+                if task_obj:
+                    unblocked.append(task_obj)
+        return unblocked
 
     def get_task_history(self, task_id: int) -> list[dict[str, Any]]:
         """Retrieves audit history for a task."""
@@ -2819,19 +2928,50 @@ class StorageV3:
         wake_on_start: int = 1,
         wake_on_end: int = 0,
         created_by_id_or_name: int | str | dict[str, Any] | None = None,
+        force: bool = False,
+        is_personal: bool = False,
+        *,
+        room_name: str | None = None,
+        room_id: int | None = None,
+        target_agent: str | None = None,
+        created_by: int | str | dict[str, Any] | None = None,
+        owner: int | str | dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         """Creates a calendar event (room-linked, personal, or resource reservation)."""
-        room = self._resolve_room(room_name_or_id) if room_name_or_id else None
-        room_id = room["id"] if room else None
+        clean_res = (resource or "").strip()
+        clean_start = start_at.strip()
+        clean_end = end_at.strip() if end_at and end_at.strip() else clean_start
 
-        owner = self._resolve_principal(owner_id_or_name) if owner_id_or_name else None
-        owner_id = owner["id"] if owner else None
+        if clean_res and not force:
+            avail = self.check_resource_availability(clean_res, clean_start, clean_end)
+            if not avail["available"]:
+                c = avail["conflicts"][0]
+                c_end = c.get("end_at") or c.get("start_at")
+                raise ValueError(
+                    f"Conflito de reserva de recurso: o recurso '{clean_res}' já está reservado pelo evento #{c['id']} ('{c['title']}') entre {c['start_at']} e {c_end}."
+                )
 
-        target = self._resolve_principal(target_id_or_name) if target_id_or_name else None
-        target_id = target["id"] if target else None
-
-        creator = self._resolve_principal(created_by_id_or_name) if created_by_id_or_name else None
+        target_creator = created_by_id_or_name if created_by_id_or_name is not None else created_by
+        creator = self._resolve_principal(target_creator) if target_creator else None
         created_by_id = creator["id"] if creator else None
+
+        target_room = room_name_or_id if room_name_or_id is not None else (room_name if room_name is not None else room_id)
+        room = self._resolve_room(target_room) if target_room else None
+        r_id = room["id"] if room else None
+
+        target_owner = owner_id_or_name if owner_id_or_name is not None else owner
+        own = self._resolve_principal(target_owner) if target_owner else None
+        owner_id = own["id"] if own else None
+
+        if is_personal:
+            r_id = None
+            if not owner_id and creator:
+                owner_id = creator["id"]
+
+        effective_target = target_id_or_name if target_id_or_name is not None else target_agent
+        target = self._resolve_principal(effective_target) if effective_target else None
+        target_id = target["id"] if target else None
 
         now_str = utc_now()
         conn = self._get_connection()
@@ -2846,9 +2986,9 @@ class StorageV3:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?);
                 """,
                 (
-                    room_id, owner_id, title.strip(), description.strip(), start_at.strip(),
-                    end_at.strip() if end_at else None, event_type.strip(), task_id,
-                    resource.strip() if resource else None, target_id, status.strip(),
+                    r_id, owner_id, title.strip(), description.strip(), clean_start,
+                    clean_end if end_at else None, event_type.strip(), task_id,
+                    clean_res or None, target_id, status.strip(),
                     1 if wake_on_start else 0, 1 if wake_on_end else 0,
                     created_by_id, now_str, now_str
                 ),
@@ -2897,6 +3037,7 @@ class StorageV3:
             "wake_on_end": bool(e["wake_on_end"]),
             "notified_start": bool(e["notified_start"]),
             "notified_end": bool(e["notified_end"]),
+            "is_personal": bool(e["owner_id"] is not None and e["room_id"] is None and (not e["resource"])),
             "created_by": e["created_by"],
             "creator": e["creator_display"] or e["creator_name"] or "System",
             "created_at": e["created_at"],
@@ -2911,8 +3052,17 @@ class StorageV3:
         start_after: str | None = None,
         end_before: str | None = None,
         hide_completed: bool = False,
+        filter_type: str | None = None,
+        requester_id_or_name: int | str | dict[str, Any] | None = None,
+        *,
+        room_name: str | None = None,
+        room_id: int | None = None,
+        owner: int | str | dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> list[dict[str, Any]]:
         """Lists calendar events with filtering."""
+        target_room = room_name_or_id if room_name_or_id is not None else (room_name if room_name is not None else room_id)
+        target_owner = owner_id_or_name if owner_id_or_name is not None else owner
         conn = self._get_connection()
         query = """
             SELECT ce.*, r.name as room_name,
@@ -2927,19 +3077,27 @@ class StorageV3:
             WHERE 1=1
         """
         params: list[Any] = []
-        if room_name_or_id:
-            room = self._resolve_room(room_name_or_id)
+        if target_room:
+            room = self._resolve_room(target_room)
             if room:
                 query += " AND ce.room_id = ?"
                 params.append(room["id"])
-        if owner_id_or_name:
-            owner = self._resolve_principal(owner_id_or_name)
-            if owner:
+        if target_owner:
+            own = self._resolve_principal(target_owner)
+            if own:
                 query += " AND ce.owner_id = ?"
-                params.append(owner["id"])
+                params.append(own["id"])
         if resource:
             query += " AND ce.resource = ?"
             params.append(resource.strip())
+        if filter_type:
+            ft = filter_type.strip().lower()
+            if ft == "room":
+                query += " AND ce.room_id IS NOT NULL"
+            elif ft == "personal":
+                query += " AND ce.owner_id IS NOT NULL AND ce.room_id IS NULL AND (ce.resource IS NULL OR ce.resource = '')"
+            elif ft == "resource":
+                query += " AND ce.resource IS NOT NULL AND ce.resource != ''"
         if start_after:
             query += " AND ce.start_at >= ?"
             params.append(start_after.strip())
@@ -2948,6 +3106,18 @@ class StorageV3:
             params.append(end_before.strip())
         if hide_completed:
             query += " AND ce.status NOT IN ('done', 'completed', 'cancelled')"
+
+        # Privacy check: personal events only visible by creator/owner (or admin)
+        if requester_id_or_name is not None:
+            req = self._resolve_principal(requester_id_or_name)
+            is_admin = bool(req and req.get("access_role") == "admin")
+            if not is_admin:
+                if req:
+                    query += " AND (ce.room_id IS NOT NULL OR (ce.resource IS NOT NULL AND ce.resource != '') OR ce.owner_id = ?)"
+                    params.append(req["id"])
+                else:
+                    query += " AND (ce.room_id IS NOT NULL OR (ce.resource IS NOT NULL AND ce.resource != ''))"
+
         query += " ORDER BY ce.start_at ASC, ce.id ASC;"
 
         rows = conn.execute(query, params).fetchall()
@@ -2970,6 +3140,7 @@ class StorageV3:
                 "status": e["status"],
                 "wake_on_start": bool(e["wake_on_start"]),
                 "wake_on_end": bool(e["wake_on_end"]),
+                "is_personal": bool(e["owner_id"] is not None and e["room_id"] is None and (not e["resource"])),
                 "created_by": e["created_by"],
                 "created_at": e["created_at"],
                 "updated_at": e["updated_at"],
@@ -2986,11 +3157,26 @@ class StorageV3:
         end_at: str | None = None,
         status: str | None = None,
         resource: str | None = None,
+        force: bool = False,
     ) -> dict[str, Any]:
         """Updates fields of an existing calendar event."""
         event = self.get_calendar_event_by_id(event_id)
         if not event:
             raise ValueError(f"Evento de calendário #{event_id} não encontrado.")
+
+        target_res = (resource if resource is not None else event.get("resource", "") or "").strip()
+        target_start = (start_at if start_at is not None else event.get("start_at", "") or "").strip()
+        target_end = (end_at if end_at is not None else event.get("end_at", "") or "").strip() or target_start
+
+        if target_res and not force and (resource is not None or start_at is not None or end_at is not None):
+            avail = self.check_resource_availability(target_res, target_start, target_end, exclude_event_id=event_id)
+            if not avail["available"]:
+                c = avail["conflicts"][0]
+                c_end = c.get("end_at") or c.get("start_at")
+                raise ValueError(
+                    f"Conflito de reserva de recurso: o recurso '{target_res}' já está reservado pelo evento #{c['id']} ('{c['title']}') entre {c['start_at']} e {c_end}."
+                )
+
         updates = []
         params = []
         if title is not None and title.strip():
@@ -3039,14 +3225,22 @@ class StorageV3:
         """Checks for conflicting reservations on a shared resource."""
         conn = self._get_connection()
         clean_res = resource.strip()
+        clean_start = start_at.strip()
+        clean_end = end_at.strip() if end_at and end_at.strip() else clean_start
         query = """
             SELECT id, title, start_at, end_at, status
             FROM calendar_events
             WHERE resource = ? COLLATE NOCASE
               AND status IN ('scheduled', 'in_progress')
-              AND NOT (end_at <= ? OR start_at >= ?)
         """
-        params = [clean_res, start_at, end_at]
+        params: list[Any] = [clean_res]
+        if clean_start == clean_end:
+            query += " AND (start_at <= ? AND COALESCE(end_at, start_at) >= ?)"
+            params.extend([clean_start, clean_start])
+        else:
+            query += " AND (start_at < ? AND COALESCE(end_at, start_at) > ?)"
+            params.extend([clean_end, clean_start])
+
         if exclude_event_id:
             query += " AND id != ?"
             params.append(exclude_event_id)
@@ -3057,6 +3251,23 @@ class StorageV3:
             "available": len(conflicts) == 0,
             "conflicts": conflicts,
         }
+
+    def check_resource_conflicts(
+        self,
+        resource: str,
+        start_at: str,
+        end_at: str | None = None,
+        exclude_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Returns conflicting calendar events for a resource."""
+        res = self.check_resource_availability(
+            resource=resource,
+            start_at=start_at,
+            end_at=end_at or start_at,
+            exclude_event_id=exclude_id,
+        )
+        return res.get("conflicts", [])
+
 
     # ------------------------------------------------------------------ Audit Log
     def log_audit(

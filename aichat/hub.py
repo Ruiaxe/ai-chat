@@ -1922,6 +1922,9 @@ class ChatHub:
         human_token: str = "",
         password: str = "",
         created_by: str = "",
+        parent_task_id: int | None = None,
+        dependencies: list[int] | None = None,
+        progress_percent: int = 0,
     ) -> dict[str, Any]:
         """Creates a task in a room and broadcasts the event."""
         canonical_name = self.get_canonical_room_name(room_name, password, requester_token=human_token)
@@ -1955,6 +1958,9 @@ class ChatHub:
             due_at=due_at,
             resource=resource,
             created_by=effective_creator,
+            parent_task_id=parent_task_id,
+            dependencies=dependencies,
+            progress_percent=progress_percent,
         )
         await self._broadcast_to_websockets(canonical_name, {
             "type": "task_created",
@@ -2023,6 +2029,35 @@ class ChatHub:
             "room": canonical_name,
             "task": updated,
         })
+
+        # Hand-off notification when completing a prerequisite task
+        if updated.get("status") == "done" and existing.get("status") != "done":
+            try:
+                unblocked = self.storage.get_unblocked_tasks_on_completion(task_id)
+                for ut in unblocked:
+                    # Targeted notification strictly to assignee or waiting_for_agent or created_by
+                    target = (ut.get("assignee_name") or ut.get("waiting_name") or ut.get("assignee") or ut.get("waiting_for_agent") or ut.get("creator_name") or ut.get("created_by") or "").strip()
+                    if target:
+                        target_callsign = target.lstrip("@")
+                        msg_text = (
+                            f"🔔 **[TAREFA DESBLOQUEADA]**:\n\n"
+                            f"A tarefa pré-requisito #{task_id} ('{existing.get('title')}') foi concluída por {effective_actor}.\n"
+                            f"A tarefa #{ut['id']} ('{ut.get('title')}') está agora desbloqueada e pronta para execução."
+                        )
+                        try:
+                            await self.send_message(
+                                room_name=ut.get("room_name") or canonical_name,
+                                sender="System",
+                                content=msg_text,
+                                role="system",
+                                human_token=self.human_token,
+                                to=[f"@{target_callsign}"],
+                            )
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
         return updated
 
     async def delete_task(
@@ -2071,6 +2106,34 @@ class ChatHub:
             "task_id": task_id,
         })
         return {"status": "success", "task_id": task_id}
+
+    async def add_task_dependency(self, task_id: int, depends_on_task_id: int) -> dict[str, Any]:
+        """Adds a dependency between tasks with cycle detection."""
+        self.storage.add_task_dependency(task_id, depends_on_task_id)
+        task = self.storage.get_task_by_id(task_id)
+        if task:
+            await self._broadcast_to_websockets(task["room_name"], {
+                "type": "task_updated",
+                "room": task["room_name"],
+                "task": task,
+            })
+        return {"status": "success", "task_id": task_id, "depends_on_task_id": depends_on_task_id}
+
+    async def remove_task_dependency(self, task_id: int, depends_on_task_id: int) -> dict[str, Any]:
+        """Removes a dependency between tasks."""
+        res = self.storage.remove_task_dependency(task_id, depends_on_task_id)
+        task = self.storage.get_task_by_id(task_id)
+        if task:
+            await self._broadcast_to_websockets(task["room_name"], {
+                "type": "task_updated",
+                "room": task["room_name"],
+                "task": task,
+            })
+        return {"status": "success", "removed": res, "task_id": task_id, "depends_on_task_id": depends_on_task_id}
+
+    def get_task_dependencies(self, task_id: int) -> list[int]:
+        """Gets dependency IDs for a task."""
+        return self.storage.get_task_dependencies(task_id)
 
     def list_tasks(
         self,
@@ -2191,6 +2254,7 @@ class ChatHub:
         password: str = "",
         created_by: str = "",
         force: bool = False,
+        is_personal: bool = False,
     ) -> dict[str, Any]:
         """Creates a calendar event and broadcasts to room."""
         canonical_name = self.get_canonical_room_name(room_name, password, requester_token=human_token or member_token)
@@ -2230,6 +2294,7 @@ class ChatHub:
             wake_on_end=wake_on_end,
             created_by=effective_creator,
             force=allow_force,
+            is_personal=is_personal,
         )
 
         await self._broadcast_to_websockets(canonical_name, {
@@ -2309,6 +2374,8 @@ class ChatHub:
         include_completed: bool = True,
         password: str = "",
         requester_token: str = "",
+        filter_type: str = "",
+        requester_principal: Any = None,
     ) -> list[dict[str, Any]]:
         """Lists calendar events with optional filtering."""
         if room_name and room_name not in ("all", "*"):
@@ -2323,6 +2390,8 @@ class ChatHub:
             resource=resource,
             status=status,
             include_completed=include_completed,
+            filter_type=filter_type,
+            requester_id_or_name=requester_principal or requester_token,
         )
 
         if canonical_name != "all":
@@ -2340,8 +2409,12 @@ class ChatHub:
         allowed_rooms: dict[str, bool] = {}
         filtered = []
         for ev in events:
+            if ev.get("is_personal"):
+                filtered.append(ev)
+                continue
             r = ev.get("room_name")
             if not r:
+                filtered.append(ev)
                 continue
             if r not in allowed_rooms:
                 try:
