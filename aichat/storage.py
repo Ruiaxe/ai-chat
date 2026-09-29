@@ -1617,13 +1617,14 @@ class ChatStorage:
         since_id: int = 0,
         before_id: int = 0,
         limit: int = 50,
+        from_beginning: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Retrieves messages for a room.
         - If since_id > 0 and before_id > 0: returns messages strictly between since_id and before_id (ascending).
         - If before_id > 0 (and since_id == 0): returns up to `limit` messages strictly older than before_id (ascending).
-        - If since_id > 0: returns messages strictly newer than since_id (ascending).
-        - If both == 0: returns the most recent `limit` messages in chronological order (ascending).
+        - If since_id > 0 (or since_id == 0 with from_beginning=True): returns messages strictly newer than since_id (ascending).
+        - If both == 0 (without from_beginning): returns the most recent `limit` messages in chronological order (ascending).
         """
         if self.is_v3():
             return self.v3.get_messages(
@@ -1631,6 +1632,7 @@ class ChatStorage:
                 since_id=since_id,
                 before_id=before_id,
                 limit=limit,
+                from_beginning=from_beginning,
             )
         conn = self._get_connection()
         clean_room = room_name.strip()
@@ -1665,7 +1667,7 @@ class ChatStorage:
                 """,
                 (clean_room, before_id, limit),
             )
-        elif since_id > 0:
+        elif since_id > 0 or (since_id == 0 and from_beginning):
             cursor = conn.execute(
                 """
                 SELECT id, room_name, sender, role, content, is_verified, 

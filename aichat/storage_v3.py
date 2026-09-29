@@ -689,6 +689,13 @@ class StorageV3:
                     """,
                     (room_id, actual_creator, actual_creator, now_str),
                 )
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO read_cursors (principal_id, room_id, last_message_id, updated_at)
+                    VALUES (?, ?, 0, ?);
+                    """,
+                    (actual_creator, room_id, now_str),
+                )
 
         return self.get_room_by_id(room_id)  # type: ignore
 
@@ -798,6 +805,14 @@ class StorageV3:
                     granted_at = excluded.granted_at;
                 """,
                 (room["id"], principal["id"], role_id, can_write, granted_by_id, now_str),
+            )
+            max_mid = self.get_max_message_id(room["id"])
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO read_cursors (principal_id, room_id, last_message_id, updated_at)
+                VALUES (?, ?, ?, ?);
+                """,
+                (principal["id"], room["id"], max_mid, now_str),
             )
 
     def revoke_room_access(self, room_id: int, principal_id: int) -> bool:
@@ -1026,11 +1041,54 @@ class StorageV3:
                     resolved.append({"target_kind": "all", "target_id": None, "target_name": "all"})
                 continue
 
-            # Check agent_roles first
-            role_row = conn.execute(
-                "SELECT id, role_key, display_name FROM agent_roles WHERE role_key = ? COLLATE NOCASE;",
-                (clean,),
-            ).fetchone()
+            explicit_type = None
+            clean_lower = clean.lower()
+            if clean_lower.startswith("role:"):
+                explicit_type = "role"
+                clean = clean[5:].strip()
+            elif clean_lower.startswith("agent:"):
+                explicit_type = "principal"
+                clean = clean[6:].strip()
+            elif clean_lower.startswith("user:"):
+                explicit_type = "principal"
+                clean = clean[5:].strip()
+            elif clean_lower.startswith("principal:"):
+                explicit_type = "principal"
+                clean = clean[10:].strip()
+
+            role_row = None
+            princ_row = None
+
+            if explicit_type == "role":
+                role_row = conn.execute(
+                    "SELECT id, role_key, display_name FROM agent_roles WHERE role_key = ? COLLATE NOCASE;",
+                    (clean,),
+                ).fetchone()
+                if not role_row:
+                    raise ValueError(f"Papel '{item}' não encontrado.")
+            elif explicit_type == "principal":
+                princ_row = conn.execute(
+                    "SELECT id, name, display_name FROM principals WHERE name = ? COLLATE NOCASE;",
+                    (clean,),
+                ).fetchone()
+                if not princ_row:
+                    raise ValueError(f"Agente/utilizador '{item}' não encontrado.")
+            else:
+                # Query both to detect collisions/ambiguities
+                role_row = conn.execute(
+                    "SELECT id, role_key, display_name FROM agent_roles WHERE role_key = ? COLLATE NOCASE;",
+                    (clean,),
+                ).fetchone()
+                princ_row = conn.execute(
+                    "SELECT id, name, display_name FROM principals WHERE name = ? COLLATE NOCASE;",
+                    (clean,),
+                ).fetchone()
+                if role_row and princ_row:
+                    raise ValueError(
+                        f"Destinatário '{item}' é ambíguo: existe como papel e como agente/utilizador. "
+                        f"Especifique com prefixo '@role:{clean}' ou '@agent:{clean}'."
+                    )
+
             if role_row:
                 key = ("role", role_row["id"])
                 if key not in seen:
@@ -1042,11 +1100,6 @@ class StorageV3:
                     })
                 continue
 
-            # Check principals (agent or human)
-            princ_row = conn.execute(
-                "SELECT id, name, display_name FROM principals WHERE name = ? COLLATE NOCASE;",
-                (clean,),
-            ).fetchone()
             if princ_row:
                 key = ("principal", princ_row["id"])
                 if key not in seen:
@@ -1157,6 +1210,31 @@ class StorageV3:
 
         target_list = self.resolve_recipients(to if to is not None else recipients)
 
+        # Validate that targeted recipients have access to the room
+        for r in target_list:
+            t_kind = r.get("target_kind")
+            t_id = r.get("target_id")
+            t_name = r.get("target_name") or ""
+            if t_kind == "principal":
+                p_recip = self.get_principal_by_id(t_id)
+                if p_recip and p_recip.get("kind") == "human" and p_recip.get("access_role") == "admin":
+                    continue
+                access = self.get_room_access(room["id"], t_id)
+                if not access:
+                    raise ValueError(f"Destinatário '@{t_name}' não tem acesso à sala '{room['name']}'.")
+            elif t_kind == "role":
+                conn = self._get_connection()
+                has_member = conn.execute(
+                    """
+                    SELECT 1 FROM room_access ra
+                    LEFT JOIN agents a ON ra.principal_id = a.principal_id
+                    WHERE ra.room_id = ? AND (ra.role_id = ? OR (ra.role_id IS NULL AND a.default_role_id = ?));
+                    """,
+                    (room["id"], t_id, t_id),
+                ).fetchone()
+                if not has_member:
+                    raise ValueError(f"O papel '@{t_name}' não está atribuído a nenhum membro com acesso à sala '{room['name']}'.")
+
         conn = self._get_connection()
         with conn:
             cursor = conn.execute(
@@ -1229,6 +1307,7 @@ class StorageV3:
         since_id: int = 0,
         before_id: int = 0,
         limit: int = 50,
+        from_beginning: bool = False,
     ) -> list[dict[str, Any]]:
         """Retrieves messages in a room with since_id / before_id pagination."""
         room = self._resolve_room(room_name_or_id)
@@ -1261,7 +1340,7 @@ class StorageV3:
                 """,
                 (room["id"], before_id, limit),
             ).fetchall()
-        elif since_id > 0:
+        elif since_id > 0 or (since_id == 0 and from_beginning):
             rows = conn.execute(
                 """
                 SELECT m.*, r.name as room_name
@@ -1479,8 +1558,10 @@ class StorageV3:
 
     def count_consecutive_agent_messages(self, room_name_or_id: int | str) -> int:
         """
-        Counts the number of consecutive agent messages in a room since the last human message.
+        Counts the number of consecutive agent messages directed to other agents
+        in a room since the last human message.
         System messages do not count towards agent messages, nor do they reset the counter.
+        Messages sent to a human or broadcast to 'all' do not count as agent-to-agent loops.
         """
         room = self._resolve_room(room_name_or_id)
         if not room:
@@ -1488,20 +1569,52 @@ class StorageV3:
         conn = self._get_connection()
         rows = conn.execute(
             """
-            SELECT sender_kind FROM messages
+            SELECT id, sender_id, sender_kind FROM messages
             WHERE room_id = ?
             ORDER BY id DESC
             LIMIT 100;
             """,
             (room["id"],),
         ).fetchall()
+        if not rows:
+            return 0
+
+        msg_ids = [r["id"] for r in rows]
+        placeholders = ",".join("?" for _ in msg_ids)
+        recip_rows = conn.execute(
+            f"""
+            SELECT mr.message_id, mr.target_kind, mr.target_id, p.kind as target_principal_kind
+            FROM message_recipients mr
+            LEFT JOIN principals p ON mr.target_kind = 'principal' AND mr.target_id = p.id
+            WHERE mr.message_id IN ({placeholders});
+            """,
+            msg_ids,
+        ).fetchall()
+
+        recips_by_mid: dict[int, list[dict[str, Any]]] = {}
+        for rr in recip_rows:
+            recips_by_mid.setdefault(rr["message_id"], []).append(dict(rr))
+
         count = 0
         for r in rows:
             kind = r["sender_kind"]
-            if kind == "agent":
-                count += 1
-            elif kind == "human":
+            if kind == "human":
                 break
+            if kind == "agent":
+                m_recips = recips_by_mid.get(r["id"], [])
+                # Must be directed to other agents:
+                # 1. Must not target 'all'
+                # 2. Must not target any human
+                # 3. Must target at least one agent or role
+                has_all = any(rec.get("target_kind") == "all" for rec in m_recips)
+                has_human = any(rec.get("target_principal_kind") == "human" for rec in m_recips)
+                has_agent_target = any(
+                    rec.get("target_kind") == "role" or
+                    (rec.get("target_kind") == "principal" and rec.get("target_principal_kind") == "agent" and rec.get("target_id") != r["sender_id"])
+                    for rec in m_recips
+                )
+                if not has_all and not has_human and has_agent_target:
+                    count += 1
         return count
 
 

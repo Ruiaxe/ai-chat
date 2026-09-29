@@ -645,8 +645,37 @@ class ChatHub:
             if r_obj:
                 consecutive = self.storage.v3.count_consecutive_agent_messages(r_obj["id"])
                 if consecutive >= max_cycles:
+                    recent_msgs = self.storage.v3.get_messages(r_obj["id"], limit=1)
+                    already_warned = (
+                        recent_msgs and
+                        recent_msgs[-1].get("role") == "system" and
+                        "Proteção de ciclo ativada" in recent_msgs[-1].get("content", "")
+                    )
+                    if not already_warned:
+                        warn_text = (
+                            f"⚠️ Proteção de ciclo ativada: limite de {max_cycles} mensagens consecutivas entre agentes "
+                            f"atingido na sala '{canonical_name}' sem intervenção humana. "
+                            f"Conversação entre agentes pausada até intervenção do utilizador humano."
+                        )
+                        sys_msg = self.storage.v3.add_message(
+                            room_name_or_id=r_obj["id"],
+                            sender="System",
+                            role="system",
+                            content=warn_text,
+                            is_verified=True,
+                            to="all",
+                        )
+                        try:
+                            await self._broadcast_to_websockets(canonical_name, {
+                                "type": "new_message",
+                                "message": sys_msg,
+                            })
+                            self._notify_listeners(canonical_name, message=sys_msg)
+                        except Exception:
+                            pass
+
                     raise ValueError(
-                        f"Proteção de ciclo ativada: limite de {max_cycles} mensagens consecutivas de agentes "
+                        f"Proteção de ciclo ativada: limite de {max_cycles} mensagens consecutivas entre agentes "
                         f"atingido na sala '{canonical_name}' sem intervenção humana. "
                         f"Conversação entre agentes pausada até intervenção do utilizador humano."
                     )
@@ -1027,6 +1056,63 @@ class ChatHub:
                 raise PermissionError(f"Access denied to room '{r_obj['name']}': Invalid or missing password.")
             return [r_obj["name"]]
 
+    def _scan_unread_messages(
+        self,
+        room_name: str,
+        eff_since: int,
+        principal: dict[str, Any] | None,
+        is_v3: bool,
+        clean_agent: str,
+    ) -> tuple[list[dict[str, Any]], int, list[int]]:
+        """
+        Scans all unread messages for a room starting from eff_since across all pages up to max_id.
+        Returns:
+            (matched_messages, last_scanned_id, skipped_message_ids)
+        """
+        max_id = self.storage.get_max_message_id(room_name)
+        if max_id == 0 or (eff_since >= max_id and eff_since > 0):
+            return [], eff_since, []
+
+        matched: list[dict[str, Any]] = []
+        skipped_ids: list[int] = []
+        curr_since = eff_since
+        last_scanned = eff_since
+
+        r_obj = self.storage.v3.get_room_by_name(room_name) if (is_v3 and principal) else None
+        r_id = r_obj["id"] if r_obj else None
+
+        while True:
+            page = self.storage.get_messages(
+                room_name,
+                since_id=curr_since,
+                limit=50,
+                from_beginning=(curr_since == 0),
+            )
+            if not page:
+                break
+
+            for m in page:
+                mid = m["id"]
+                if mid > last_scanned:
+                    last_scanned = mid
+
+                if is_v3 and principal:
+                    if self.storage.v3.is_message_for_principal(m, principal, r_id):
+                        matched.append(m)
+                    else:
+                        skipped_ids.append(mid)
+                else:
+                    if not clean_agent or m["sender"].strip().lower() != clean_agent:
+                        matched.append(m)
+                    else:
+                        skipped_ids.append(mid)
+
+            curr_since = page[-1]["id"]
+            if curr_since >= max_id or len(page) < 50:
+                break
+
+        return matched, last_scanned, skipped_ids
+
     async def wait_for_new_messages(
         self,
         room_name: str = "subscribed",
@@ -1078,34 +1164,28 @@ class ChatHub:
         # Record the reaction sequence at start
         start_reaction_seq = self._reaction_seq
 
-        # Check for unread messages already available (if since_id > 0 or v3 cursor is behind max_id)
+        # Check for unread messages already available (paginating all pages from cursor)
         immediate_msgs: list[dict[str, Any]] = []
+        immediate_skipped: list[int] = []
         for r in target_rooms:
             eff_since = room_since_ids[r]
             max_id = self.storage.get_max_message_id(r)
             if eff_since < max_id or (len(target_rooms) == 1 and since_id > 0):
-                cand = self.storage.get_messages(r, since_id=eff_since, limit=50)
-                if is_v3 and principal:
-                    r_obj = self.storage.v3.get_room_by_name(r)
-                    r_id = r_obj["id"] if r_obj else None
-                    for m in cand:
-                        if self.storage.v3.is_message_for_principal(m, principal, r_id):
-                            immediate_msgs.append(m)
-                else:
-                    for m in cand:
-                        if not clean_agent or m["sender"].strip().lower() != clean_agent:
-                            immediate_msgs.append(m)
+                matched, last_scanned, skipped = self._scan_unread_messages(
+                    r, eff_since, principal, is_v3, clean_agent
+                )
+                immediate_msgs.extend(matched)
+                immediate_skipped.extend(skipped)
+                if is_v3 and principal and last_scanned > eff_since:
+                    self.storage.v3.update_read_cursor(principal["id"], r, last_scanned)
+                    room_since_ids[r] = last_scanned
+                elif not is_v3 and last_scanned > eff_since:
+                    room_since_ids[r] = last_scanned
 
         if immediate_msgs:
             immediate_msgs.sort(key=lambda m: m["id"])
             distinct_rooms = {m["room_name"].lower() for m in immediate_msgs}
             first_room = immediate_msgs[0]["room_name"]
-
-            if is_v3 and principal:
-                for r in target_rooms:
-                    r_msgs = [m for m in immediate_msgs if m["room_name"].lower() == r.lower()]
-                    if r_msgs:
-                        self.storage.v3.update_read_cursor(principal["id"], r, max(m["id"] for m in r_msgs))
 
             role_reminder = None
             if is_v3 and principal:
@@ -1121,6 +1201,8 @@ class ChatHub:
                 "count": len(immediate_msgs),
                 "messages": immediate_msgs,
                 "last_id": immediate_msgs[-1]["id"],
+                "skipped_count": len(immediate_skipped),
+                "skipped_ids": immediate_skipped,
             }
             if role_reminder:
                 res["role_reminder"] = role_reminder
@@ -1156,6 +1238,8 @@ class ChatHub:
                         "count": 0,
                         "messages": [],
                         "last_id": self.storage.get_max_message_id(target_rooms[0]) if len(target_rooms) == 1 else 0,
+                        "skipped_count": len(immediate_skipped),
+                        "skipped_ids": immediate_skipped,
                         "hint": "No new messages received within the timeout period.",
                     }
 
@@ -1175,34 +1259,26 @@ class ChatHub:
                             pass
                     continue
 
-                # Event fired! Collect all new messages from ALL target_rooms
+                # Event fired! Collect all new messages from ALL target_rooms across all unread pages
                 all_found_messages = []
+                event_skipped = []
                 for r in target_rooms:
                     effective_since = room_since_ids[r]
-                    new_msgs = self.storage.get_messages(r, since_id=effective_since, limit=50)
-                    if is_v3 and principal:
-                        r_obj = self.storage.v3.get_room_by_name(r)
-                        r_id = r_obj["id"] if r_obj else None
-                        for m in new_msgs:
-                            if self.storage.v3.is_message_for_principal(m, principal, r_id):
-                                all_found_messages.append(m)
-                    else:
-                        for m in new_msgs:
-                            if not clean_agent or m["sender"].strip().lower() != clean_agent:
-                                all_found_messages.append(m)
-                    if new_msgs:
-                        room_since_ids[r] = max(m["id"] for m in new_msgs)
+                    matched, last_scanned, skipped = self._scan_unread_messages(
+                        r, effective_since, principal, is_v3, clean_agent
+                    )
+                    all_found_messages.extend(matched)
+                    event_skipped.extend(skipped)
+                    if is_v3 and principal and last_scanned > effective_since:
+                        self.storage.v3.update_read_cursor(principal["id"], r, last_scanned)
+                        room_since_ids[r] = last_scanned
+                    elif not is_v3 and last_scanned > effective_since:
+                        room_since_ids[r] = last_scanned
 
                 if all_found_messages:
                     all_found_messages.sort(key=lambda m: m["id"])
                     distinct_rooms = {m["room_name"].lower() for m in all_found_messages}
                     first_room = all_found_messages[0]["room_name"]
-
-                    if is_v3 and principal:
-                        for r in target_rooms:
-                            r_msgs = [m for m in all_found_messages if m["room_name"].lower() == r.lower()]
-                            if r_msgs:
-                                self.storage.v3.update_read_cursor(principal["id"], r, max(m["id"] for m in r_msgs))
 
                     role_reminder = None
                     if is_v3 and principal:
@@ -1218,6 +1294,8 @@ class ChatHub:
                         "count": len(all_found_messages),
                         "messages": all_found_messages,
                         "last_id": all_found_messages[-1]["id"],
+                        "skipped_count": len(event_skipped),
+                        "skipped_ids": event_skipped,
                     }
                     if role_reminder:
                         res["role_reminder"] = role_reminder
@@ -1282,6 +1360,7 @@ class ChatHub:
                 self.record_presence(r, agent_name.strip(), client="mcp_poll")
 
         all_new: list[dict[str, Any]] = []
+        all_skipped: list[int] = []
         last_id = 0
 
         for r in target_rooms:
@@ -1297,19 +1376,11 @@ class ChatHub:
                         effective_since = self.storage.v3.get_read_cursor(principal["id"], r_obj["id"])
 
             if effective_since > 0 or (is_v3 and principal and has_cur):
-                msgs = self.storage.get_messages(r, since_id=effective_since, limit=50)
-                if is_v3 and principal:
-                    r_obj = self.storage.v3.get_room_by_name(r)
-                    r_id = r_obj["id"] if r_obj else None
-                    for m in msgs:
-                        if self.storage.v3.is_message_for_principal(m, principal, r_id):
-                            all_new.append(m)
-                else:
-                    external = [
-                        m for m in msgs
-                        if not clean_agent or m["sender"].strip().lower() != clean_agent
-                    ]
-                    all_new.extend(external)
+                matched, last_scanned, skipped = self._scan_unread_messages(
+                    r, effective_since, principal, is_v3, clean_agent
+                )
+                all_new.extend(matched)
+                all_skipped.extend(skipped)
 
         target_room_set = {r.strip().lower() for r in target_rooms}
         recent_reactions = [
@@ -1338,24 +1409,43 @@ class ChatHub:
                 "recent_reactions": recent_reactions,
                 "last_id": max(m["id"] for m in all_new) if all_new else since_id,
                 "room_max_id": self.storage.get_max_message_id(target_rooms[0]),
+                "skipped_count": len(all_skipped),
+                "skipped_ids": all_skipped,
             }
             if role_reminder:
                 res["role_reminder"] = role_reminder
             return res
         elif len(target_rooms) == 1:
-            recent = self.storage.get_messages(target_rooms[0], since_id=0, limit=20)
-            res = {
-                "status": "success",
-                "room": target_rooms[0],
-                "has_new": len(all_new) > 0,
-                "count": len(all_new) if all_new else len(recent),
-                "messages": all_new if all_new else recent,
-                "has_new_reactions": len(recent_reactions) > 0,
-                "recent_reactions": recent_reactions,
-                "last_id": last_id,
-                "room_max_id": last_id,
-                "hint": f"Room currently has {len(recent)} recent messages up to ID #{last_id}.",
-            }
+            if is_v3:
+                # In v3, do not return 20 recent messages when there are no new messages
+                res = {
+                    "status": "success",
+                    "room": target_rooms[0],
+                    "has_new": len(all_new) > 0,
+                    "count": len(all_new),
+                    "messages": all_new,
+                    "has_new_reactions": len(recent_reactions) > 0,
+                    "recent_reactions": recent_reactions,
+                    "last_id": max(m["id"] for m in all_new) if all_new else last_id,
+                    "room_max_id": last_id,
+                    "skipped_count": len(all_skipped),
+                    "skipped_ids": all_skipped,
+                    "hint": f"{len(all_new)} new messages." if all_new else "No new messages.",
+                }
+            else:
+                recent = self.storage.get_messages(target_rooms[0], since_id=0, limit=20)
+                res = {
+                    "status": "success",
+                    "room": target_rooms[0],
+                    "has_new": len(all_new) > 0,
+                    "count": len(all_new) if all_new else len(recent),
+                    "messages": all_new if all_new else recent,
+                    "has_new_reactions": len(recent_reactions) > 0,
+                    "recent_reactions": recent_reactions,
+                    "last_id": last_id,
+                    "room_max_id": last_id,
+                    "hint": f"Room currently has {len(recent)} recent messages up to ID #{last_id}.",
+                }
             if role_reminder:
                 res["role_reminder"] = role_reminder
             return res
@@ -1369,6 +1459,8 @@ class ChatHub:
                 "has_new_reactions": len(recent_reactions) > 0,
                 "recent_reactions": recent_reactions,
                 "last_id": last_id,
+                "skipped_count": len(all_skipped),
+                "skipped_ids": all_skipped,
                 "hint": f"Checked {len(target_rooms)} subscribed rooms.",
             }
             if role_reminder:

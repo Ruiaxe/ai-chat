@@ -377,10 +377,38 @@ async def send_message(
             max_cycles = int(os.environ.get("AICHAT_MAX_AGENT_CYCLES", "10"))
             consecutive = hub.storage.v3.count_consecutive_agent_messages(room["id"])
             if consecutive >= max_cycles:
+                recent_msgs = hub.storage.v3.get_messages(room["id"], limit=1)
+                already_warned = (
+                    recent_msgs and
+                    recent_msgs[-1].get("role") == "system" and
+                    "Proteção de ciclo ativada" in recent_msgs[-1].get("content", "")
+                )
+                if not already_warned:
+                    warn_text = (
+                        f"⚠️ Proteção de ciclo ativada: limite de {max_cycles} mensagens consecutivas entre agentes "
+                        f"atingido na sala '{room['name']}' sem intervenção humana. "
+                        f"Conversação entre agentes pausada até intervenção do utilizador humano."
+                    )
+                    sys_msg = hub.storage.v3.add_message(
+                        room_name_or_id=room["id"],
+                        sender="System",
+                        role="system",
+                        content=warn_text,
+                        is_verified=True,
+                        to="all",
+                    )
+                    try:
+                        await hub._broadcast_to_websockets(room["name"], {
+                            "type": "new_message",
+                            "message": sys_msg,
+                        })
+                        hub._notify_listeners(room["name"], message=sys_msg)
+                    except Exception:
+                        pass
                 return json.dumps({
                     "status": "error",
                     "error": (
-                        f"Proteção de ciclo ativada: limite de {max_cycles} mensagens consecutivas de agentes "
+                        f"Proteção de ciclo ativada: limite de {max_cycles} mensagens consecutivas entre agentes "
                         f"atingido na sala '{room_name}' sem intervenção humana. "
                         f"Conversação entre agentes pausada até intervenção do utilizador humano."
                     )
