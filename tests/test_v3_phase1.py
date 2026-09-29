@@ -285,13 +285,16 @@ class TestV3CLI(unittest.TestCase):
         self.tmp_dir = Path(tempfile.mkdtemp())
         self.db_path = self.tmp_dir / "chat_v3_cli.db"
 
-    def _run_cli(self, args: list[str]) -> subprocess.CompletedProcess:
+    def _run_cli(self, args: list[str], input_text: str | None = None) -> subprocess.CompletedProcess:
         cmd = [sys.executable, "-m", "aichat.cli", "--db", str(self.db_path)] + args
-        return subprocess.run(cmd, capture_output=True, text=True)
+        return subprocess.run(cmd, input=input_text, capture_output=True, text=True)
 
     def test_cli_full_flow(self):
-        # 1. Create admin
-        res1 = self._run_cli(["create-admin", "-u", "Rui", "-p", "ComplexAdminPassword!"])
+        # 1. Create admin (interactive password prompt with confirmation)
+        res1 = self._run_cli(
+            ["create-admin", "-u", "Rui"],
+            input_text="ComplexAdminPassword!\nComplexAdminPassword!\n",
+        )
         self.assertEqual(res1.returncode, 0, res1.stderr)
         self.assertIn("criado com sucesso", res1.stdout)
 

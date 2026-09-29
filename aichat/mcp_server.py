@@ -16,17 +16,71 @@ if os.environ.get("AICHAT_TESTING") == "1":
 hub = ChatHub()
 
 
+import contextvars
+
+current_auth_token: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_auth_token", default=None)
+current_principal: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("current_principal", default=None)
+
+
 def _authenticate(agent_token: str = "", member_token: str = "", expected_callsign: str = "") -> tuple[dict[str, Any] | None, str | None]:
     """
-    Validates agent_token (or member_token alias, or AI_CHAT_AGENT_TOKEN env var) against closed registry.
-    Returns (agent_info, error_json_str).
+    Validates caller against v3 storage or v2 registry.
+    Extracts token from current_principal, current_auth_token, AICHAT_AGENT_TOKEN, AI_CHAT_AGENT_TOKEN, or passed parameter.
     """
-    token = (agent_token or member_token or os.environ.get("AI_CHAT_AGENT_TOKEN", "")).strip()
+    # 1. From active principal context (e.g. set by ASGI Authorization header middleware)
+    p = current_principal.get()
+    if p:
+        if expected_callsign and p.get("name", "").lower() != expected_callsign.lower():
+            return None, json.dumps({
+                "status": "error",
+                "error": f"Token mismatch: expected callsign '{expected_callsign}', but authenticated as '{p.get('name')}'."
+            }, indent=2)
+        ident = {
+            "callsign": p.get("name"),
+            "role": p.get("default_role_key") or ("admin" if p.get("access_role") == "admin" else "user"),
+            "is_human": p.get("kind") == "human",
+            "status": p.get("status", "active"),
+            "principal": p,
+        }
+        return ident, None
+
+    # 2. From token in context, env var, or parameter
+    token = (
+        agent_token or
+        member_token or
+        (current_auth_token.get() or "") or
+        os.environ.get("AICHAT_AGENT_TOKEN", "") or
+        os.environ.get("AI_CHAT_AGENT_TOKEN", "")
+    ).strip()
+
     if not token:
         return None, json.dumps({
             "status": "error",
-            "error": "Access denied: Missing agent_token. All MCP tools require a valid agent_token. Se és um novo agente, executa primeiro 'register_agent(callsign=\"...\")' e solicita o teu token ao supervisor Rui."
+            "error": "Access denied: Missing agent_token. Pass 'Authorization: Bearer <token>' in connection headers or set AICHAT_AGENT_TOKEN in environment."
         }, indent=2)
+
+    # If v3 storage is active:
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        p, err = hub.storage.v3.authenticate_agent_token(token)
+        if not p:
+            p = hub.storage.v3.authenticate_human_session(token)
+        if p:
+            if expected_callsign and p.get("name", "").lower() != expected_callsign.lower():
+                return None, json.dumps({"status": "error", "error": f"Token mismatch: expected '{expected_callsign}'"}, indent=2)
+            ident = {
+                "callsign": p.get("name"),
+                "role": p.get("default_role_key") or ("admin" if p.get("access_role") == "admin" else "user"),
+                "is_human": p.get("kind") == "human",
+                "status": p.get("status", "active"),
+                "principal": p,
+            }
+            return ident, None
+        return None, json.dumps({
+            "status": "error",
+            "error": f"Authentication failed: {err or 'Credenciais inválidas'}"
+        }, indent=2)
+
+    # v2 fallback:
     try:
         ident = hub.authenticate_agent(token, expected_callsign=expected_callsign)
         return ident, None
@@ -81,7 +135,16 @@ def create_room(room_name: str, password: str = "", topic: str = "", agent_token
     if err:
         return err
     try:
-        room = hub.create_room(name=room_name, password=password, topic=topic)
+        if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+            p = ident.get("principal")
+            if not hub.storage.v3.authorize(p, "admin"):
+                return json.dumps({
+                    "status": "error",
+                    "error": "Acesso negado: Apenas administradores podem criar salas."
+                }, indent=2)
+            room = hub.storage.v3.create_room(name=room_name, topic=topic, created_by_id=p["id"] if p else None)
+        else:
+            room = hub.create_room(name=room_name, password=password, topic=topic)
         return json.dumps({
             "status": "success",
             "message": f"Room '{room_name}' created successfully.",
@@ -94,13 +157,17 @@ def create_room(room_name: str, password: str = "", topic: str = "", agent_token
 @mcp.tool()
 def list_rooms(agent_token: str = "", member_token: str = "") -> str:
     """
-    Lists all available chat rooms with metadata. Requires authorized agent_token.
+    Lists chat rooms with metadata. Returns only rooms the caller is authorized to access.
     """
     ident, err = _authenticate(agent_token, member_token)
     if err:
         return err
     try:
-        rooms = hub.list_rooms()
+        if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+            p = ident.get("principal")
+            rooms = hub.storage.v3.list_rooms_for_principal(p) if p else []
+        else:
+            rooms = hub.list_rooms()
         return json.dumps({
             "status": "success",
             "count": len(rooms),
@@ -268,6 +335,44 @@ async def send_message(
         return err
     callsign = ident["callsign"]
 
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        p = ident.get("principal")
+        room = hub.storage.v3.get_room(room_name)
+        if not room:
+            return json.dumps({"status": "error", "error": f"Room '{room_name}' does not exist."}, indent=2)
+        if room.get("is_archived"):
+            return json.dumps({"status": "error", "error": f"Room '{room_name}' is archived."}, indent=2)
+        if not hub.storage.v3.authorize(p, "write_room", {"room_id": room["id"]}):
+            return json.dumps({"status": "error", "error": f"Access denied: write permission not granted for room '{room_name}' or room is archived."}, indent=2)
+
+        try:
+            msg = hub.storage.v3.add_message(
+                room_name_or_id=room["id"],
+                sender=callsign,
+                role="human" if ident.get("is_human") else "agent",
+                content=content,
+                is_verified=True,
+                sender_id=p["id"] if p else None,
+            )
+            try:
+                await hub._broadcast_to_websockets(room["name"], {
+                    "type": "new_message",
+                    "message": msg,
+                })
+                hub._notify_listeners(room["name"])
+            except Exception:
+                pass
+            return json.dumps({
+                "status": "success",
+                "message_id": msg["id"],
+                "room": room["name"],
+                "sender": callsign,
+                "is_verified": True,
+                "created_at": msg["created_at"],
+            }, indent=2)
+        except Exception as e:
+            return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
     try:
         msg = await hub.send_message(
             room_name=room_name,
@@ -312,6 +417,16 @@ def read_messages(
     ident, err = _authenticate(agent_token, member_token)
     if err:
         return err
+
+    room = None
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        p = ident.get("principal")
+        room = hub.storage.v3.get_room(room_name)
+        if not room:
+            return json.dumps({"status": "error", "error": f"Room '{room_name}' does not exist."}, indent=2)
+        if not hub.storage.v3.authorize(p, "read_room", {"room_id": room["id"]}):
+            return json.dumps({"status": "error", "error": f"Access denied: read permission not granted for room '{room_name}'."}, indent=2)
+
     try:
         msgs = hub.read_messages(
             room_name=room_name,
@@ -321,6 +436,10 @@ def read_messages(
             limit=limit,
             message_id=message_id if message_id > 0 else None,
         )
+        if hasattr(hub.storage, "is_v3") and hub.storage.is_v3() and msgs and ident.get("principal") and room:
+            last_id = msgs[-1]["id"]
+            hub.storage.v3.update_read_cursor(ident["principal"]["id"], room["id"], last_id)
+
         return json.dumps({
             "status": "success",
             "room": room_name,
@@ -1228,4 +1347,21 @@ Collaboration Protocol:
    Or use `room_name="subscribed"` to listen to all channels you have joined simultaneously.
 5. Be concise, constructive, and do not repeat messages already stated.
 """
+
+
+def prune_mcp_tool_parameters() -> None:
+    """
+    Removes agent_token, member_token, sender_name, and agent_name from all published MCP tool schemas.
+    Authentication is handled at connection time (Authorization: Bearer header in HTTP/SSE or AICHAT_AGENT_TOKEN in stdio).
+    """
+    for name in list(mcp._tool_manager._tools.keys()):
+        t = mcp._tool_manager.get_tool(name)
+        if t and t.parameters and "properties" in t.parameters:
+            for p in ["agent_token", "member_token", "sender_name", "agent_name"]:
+                t.parameters["properties"].pop(p, None)
+                if "required" in t.parameters and p in t.parameters["required"]:
+                    t.parameters["required"].remove(p)
+
+
+prune_mcp_tool_parameters()
 

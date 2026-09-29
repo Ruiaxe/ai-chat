@@ -47,17 +47,20 @@ def cmd_create_admin(args: argparse.Namespace) -> int:
         print(f"Erro: O principal '{username}' já existe.", file=sys.stderr)
         return 1
 
-    pwd = args.password
-    if not pwd:
-        pwd1 = getpass.getpass(f"Palavra-passe para o admin '{username}': ")
-        if not pwd1 or len(pwd1) < 8:
-            print("Erro: A palavra-passe deve conter pelo menos 8 caracteres.", file=sys.stderr)
-            return 1
-        pwd2 = getpass.getpass("Confirme a palavra-passe: ")
-        if pwd1 != pwd2:
-            print("Erro: As palavras-passe não coincidem.", file=sys.stderr)
-            return 1
-        pwd = pwd1
+    def _prompt_pwd(prompt: str) -> str:
+        if not sys.stdin.isatty():
+            return sys.stdin.readline().rstrip("\r\n")
+        return getpass.getpass(prompt)
+
+    pwd1 = _prompt_pwd(f"Palavra-passe para o admin '{username}': ")
+    if not pwd1 or len(pwd1) < 8:
+        print("Erro: A palavra-passe deve conter pelo menos 8 caracteres.", file=sys.stderr)
+        return 1
+    pwd2 = _prompt_pwd("Confirme a palavra-passe: ")
+    if pwd1 != pwd2:
+        print("Erro: As palavras-passe não coincidem.", file=sys.stderr)
+        return 1
+    pwd = pwd1
 
     pid = st.create_human(
         username=username,
@@ -286,7 +289,6 @@ def main() -> int:
     # create-admin
     p_admin = subparsers.add_parser("create-admin", help="Criar um utilizador administrador humano.")
     p_admin.add_argument("--username", "-u", required=True, help="Nome de utilizador do administrador.")
-    p_admin.add_argument("--password", "-p", default=None, help="Palavra-passe (se omitida, é pedida interativamente).")
     p_admin.add_argument("--display-name", "-d", default=None, help="Nome visível do administrador.")
     p_admin.set_defaults(func=cmd_create_admin)
 

@@ -22,7 +22,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 import edge_tts
 
 from aichat.config import STATIC_DIR
-from aichat.mcp_server import hub, mcp
+from aichat.mcp_server import current_auth_token, current_principal, hub, mcp
 
 INDEX_HTML = STATIC_DIR / "index.html"
 
@@ -170,8 +170,128 @@ class CleanShutdownMiddleware:
 
 
 
+class V3AuthenticationMiddleware:
+    """
+    ASGI middleware managing authentication context for AI Chat v3:
+    1. Extracts Bearer token, session cookie, or agent token.
+    2. Identifies and validates the principal in v3 storage.
+    3. Populates current_principal and current_auth_token contextvars for FastMCP tools and async endpoints.
+    4. Enforces mandatory password change (must_change_password) on all human endpoints except allowed auth routes.
+    """
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
+        headers = Headers(scope=scope)
+        auth_header = headers.get("authorization", "").strip()
+        bearer_tok = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
+
+        # Parse cookie
+        cookie_header = headers.get("cookie", "")
+        cookies: dict[str, str] = {}
+        if cookie_header:
+            for item in cookie_header.split(";"):
+                if "=" in item:
+                    k, v = item.split("=", 1)
+                    cookies[k.strip()] = v.strip()
+        cookie_session = cookies.get("human_session", "").strip()
+
+        token_candidate = (
+            bearer_tok or
+            headers.get("x-agent-token", "") or
+            headers.get("x-member-token", "")
+        ).strip()
+
+        # Query params for ws or sse
+        query_string = scope.get("query_string", b"").decode("latin-1")
+        if not token_candidate and query_string:
+            from urllib.parse import parse_qs
+            qs = parse_qs(query_string)
+            token_candidate = (
+                (qs.get("agent_token", [""])[0]) or
+                (qs.get("token", [""])[0]) or
+                (qs.get("human_token", [""])[0])
+            ).strip()
+
+        principal = None
+        auth_token = None
+
+        if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+            # Check human session first if cookie provided
+            if cookie_session:
+                principal = hub.storage.v3.authenticate_human_session(cookie_session)
+                if principal:
+                    auth_token = cookie_session
+
+            # Check token candidate (agent token or human session)
+            if not principal and token_candidate:
+                # Try agent token
+                ag, _ = hub.storage.v3.authenticate_agent_token(token_candidate)
+                if ag:
+                    principal = ag
+                    auth_token = token_candidate
+                else:
+                    # Maybe it's a human session token passed via Authorization header
+                    h_p = hub.storage.v3.authenticate_human_session(token_candidate)
+                    if h_p:
+                        principal = h_p
+                        auth_token = token_candidate
+
+            if principal:
+                current_principal.set(principal)
+                current_auth_token.set(auth_token)
+
+                # Check must_change_password enforcement
+                if scope["type"] == "http" and principal.get("kind") == "human" and principal.get("must_change_password") == 1:
+                    path = scope.get("path", "")
+                    # Allowed endpoints during mandatory password change
+                    allowed_prefixes = (
+                        "/api/auth/status",
+                        "/api/auth/change-password",
+                        "/api/auth/logout",
+                        "/api/status",
+                    )
+                    is_allowed = (path == "/" or any(path.startswith(p) for p in allowed_prefixes))
+                    if not is_allowed:
+                        response = JSONResponse(
+                            {
+                                "error": "Alteração de palavra-passe obrigatória antes de continuar.",
+                                "must_change_password": True,
+                            },
+                            status_code=403,
+                        )
+                        await response(scope, receive, send)
+                        return
+        else:
+            # v2 fallback: if human session or agent token, set current_auth_token
+            if cookie_session and hub.verify_human_session(cookie_session):
+                current_auth_token.set(hub.human_token)
+            elif token_candidate:
+                current_auth_token.set(token_candidate)
+
+        await self.app(scope, receive, send)
+
+
 def is_authenticated_human(request: Request) -> bool:
     """Verifies if request originates from authenticated human via valid session cookie, X-Human-Token header, Bearer token, or query param."""
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        cookie_token = request.cookies.get("human_session", "").strip()
+        auth_header = request.headers.get("Authorization", "").strip()
+        bearer_tok = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
+        header_token = request.headers.get("X-Human-Token", "").strip()
+        query_token = (request.query_params.get("human_token") or request.query_params.get("token") or "").strip()
+
+        for tok in (cookie_token, header_token, bearer_tok, query_token):
+            if tok:
+                p = hub.storage.v3.authenticate_human_session(tok)
+                if p and p.get("kind") == "human" and p.get("status") == "active":
+                    return True
+        return False
+
     cookie_token = request.cookies.get("human_session", "").strip()
     if cookie_token and hub.verify_human_session(cookie_token):
         return True
@@ -195,13 +315,63 @@ def is_authenticated_human(request: Request) -> bool:
 
 def get_request_auth(request: Request) -> dict[str, Any] | None:
     """
-    Verifies caller identity. Allows authenticated human supervisor (Rui) or active agents with valid tokens.
+    Verifies caller identity. Allows authenticated human supervisor or active agents with valid tokens.
     Returns:
-        {"type": "human", "name": hub.human_name, "is_human": True, "token": hub.human_token}
+        {"type": "human", "name": ..., "is_human": True, "token": ..., "principal": ...}
     or:
-        {"type": "agent", "name": ident["callsign"], "is_human": ident.get("is_human", False), "token": agent_tok, "ident": ident}
+        {"type": "agent", "name": ident["callsign"], "is_human": False, "token": agent_tok, "ident": ident, "principal": ...}
     Returns None if unauthenticated or agent is inactive/revoked.
     """
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        cookie_token = request.cookies.get("human_session", "").strip()
+        auth_header = request.headers.get("Authorization", "").strip()
+        bearer_tok = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
+        header_human_tok = request.headers.get("X-Human-Token", "").strip()
+        query_tok = (request.query_params.get("human_token") or request.query_params.get("token") or "").strip()
+
+        # Check session tokens for human
+        for s_tok in (cookie_token, header_human_tok, bearer_tok, query_tok):
+            if s_tok:
+                p = hub.storage.v3.authenticate_human_session(s_tok)
+                if p and p.get("kind") == "human" and p.get("status") == "active":
+                    return {
+                        "type": "human",
+                        "name": p["name"],
+                        "is_human": True,
+                        "token": s_tok,
+                        "principal": p,
+                        "id": p["id"],
+                        "role": p.get("access_role", "user"),
+                    }
+
+        # Check agent token
+        agent_tok = (
+            request.headers.get("x-agent-token", "") or
+            request.headers.get("x-member-token", "") or
+            bearer_tok or
+            request.query_params.get("agent_token", "") or
+            request.query_params.get("member_token", "") or
+            query_tok
+        ).strip()
+
+        if agent_tok:
+            try:
+                ident = hub.authenticate_agent(agent_tok)
+                return {
+                    "type": "agent",
+                    "name": ident["callsign"],
+                    "is_human": ident.get("is_human", False),
+                    "token": agent_tok,
+                    "ident": ident,
+                    "principal": ident.get("principal"),
+                    "id": ident.get("id"),
+                    "role": ident.get("role", "agent"),
+                }
+            except Exception:
+                return None
+        return None
+
+    # v2 fallback
     if is_authenticated_human(request):
         return {
             "type": "human",
@@ -271,6 +441,21 @@ async def endpoint_index(request: Request) -> Response:
 
 async def endpoint_auth_status(request: Request) -> Response:
     """Checks human authentication status."""
+    auth = get_request_auth(request)
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        if auth and auth.get("is_human"):
+            p = auth.get("principal", {})
+            return JSONResponse({
+                "authenticated": True,
+                "human_name": p.get("name") or auth.get("name") or "User",
+                "role": p.get("access_role", "user"),
+                "must_change_password": bool(p.get("must_change_password")),
+            })
+        return JSONResponse({
+            "authenticated": False,
+            "human_name": os.environ.get("AICHAT_HUMAN_NAME", "User"),
+        })
+
     is_auth = is_authenticated_human(request)
     return JSONResponse({
         "authenticated": is_auth,
@@ -287,6 +472,34 @@ async def endpoint_auth_login(request: Request) -> Response:
 
     username = (data.get("username") or "").strip()
     token = (data.get("password") or data.get("token") or "").strip()
+
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        if not username or not token:
+            return JSONResponse({"error": "Credenciais inválidas"}, status_code=401)
+
+        client_ip = "127.0.0.1"
+        if request.client:
+            client_ip = request.client.host
+        x_forwarded_for = request.headers.get("x-forwarded-for")
+        if x_forwarded_for:
+            client_ip = x_forwarded_for.split(",")[0].strip()
+
+        principal, err = hub.storage.v3.authenticate_human(username, token, client_ip=client_ip)
+        if not principal:
+            if err and ("bloqueada" in err.lower() or "bloqueio" in err.lower()):
+                return JSONResponse({"error": err}, status_code=429)
+            return JSONResponse({"error": "Credenciais inválidas"}, status_code=401)
+
+        session_token = hub.storage.v3.create_human_session(principal["id"])
+        response = JSONResponse({
+            "success": True,
+            "message": "Autenticado com sucesso",
+            "human_name": principal["name"],
+            "role": principal.get("access_role", "user"),
+            "must_change_password": bool(principal.get("must_change_password")),
+        })
+        set_human_session_cookie(response, session_token)
+        return response
 
     if username:
         clean_user = "".join(c for c in username.lower() if c.isalnum())
@@ -311,11 +524,49 @@ async def endpoint_auth_login(request: Request) -> Response:
     return response
 
 
+async def endpoint_auth_change_password(request: Request) -> Response:
+    """Changes human user password and clears must_change_password."""
+    auth = get_request_auth(request)
+    if not auth or not auth.get("is_human"):
+        return JSONResponse({"error": "Acesso negado: Autenticação de utilizador humano obrigatória."}, status_code=401)
+
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    new_password = (data.get("new_password") or "").strip()
+    if not new_password or len(new_password) < 8:
+        return JSONResponse({"error": "A nova palavra-passe deve ter pelo menos 8 caracteres."}, status_code=400)
+
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        principal = auth.get("principal")
+        if not principal or "id" not in principal:
+            return JSONResponse({"error": "Perfil de utilizador inválido"}, status_code=400)
+
+        current_password = (data.get("current_password") or "").strip()
+        if current_password:
+            client_ip = request.client.host if request.client else "127.0.0.1"
+            valid_p, err = hub.storage.v3.authenticate_human(principal["name"], current_password, client_ip=client_ip)
+            if not valid_p:
+                return JSONResponse({"error": "A palavra-passe atual está incorreta."}, status_code=403)
+
+        success = hub.storage.v3.change_human_password(principal["id"], new_password)
+        if not success:
+            return JSONResponse({"error": "Falha ao alterar a palavra-passe."}, status_code=500)
+        return JSONResponse({"success": True, "message": "Palavra-passe alterada com sucesso."})
+
+    return JSONResponse({"success": True, "message": "Palavra-passe alterada com sucesso."})
+
+
 async def endpoint_auth_logout(request: Request) -> Response:
     """Clears human session cookie and invalidates session."""
     cookie_token = request.cookies.get("human_session", "").strip()
     if cookie_token:
-        hub.invalidate_human_session(cookie_token)
+        if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+            hub.storage.v3.revoke_human_session(cookie_token)
+        else:
+            hub.invalidate_human_session(cookie_token)
     response = JSONResponse({"success": True, "message": "Sessão terminada"})
     response.delete_cookie(key="human_session", path="/")
     return response
@@ -330,6 +581,10 @@ async def endpoint_get_rooms(request: Request) -> Response:
             status_code=401
         )
     include_archived = request.query_params.get("include_archived", "true").lower() in ("true", "1")
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        p = auth.get("principal")
+        rooms = hub.storage.v3.list_rooms_for_principal(p, include_archived=include_archived)
+        return JSONResponse(rooms)
     rooms = hub.list_rooms(include_archived=include_archived)
     return JSONResponse(rooms)
 
@@ -339,6 +594,11 @@ async def endpoint_create_room(request: Request) -> Response:
     auth = get_request_auth(request)
     if not auth:
         return JSONResponse({"error": "Acesso negado: Autenticação obrigatória."}, status_code=401)
+
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        p = auth.get("principal")
+        if not hub.storage.v3.authorize(p, "admin"):
+            return JSONResponse({"error": "Acesso negado: Apenas administradores podem criar salas."}, status_code=403)
 
     try:
         data = await request.json()
@@ -356,6 +616,11 @@ async def endpoint_create_room(request: Request) -> Response:
         return JSONResponse({"error": "Room name is required"}, status_code=400)
 
     try:
+        if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+            p = auth.get("principal")
+            room = hub.storage.v3.create_room(name=name, topic=topic, created_by=p.get("id") if p else None)
+            return JSONResponse(room, status_code=201)
+
         room = hub.create_room(name=name, password=password, topic=topic)
         if password:
             room["password"] = password
@@ -383,6 +648,26 @@ async def endpoint_get_messages(request: Request) -> Response:
     limit = safe_int(request.query_params.get("limit"), default=50, min_val=1, max_val=1000)
 
     try:
+        if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+            p = auth.get("principal")
+            room = hub.storage.v3.get_room(room_name)
+            if not room:
+                return JSONResponse({"error": f"Room '{room_name}' does not exist."}, status_code=404)
+            if not hub.storage.v3.authorize(p, "read_room", {"room_id": room["id"]}):
+                return JSONResponse({"error": "Access denied"}, status_code=403)
+            messages = hub.storage.v3.get_messages(
+                room["id"],
+                since_id=since_id,
+                before_id=before_id,
+                limit=limit,
+            )
+            if messages and p and "id" in p:
+                try:
+                    hub.storage.v3.update_read_cursor(room["id"], p["id"], messages[-1]["id"])
+                except Exception:
+                    pass
+            return JSONResponse(messages)
+
         effective_ht = hub.human_token if auth["is_human"] else ""
 
         # Record presence only for verified tokens or authenticated human session
@@ -427,6 +712,38 @@ async def endpoint_post_message(request: Request) -> Response:
     content = data.get("content", "").strip()
     password = data.get("password", "")
     member_token = data.get("member_token", "") or (auth["token"] if not auth["is_human"] else "")
+
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        p = auth.get("principal")
+        room = hub.storage.v3.get_room(room_name)
+        if not room:
+            return JSONResponse({"error": f"Room '{room_name}' does not exist."}, status_code=404)
+        if room.get("is_archived"):
+            return JSONResponse({"error": f"A sala '{room['name']}' foi arquivada e está em modo apenas de leitura."}, status_code=400)
+        if not hub.storage.v3.authorize(p, "write_room", {"room_id": room["id"]}):
+            return JSONResponse({"error": "Access denied"}, status_code=403)
+        if not content:
+            return JSONResponse({"error": "Content cannot be empty"}, status_code=400)
+
+        role = "human" if p.get("kind") == "human" else "agent"
+        clean_sender = p.get("display_name") or p.get("username") or p.get("name") or "Agent"
+        msg = hub.storage.v3.add_message(
+            room_name_or_id=room["id"],
+            sender=clean_sender,
+            role=role,
+            content=content,
+            is_verified=True,
+            sender_id=p["id"],
+        )
+        try:
+            await hub._broadcast_to_websockets(room["name"], {
+                "type": "new_message",
+                "message": msg,
+            })
+            hub._notify_listeners(room["name"])
+        except Exception:
+            pass
+        return JSONResponse(msg, status_code=201)
 
     is_human = auth["is_human"]
     sender_norm = "".join(c for c in sender.lower() if c.isalnum())
@@ -484,7 +801,14 @@ async def endpoint_download_log(request: Request) -> Response:
     effective_ht = hub.human_token if auth["is_human"] else ""
 
     try:
-        if not hub.verify_room_access(room_name, password, requester_token=effective_ht):
+        if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+            p = auth.get("principal")
+            room = hub.storage.v3.get_room(room_name)
+            if not room:
+                return JSONResponse({"error": f"Room '{room_name}' not found"}, status_code=404)
+            if not hub.storage.v3.authorize(p, "read_room", {"room_id": room["id"]}):
+                return JSONResponse({"error": "Access denied: incorrect password"}, status_code=403)
+        elif not hub.verify_room_access(room_name, password, requester_token=effective_ht):
             return JSONResponse({"error": "Access denied: incorrect password"}, status_code=403)
 
         log_path = hub.storage.get_room_log_file(room_name)
@@ -511,7 +835,14 @@ async def endpoint_download_jsonl(request: Request) -> Response:
     effective_ht = hub.human_token if auth["is_human"] else ""
 
     try:
-        if not hub.verify_room_access(room_name, password, requester_token=effective_ht):
+        if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+            p = auth.get("principal")
+            room = hub.storage.v3.get_room(room_name)
+            if not room:
+                return JSONResponse({"error": f"Room '{room_name}' not found"}, status_code=404)
+            if not hub.storage.v3.authorize(p, "read_room", {"room_id": room["id"]}):
+                return JSONResponse({"error": "Access denied: incorrect password"}, status_code=403)
+        elif not hub.verify_room_access(room_name, password, requester_token=effective_ht):
             return JSONResponse({"error": "Access denied: incorrect password"}, status_code=403)
 
         jsonl_path = hub.storage.get_room_jsonl_file(room_name)
@@ -538,7 +869,14 @@ async def endpoint_room_sse_stream(request: Request) -> Response:
     effective_ht = hub.human_token if auth["is_human"] else ""
 
     try:
-        if not hub.verify_room_access(room_name, password, requester_token=effective_ht):
+        if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+            p = auth.get("principal")
+            room = hub.storage.v3.get_room(room_name)
+            if not room:
+                return JSONResponse({"error": "Room not found"}, status_code=404)
+            if not hub.storage.v3.authorize(p, "read_room", {"room_id": room["id"]}):
+                return JSONResponse({"error": "Access denied"}, status_code=403)
+        elif not hub.verify_room_access(room_name, password, requester_token=effective_ht):
             return JSONResponse({"error": "Access denied"}, status_code=403)
     except ValueError:
         return JSONResponse({"error": "Room not found"}, status_code=404)
@@ -1621,43 +1959,84 @@ async def websocket_room_endpoint(websocket: WebSocket) -> None:
     bearer_tok = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
     query_token = (websocket.query_params.get("token") or websocket.query_params.get("human_token") or "").strip()
 
-    is_human = bool(
-        (cookie_token and hub.verify_human_session(cookie_token)) or
-        (header_token and secrets.compare_digest(header_token, hub.human_token)) or
-        (bearer_tok and secrets.compare_digest(bearer_tok, hub.human_token)) or
-        (query_token and secrets.compare_digest(query_token, hub.human_token))
-    )
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        principal = current_principal.get(None)
+        if not principal:
+            token_candidate = (
+                bearer_tok or
+                websocket.headers.get("x-agent-token", "") or
+                websocket.headers.get("x-member-token", "") or
+                websocket.query_params.get("agent_token", "") or
+                websocket.query_params.get("member_token", "") or
+                query_token
+            ).strip()
 
-    caller_name = "Rui (Humano)"
-    if not is_human:
-        agent_tok = (
-            websocket.headers.get("x-agent-token", "") or
-            websocket.headers.get("x-member-token", "") or
-            bearer_tok or
-            websocket.query_params.get("agent_token", "") or
-            websocket.query_params.get("member_token", "") or
-            query_token
-        ).strip()
+            if cookie_token:
+                principal = hub.storage.v3.authenticate_human_session(cookie_token)
+            if not principal and token_candidate:
+                ag, _ = hub.storage.v3.authenticate_agent_token(token_candidate)
+                if ag:
+                    principal = ag
+                else:
+                    principal = hub.storage.v3.authenticate_human_session(token_candidate)
 
-        if not agent_tok:
+        if not principal:
             await websocket.close(code=4401, reason="Unauthorized: Authentication required")
             return
 
-        try:
-            ident = hub.authenticate_agent(agent_tok)
-            caller_name = ident["callsign"]
-            is_human = ident.get("is_human", False)
-        except Exception:
-            await websocket.close(code=4401, reason="Unauthorized: Invalid or inactive agent token")
+        if principal.get("kind") == "human" and principal.get("must_change_password") == 1:
+            await websocket.close(code=4403, reason="Forbidden: Password change required")
             return
 
-        try:
-            if not hub.verify_room_access(room_name, password):
-                await websocket.close(code=4403, reason="Access denied: invalid or missing room password")
-                return
-        except ValueError:
+        room = hub.storage.v3.get_room_by_name(room_name)
+        if not room:
             await websocket.close(code=4404, reason="Room not found")
             return
+
+        if not hub.storage.v3.authorize(principal, "read_room", {"room_id": room["id"]}):
+            await websocket.close(code=4403, reason="Forbidden: No access to this room")
+            return
+
+        caller_name = principal.get("display_name") or principal.get("username") or principal.get("name") or "Utilizador"
+        is_human = (principal.get("kind") == "human")
+    else:
+        is_human = bool(
+            (cookie_token and hub.verify_human_session(cookie_token)) or
+            (header_token and secrets.compare_digest(header_token, hub.human_token)) or
+            (bearer_tok and secrets.compare_digest(bearer_tok, hub.human_token)) or
+            (query_token and secrets.compare_digest(query_token, hub.human_token))
+        )
+
+        caller_name = "Rui (Humano)"
+        if not is_human:
+            agent_tok = (
+                websocket.headers.get("x-agent-token", "") or
+                websocket.headers.get("x-member-token", "") or
+                bearer_tok or
+                websocket.query_params.get("agent_token", "") or
+                websocket.query_params.get("member_token", "") or
+                query_token
+            ).strip()
+
+            if not agent_tok:
+                await websocket.close(code=4401, reason="Unauthorized: Authentication required")
+                return
+
+            try:
+                ident = hub.authenticate_agent(agent_tok)
+                caller_name = ident["callsign"]
+                is_human = ident.get("is_human", False)
+            except Exception:
+                await websocket.close(code=4401, reason="Unauthorized: Invalid or inactive agent token")
+                return
+
+            try:
+                if not hub.verify_room_access(room_name, password):
+                    await websocket.close(code=4403, reason="Access denied: invalid or missing room password")
+                    return
+            except ValueError:
+                await websocket.close(code=4404, reason="Room not found")
+                return
 
     await websocket.accept()
     await hub.register_websocket(room_name, websocket, user_name=caller_name, is_human=is_human)
@@ -1729,6 +2108,7 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
         Route("/api/auth/status", endpoint=endpoint_auth_status, methods=["GET"]),
         Route("/api/auth/login", endpoint=endpoint_auth_login, methods=["POST"]),
         Route("/api/auth/logout", endpoint=endpoint_auth_logout, methods=["POST"]),
+        Route("/api/auth/change-password", endpoint=endpoint_auth_change_password, methods=["POST"]),
         Route("/api/tts", endpoint=endpoint_tts, methods=["GET", "POST"]),
         Route("/api/tts/voices", endpoint=endpoint_tts_voices, methods=["GET"]),
         Route("/api/rooms", endpoint=endpoint_get_rooms, methods=["GET"]),
@@ -1786,6 +2166,7 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
     middleware = [
         Middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts),
         Middleware(SecurityHardeningMiddleware),
+        Middleware(V3AuthenticationMiddleware),
     ]
 
     app = Starlette(debug=False, routes=routes, middleware=middleware, lifespan=app_lifespan)

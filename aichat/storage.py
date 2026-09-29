@@ -12,6 +12,62 @@ from aichat.config import DATA_DIR, LOGS_DIR
 DB_PATH = DATA_DIR / os.environ.get("AICHAT_DB_NAME", "chat.db")
 
 
+def check_schema_version(db_path: Path) -> int | None:
+    """Returns the schema version from database, or None if no schema_version table exists."""
+    path = Path(db_path)
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    conn = None
+    try:
+        conn = sqlite3.connect(path)
+        cur = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_version';")
+        if not cur.fetchone():
+            return None
+        cur = conn.execute("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1;")
+        row = cur.fetchone()
+        return int(row[0]) if row else None
+    except Exception:
+        return None
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def get_storage(db_path: Path = DB_PATH, logs_dir: Path = LOGS_DIR) -> Any:
+    """
+    Returns StorageV3 for v3 databases or empty/new databases.
+    Fails fast if the database has tables but is not on schema_version=3.
+    """
+    path = Path(db_path)
+    if path.exists() and path.stat().st_size > 0:
+        v = check_schema_version(path)
+        if v == 3:
+            from aichat.storage_v3 import StorageV3
+            return StorageV3(path, logs_dir)
+        # Check if it has any tables
+        conn = None
+        try:
+            conn = sqlite3.connect(path)
+            tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence';").fetchall()
+            if tables:
+                raise RuntimeError(
+                    f"Base de dados incompatível em '{path}': esperada schema_version=3. "
+                    "Execute primeiro a migração: python migrations/v3/migrate_v2_to_v3.py"
+                )
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    from aichat.storage_v3 import StorageV3
+    return StorageV3(path, logs_dir)
+
+
 class ChatStorage:
     """Manages SQLite storage and file-based transcripts for chat rooms (supports v2 and v3 schemas)."""
 
@@ -155,8 +211,8 @@ class ChatStorage:
 
     def _init_db(self, schema_version: int | None = None) -> None:
         """Initializes database schema with tables and indexes."""
-        # Explicit or detected v3
-        if schema_version == 3 or "v3" in self.db_path.name.lower():
+        # Explicit or detected v3 via schema_version
+        if schema_version == 3:
             from aichat.storage_v3 import StorageV3
             self._v3_storage = StorageV3(self.db_path, self.logs_dir)
             return
@@ -500,6 +556,8 @@ class ChatStorage:
         clear_password: str = "",
     ) -> dict[str, Any]:
         """Creates a new room in SQLite and prepares its log files."""
+        if self.is_v3():
+            return self.v3.create_room(name=name, topic=topic)
         now = datetime.now().isoformat()
         conn = self._get_connection()
         with conn:
@@ -534,6 +592,8 @@ class ChatStorage:
 
     def get_room(self, name: str, include_password: bool = False) -> dict[str, Any] | None:
         """Fetches room information by name."""
+        if self.is_v3():
+            return self.v3.get_room(name)
         conn = self._get_connection()
         cursor = conn.execute(
             """
@@ -575,6 +635,8 @@ class ChatStorage:
 
     def list_rooms(self, include_archived: bool = True, include_passwords: bool = False) -> list[dict[str, Any]]:
         """Lists all rooms with member count, message count, and archived status."""
+        if self.is_v3():
+            return self.v3.list_rooms(include_archived=include_archived)
         conn = self._get_connection()
         pwd_col = ", r.clear_password as password" if include_passwords else ""
         query = f"""
@@ -602,6 +664,8 @@ class ChatStorage:
 
     def archive_room(self, name: str) -> bool:
         """Marks a room as archived (read-only)."""
+        if self.is_v3():
+            return self.v3.archive_room(name)
         conn = self._get_connection()
         with conn:
             cursor = conn.execute("UPDATE rooms SET is_archived = 1 WHERE name = ? COLLATE NOCASE", (name.strip(),))
@@ -609,6 +673,8 @@ class ChatStorage:
 
     def unarchive_room(self, name: str) -> bool:
         """Restores an archived room to active state."""
+        if self.is_v3():
+            return self.v3.unarchive_room(name)
         conn = self._get_connection()
         with conn:
             cursor = conn.execute("UPDATE rooms SET is_archived = 0 WHERE name = ? COLLATE NOCASE", (name.strip(),))
@@ -800,6 +866,20 @@ class ChatStorage:
         clean_token = (token or "").strip()
         if not clean_token:
             return None
+        if self.is_v3():
+            p, err = self.v3.authenticate_agent_token(clean_token)
+            if not p:
+                return None
+            if not include_inactive and p.get("status") != "active":
+                return None
+            return {
+                "callsign": p["name"],
+                "token": clean_token,
+                "role": p.get("default_role_key") or "agent",
+                "status": p.get("status", "active"),
+                "is_system": bool(p.get("is_system")),
+                "created_at": p.get("created_at", ""),
+            }
         conn = self._get_connection()
         cursor = conn.execute(
             "SELECT member_name, token, role, status, is_system, created_at FROM member_identities WHERE token = ?",
@@ -824,6 +904,18 @@ class ChatStorage:
         clean_name = (name or "").strip()
         if not clean_name:
             return None
+        if self.is_v3():
+            p = self.v3.get_principal_by_name(clean_name)
+            if not p or p.get("kind") != "agent":
+                return None
+            return {
+                "callsign": p["name"],
+                "token": "",
+                "role": p.get("default_role_key") or "agent",
+                "status": p.get("status", "active"),
+                "is_system": bool(p.get("is_system")),
+                "created_at": p.get("created_at", ""),
+            }
         conn = self._get_connection()
         cursor = conn.execute(
             "SELECT member_name, token, role, status, is_system, created_at FROM member_identities WHERE member_name = ? COLLATE NOCASE",
@@ -843,6 +935,25 @@ class ChatStorage:
 
     def list_registered_agents(self, include_tokens: bool = False) -> list[dict[str, Any]]:
         """Lists all registered agents in the closed registry."""
+        if self.is_v3():
+            principals = self.v3.list_principals(kind="agent")
+            agents = []
+            for p in principals:
+                item = {
+                    "callsign": p["name"],
+                    "role": p.get("default_role_key") or "agent",
+                    "status": p.get("status", "active"),
+                    "is_system": bool(p.get("is_system")),
+                    "created_at": p.get("created_at", ""),
+                }
+                if include_tokens:
+                    item["token"] = ""
+                else:
+                    creds = self.v3.list_agent_credentials(p["id"])
+                    hint = creds[0]["token_hint"] if creds else ""
+                    item["token_hint"] = f"...{hint}" if hint else ""
+                agents.append(item)
+            return agents
         conn = self._get_connection()
         cursor = conn.execute(
             "SELECT member_name, token, role, status, is_system, created_at FROM member_identities ORDER BY is_system DESC, member_name ASC"
@@ -879,6 +990,32 @@ class ChatStorage:
             raise ValueError("Callsign do agente não pode estar vazio.")
         if len(clean_callsign) > 40:
             raise ValueError("Callsign do agente não pode exceder 40 caracteres.")
+
+        if self.is_v3():
+            existing = self.v3.get_principal_by_name(clean_callsign)
+            if existing:
+                if existing["status"] == "inactive":
+                    raise PermissionError(f"Acesso negado: O agente '{clean_callsign}' está desativado pelo supervisor. Apenas um administrador pode reativar.")
+                raise ValueError(f"Callsign '{clean_callsign}' já está em uso no servidor. Duplicados não são permitidos.")
+            role_id = None
+            if role:
+                r_obj = self.v3.get_role_by_key(role)
+                if r_obj:
+                    role_id = r_obj["id"]
+            agent_obj, raw_token = self.v3.create_agent(
+                name=clean_callsign,
+                default_role_id=role_id,
+                is_system=1 if is_system else 0,
+                token=token,
+            )
+            return {
+                "callsign": agent_obj["name"],
+                "token": raw_token,
+                "role": agent_obj.get("default_role_key") or role or "agent",
+                "status": agent_obj.get("status", "active"),
+                "is_system": bool(agent_obj.get("is_system", False)),
+                "created_at": agent_obj.get("created_at"),
+            }
 
         conn = self._get_connection()
         cursor = conn.execute(
@@ -930,6 +1067,13 @@ class ChatStorage:
         """Rotates an agent's secret token in the closed registry."""
         import secrets
         clean_callsign = (callsign or "").strip()
+        if self.is_v3():
+            p = self.v3.get_principal_by_name(clean_callsign)
+            if not p:
+                raise ValueError(f"Agente com callsign '{clean_callsign}' não encontrado no registo.")
+            raw_token, _ = self.v3.rotate_agent_token(p["id"], raw_token=new_token)
+            return raw_token
+
         conn = self._get_connection()
         cursor = conn.execute(
             "SELECT member_name FROM member_identities WHERE member_name = ? COLLATE NOCASE",
@@ -953,6 +1097,13 @@ class ChatStorage:
         """Updates agent status (e.g. 'active', 'inactive', 'pending')."""
         clean_callsign = (callsign or "").strip()
         target_status = status.strip()
+        if self.is_v3():
+            p = self.v3.get_principal_by_name(clean_callsign)
+            if not p:
+                raise ValueError(f"Agente com callsign '{clean_callsign}' não encontrado no registo.")
+            self.v3.update_principal_status(p["id"], target_status)
+            return
+
         conn = self._get_connection()
         with conn:
             cursor = conn.execute(
@@ -975,6 +1126,13 @@ class ChatStorage:
     def delete_agent_admin(self, callsign: str) -> None:
         """Deletes an agent from member_identities and room memberships."""
         clean_callsign = (callsign or "").strip()
+        if self.is_v3():
+            p = self.v3.get_principal_by_name(clean_callsign)
+            if not p:
+                raise ValueError(f"Agente com callsign '{clean_callsign}' não encontrado no registo.")
+            self.v3.delete_principal(p["id"])
+            return
+
         conn = self._get_connection()
         with conn:
             cursor = conn.execute(
@@ -995,6 +1153,11 @@ class ChatStorage:
         """
         if not text:
             return text
+        if self.is_v3():
+            masked = text
+            if human_token and len(human_token) >= 16:
+                masked = masked.replace(human_token, "[REDACTED_TOKEN]")
+            return masked
         conn = self._get_connection()
         cursor = conn.execute("SELECT token FROM member_identities WHERE status = 'active'")
         tokens = {row[0] for row in cursor.fetchall() if row[0] and len(row[0]) >= 16}
@@ -1016,6 +1179,30 @@ class ChatStorage:
         details: str = "",
     ) -> dict[str, Any]:
         """Logs a room security or membership event."""
+        if self.is_v3():
+            room = self.v3._resolve_room(room_name)
+            rid = room["id"] if room else None
+            p = self.v3.get_principal_by_name(member_name)
+            pid = p["id"] if p else None
+            self.v3.log_audit(
+                actor_id=pid,
+                actor_name=member_name,
+                action=action,
+                target_type="room",
+                target_id=rid,
+                room_id=rid,
+                status=status,
+                details=details,
+            )
+            return {
+                "id": 0,
+                "room_name": room_name,
+                "member_name": member_name,
+                "action": action,
+                "status": status,
+                "details": details,
+                "created_at": datetime.now().isoformat(),
+            }
         now = datetime.now().isoformat()
         conn = self._get_connection()
         clean_room = room_name.strip()
@@ -1044,6 +1231,8 @@ class ChatStorage:
 
     def get_room_audit_log(self, room_name: str, limit: int = 50) -> list[dict[str, Any]]:
         """Fetches recent audit log entries for a room."""
+        if self.is_v3():
+            return self.v3.get_room_audit_log(room_name, limit)
         conn = self._get_connection()
         cursor = conn.execute(
             """
@@ -1091,6 +1280,16 @@ class ChatStorage:
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Saves a message to SQLite and appends to .log and .jsonl files."""
+        if self.is_v3():
+            return self.v3.add_message(
+                room_name_or_id=room_name,
+                sender=sender,
+                role=role,
+                content=content,
+                is_verified=is_verified,
+                message_type=message_type,
+                metadata=metadata,
+            )
         now = datetime.now().isoformat()
         conn = self._get_connection()
         clean_room = room_name.strip()
@@ -1147,6 +1346,8 @@ class ChatStorage:
 
     def get_max_message_id(self, room_name: str) -> int:
         """Returns the highest message ID in the room, or 0 if empty."""
+        if self.is_v3():
+            return self.v3.get_max_message_id(room_name)
         conn = self._get_connection()
         cursor = conn.execute(
             "SELECT COALESCE(MAX(id), 0) FROM messages WHERE room_name = ? COLLATE NOCASE",
@@ -1185,6 +1386,8 @@ class ChatStorage:
 
     def get_message_reactions(self, message_id: int) -> list[dict[str, Any]]:
         """Returns aggregated reactions for a single message."""
+        if self.is_v3():
+            return self.v3.get_message_reactions(message_id)
         res_map = self._get_reactions_map([message_id])
         return res_map.get(message_id, [])
 
@@ -1196,6 +1399,13 @@ class ChatStorage:
         emoji: str,
     ) -> dict[str, Any]:
         """Toggles an emoji reaction from a sender on a message."""
+        if self.is_v3():
+            return self.v3.toggle_reaction(
+                message_id=message_id,
+                room_name_or_id=room_name,
+                sender_name_or_id=sender,
+                emoji=emoji,
+            )
         conn = self._get_connection()
         clean_room = room_name.strip()
         clean_sender = sender.strip()
@@ -1233,6 +1443,8 @@ class ChatStorage:
         decider: str = "Rui",
     ) -> dict[str, Any] | None:
         """Resolves a pending human decision request."""
+        if self.is_v3():
+            return self.v3.resolve_decision(message_id=message_id, status=decision)
         conn = self._get_connection()
         cursor = conn.execute("SELECT metadata FROM messages WHERE id = ?", (message_id,))
         row = cursor.fetchone()
@@ -1258,6 +1470,13 @@ class ChatStorage:
         options: list[str],
     ) -> dict[str, Any]:
         """Creates a new poll in a room."""
+        if self.is_v3():
+            return self.v3.create_poll(
+                room_name_or_id=room_name,
+                creator_name_or_id=creator,
+                question=question,
+                options=options,
+            )
         now = datetime.now().isoformat()
         conn = self._get_connection()
         clean_options = [opt.strip() for opt in options if opt.strip()]
@@ -1281,6 +1500,8 @@ class ChatStorage:
         option_index: int,
     ) -> dict[str, Any]:
         """Casts or updates a vote on an active poll."""
+        if self.is_v3():
+            return self.v3.cast_vote(poll_id=poll_id, voter_name_or_id=voter, option_index=option_index)
         conn = self._get_connection()
         cursor = conn.execute("SELECT is_closed, options FROM polls WHERE id = ?", (poll_id,))
         row = cursor.fetchone()
@@ -1307,6 +1528,8 @@ class ChatStorage:
 
     def close_poll(self, poll_id: int) -> dict[str, Any]:
         """Closes a poll to prevent further votes."""
+        if self.is_v3():
+            return self.v3.close_poll(poll_id=poll_id)
         conn = self._get_connection()
         now = datetime.now().isoformat()
         with conn:
@@ -1318,6 +1541,8 @@ class ChatStorage:
 
     def get_poll(self, poll_id: int) -> dict[str, Any] | None:
         """Retrieves poll details with vote tallies and percentages."""
+        if self.is_v3():
+            return self.v3.get_poll(poll_id)
         conn = self._get_connection()
         cursor = conn.execute(
             """
@@ -1381,6 +1606,13 @@ class ChatStorage:
         - If since_id > 0: returns messages strictly newer than since_id (ascending).
         - If both == 0: returns the most recent `limit` messages in chronological order (ascending).
         """
+        if self.is_v3():
+            return self.v3.get_messages(
+                room_name_or_id=room_name,
+                since_id=since_id,
+                before_id=before_id,
+                limit=limit,
+            )
         conn = self._get_connection()
         clean_room = room_name.strip()
         if since_id > 0 and before_id > 0:
@@ -1525,6 +1757,25 @@ class ChatStorage:
         if not clean_title:
             raise ValueError("O título da tarefa não pode estar vazio.")
 
+        if self.is_v3():
+            return self.v3.create_task(
+                room_name_or_id=clean_room,
+                title=clean_title,
+                description=description,
+                status=status,
+                assignee=assignee,
+                waiting_for_agent=waiting_for_agent,
+                priority=priority,
+                order_index=order_index,
+                message_id=message_id,
+                uses_gpu=uses_gpu,
+                gpu_est_min=gpu_est_min,
+                resource=resource,
+                start_at=start_at,
+                due_at=due_at,
+                created_by=created_by,
+            )
+
         valid_priorities = ("urgent", "high", "medium", "low")
         clean_priority = priority.strip().lower() if priority else "medium"
         if clean_priority not in valid_priorities:
@@ -1631,6 +1882,25 @@ class ChatStorage:
         resource: str | None = None,
     ) -> dict[str, Any]:
         """Updates fields of an existing task."""
+        if self.is_v3():
+            return self.v3.update_task(
+                task_id=task_id,
+                actor=actor,
+                title=title,
+                description=description,
+                status=status,
+                assignee=assignee,
+                waiting_for_agent=waiting_for_agent,
+                priority=priority,
+                order_index=order_index,
+                message_id=message_id,
+                uses_gpu=uses_gpu,
+                gpu_est_min=gpu_est_min,
+                start_at=start_at,
+                due_at=due_at,
+                resource=resource,
+            )
+
         conn = self._get_connection()
         task = self.get_task_by_id(task_id)
         if not task:
@@ -1748,6 +2018,8 @@ class ChatStorage:
 
     def delete_task(self, task_id: int) -> bool:
         """Deletes a task and its history."""
+        if self.is_v3():
+            return self.v3.delete_task(task_id)
         conn = self._get_connection()
         with conn:
             cursor = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
@@ -1756,6 +2028,8 @@ class ChatStorage:
 
     def get_task_by_id(self, task_id: int) -> dict[str, Any] | None:
         """Retrieves a single task by ID with staleness computation and history."""
+        if self.is_v3():
+            return self.v3.get_task_by_id(task_id)
         conn = self._get_connection()
         cursor = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))
         row = cursor.fetchone()
@@ -1779,6 +2053,8 @@ class ChatStorage:
 
     def get_task_history(self, task_id: int) -> list[dict[str, Any]]:
         """Returns the chronological history of changes for a task."""
+        if self.is_v3():
+            return self.v3.get_task_history(task_id)
         conn = self._get_connection()
         cursor = conn.execute(
             "SELECT id, task_id, action, actor, from_status, to_status, details, created_at FROM task_history WHERE task_id = ? ORDER BY id ASC",
@@ -1794,6 +2070,8 @@ class ChatStorage:
         hide_completed: bool = False,
     ) -> list[dict[str, Any]]:
         """Lists tasks for a room, optionally filtered by status, assignee, or hiding completed."""
+        if self.is_v3():
+            return self.v3.list_tasks(room_name_or_id=room_name, status=status)
         conn = self._get_connection()
         query = "SELECT * FROM tasks WHERE room_name = ? COLLATE NOCASE"
         params: list[Any] = [room_name.strip()]
@@ -1833,6 +2111,8 @@ class ChatStorage:
 
     def reorder_tasks(self, room_name: str, task_ids: list[int]) -> list[dict[str, Any]]:
         """Sets new order_index for given task IDs in the room."""
+        if self.is_v3():
+            return self.v3.reorder_tasks(room_name_or_id=room_name, task_ids=task_ids)
         conn = self._get_connection()
         now = datetime.now().isoformat()
         with conn:
@@ -1982,6 +2262,11 @@ class ChatStorage:
         if not clean_start:
             return []
 
+        if self.is_v3():
+            eff_end = clean_end or (datetime.fromisoformat(clean_start) + timedelta(hours=1)).isoformat()
+            res = self.v3.check_resource_availability(clean_resource, clean_start, eff_end, exclude_event_id=exclude_id)
+            return res.get("conflicts", [])
+
         try:
             start_dt = datetime.fromisoformat(clean_start)
         except Exception:
@@ -1999,7 +2284,7 @@ class ChatStorage:
         query = """
             SELECT * FROM calendar_events 
             WHERE UPPER(resource) = ? 
-              AND status NOT IN ('completed', 'cancelled')
+            AND status NOT IN ('completed', 'cancelled')
         """
         params: list[Any] = [clean_resource]
         if exclude_id is not None:
@@ -2069,6 +2354,34 @@ class ChatStorage:
                 raise ValueError(f"Formato de data 'end_at' inválido ('{clean_end}'). Use ISO 8601: {e}")
 
         clean_resource = (resource or "").strip()
+        if self.is_v3():
+            if clean_resource and not force:
+                conflicts = self.check_resource_conflicts(clean_resource, clean_start, clean_end)
+                if conflicts:
+                    c = conflicts[0]
+                    ex_by = c.get("created_by", "outro agente")
+                    ex_title = c.get("title", "")
+                    ex_s = c.get("start_at", "")
+                    ex_e = c.get("end_at", "") or "indeterminado"
+                    raise ValueError(
+                        f"Conflito de recurso: '{clean_resource}' já está reservado por @{ex_by} ('{ex_title}') das {ex_s} às {ex_e}. Use force=True com autorização para sobrepor."
+                    )
+            return self.v3.create_calendar_event(
+                room_name_or_id=clean_room,
+                title=clean_title,
+                start_at=clean_start,
+                end_at=clean_end or None,
+                description=description,
+                event_type=event_type,
+                task_id=task_id,
+                resource=clean_resource or None,
+                target_id_or_name=target_agent or None,
+                status=status,
+                wake_on_start=1 if wake_on_start else 0,
+                wake_on_end=1 if wake_on_end else 0,
+                created_by_id_or_name=created_by,
+            )
+
         if clean_resource and not force:
             conflicts = self.check_resource_conflicts(clean_resource, clean_start, clean_end)
             if conflicts:
@@ -2123,6 +2436,8 @@ class ChatStorage:
 
     def get_calendar_event_by_id(self, event_id: int) -> dict[str, Any] | None:
         """Retrieves a single calendar event by ID."""
+        if self.is_v3():
+            return self.v3.get_calendar_event_by_id(event_id)
         conn = self._get_connection()
         cur = conn.execute("SELECT * FROM calendar_events WHERE id = ?", (event_id,))
         row = cur.fetchone()
@@ -2145,11 +2460,21 @@ class ChatStorage:
         include_completed: bool = True,
     ) -> list[dict[str, Any]]:
         """Lists calendar events with optional filtering."""
+        clean_room = (room_name or "").strip().lower()
+        if self.is_v3():
+            room_filter = None if (not clean_room or clean_room in ("all", "*")) else clean_room
+            return self.v3.list_calendar_events(
+                room_name_or_id=room_filter,
+                resource=resource or None,
+                start_after=start_from or None,
+                end_before=start_to or None,
+                hide_completed=not include_completed,
+            )
+
         conn = self._get_connection()
         query = "SELECT * FROM calendar_events WHERE 1=1"
         params: list[Any] = []
 
-        clean_room = (room_name or "").strip().lower()
         if clean_room and clean_room not in ("all", "*"):
             query += " AND room_name = ? COLLATE NOCASE"
             params.append(clean_room)
@@ -2201,6 +2526,17 @@ class ChatStorage:
         force: bool = False,
     ) -> dict[str, Any]:
         """Updates a calendar event, checking for resource collisions if timing/resource changes."""
+        if self.is_v3():
+            return self.v3.update_calendar_event(
+                event_id=event_id,
+                title=title,
+                description=description,
+                start_at=start_at,
+                end_at=end_at,
+                status=status,
+                resource=resource,
+            )
+
         ev = self.get_calendar_event_by_id(event_id)
         if not ev:
             raise ValueError(f"Evento #{event_id} não encontrado.")
@@ -2269,6 +2605,8 @@ class ChatStorage:
 
     def delete_calendar_event(self, event_id: int) -> bool:
         """Deletes a calendar event by ID."""
+        if self.is_v3():
+            return self.v3.delete_calendar_event(event_id)
         conn = self._get_connection()
         with conn:
             cur = conn.execute("DELETE FROM calendar_events WHERE id = ?", (event_id,))
