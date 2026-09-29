@@ -758,7 +758,7 @@ async def endpoint_post_message(request: Request) -> Response:
                         f"Conversação entre agentes pausada até intervenção do utilizador humano."
                     )
                     humans = hub.storage.v3.get_room_humans(room["id"])
-                    human_targets = [f"@{h['name']}" for h in humans] if humans else "all"
+                    human_targets = [f"@{h['name']}" for h in humans] if humans else [{"target_kind": "principal", "target_id": 0, "target_name": "nobody"}]
                     sys_msg = hub.storage.v3.add_message(
                         room_name_or_id=room["id"],
                         sender="System",
@@ -1037,6 +1037,48 @@ async def endpoint_toggle_reaction(request: Request) -> Response:
 
 async def endpoint_resolve_decision(request: Request) -> Response:
     """Resolves a pending human decision request."""
+    auth = get_request_auth(request)
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        if not auth:
+            return JSONResponse({"error": "Autenticação necessária"}, status_code=401)
+        p = auth.get("principal")
+        if not p or p.get("kind") != "human":
+            return JSONResponse({"error": "Acesso negado: Apenas utilizadores humanos podem tomar decisões."}, status_code=403)
+        message_id = int(request.path_params["message_id"])
+        try:
+            data = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+        decision = data.get("decision", "").strip()
+        if not decision:
+            return JSONResponse({"error": "Decision is required"}, status_code=400)
+        room_name = data.get("room_name", "").strip()
+        room = hub.storage.v3.get_room(room_name) if room_name else None
+        if not room:
+            msg_obj = hub.storage.v3.get_message_by_id(message_id)
+            if msg_obj:
+                room = hub.storage.v3.get_room_by_id(msg_obj["room_id"])
+        if not room:
+            return JSONResponse({"error": "Sala não encontrada"}, status_code=404)
+        if not hub.storage.v3.authorize(p, "write_room", {"room_id": room["id"]}):
+            return JSONResponse({"error": "Acesso negado: Sem permissão de escrita nesta sala."}, status_code=403)
+        try:
+            res = await hub.resolve_human_decision(
+                message_id=message_id,
+                room_name=room["name"],
+                decision=decision,
+                decider=p,
+                human_token=hub.human_token,
+            )
+            return JSONResponse(res)
+        except ValueError as ve:
+            return JSONResponse({"error": str(ve)}, status_code=400)
+        except PermissionError as pe:
+            return JSONResponse({"error": str(pe)}, status_code=403)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    # v2 fallback
     if not is_authenticated_human(request):
         return JSONResponse({"error": "Acesso negado: Apenas o utilizador humano autenticado pode tomar decisões."}, status_code=403)
     message_id = int(request.path_params["message_id"])
@@ -1046,7 +1088,7 @@ async def endpoint_resolve_decision(request: Request) -> Response:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
     room_name = data.get("room_name", "").strip()
     decision = data.get("decision", "").strip()
-    decider = data.get("decider", "Rui").strip()
+    decider = data.get("decider", hub.human_name).strip()
     if not decision:
         return JSONResponse({"error": "Decision is required"}, status_code=400)
     try:
@@ -1062,18 +1104,50 @@ async def endpoint_resolve_decision(request: Request) -> Response:
 
 async def endpoint_create_poll(request: Request) -> Response:
     """Creates a poll in a room."""
+    auth = get_request_auth(request)
     try:
         data = await request.json()
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
     room_name = data.get("room_name", "").strip()
-    creator = data.get("creator", "Human").strip()
     question = data.get("question", "").strip()
     options = data.get("options", [])
-    member_token = data.get("member_token", "").strip()
     if not question or len(options) < 2:
         return JSONResponse({"error": "Question and at least 2 options are required"}, status_code=400)
 
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        if not auth:
+            return JSONResponse({"error": "Autenticação necessária"}, status_code=401)
+        p = auth.get("principal")
+        room = hub.storage.v3.get_room(room_name)
+        if not room:
+            return JSONResponse({"error": f"Room '{room_name}' does not exist."}, status_code=404)
+        if room.get("is_archived"):
+            return JSONResponse({"error": f"A sala '{room['name']}' está arquivada."}, status_code=400)
+        if not hub.storage.v3.authorize(p, "write_room", {"room_id": room["id"]}):
+            return JSONResponse({"error": "Acesso negado: Sem permissão de escrita nesta sala."}, status_code=403)
+        role = p.get("kind", "human")
+        creator_name = p.get("name") or p.get("display_name")
+        try:
+            poll = await hub.create_poll(
+                room_name=room_name,
+                creator=creator_name,
+                question=question,
+                options=options,
+                human_token=hub.human_token if role == "human" else "",
+                role=role,
+            )
+            return JSONResponse(poll, status_code=201)
+        except ValueError as ve:
+            return JSONResponse({"error": str(ve)}, status_code=400)
+        except PermissionError as pe:
+            return JSONResponse({"error": str(pe)}, status_code=403)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    # v2 fallback
+    creator = data.get("creator", "Human").strip()
+    member_token = data.get("member_token", "").strip()
     is_human = is_authenticated_human(request)
     try:
         poll = await hub.create_poll(
@@ -1096,13 +1170,35 @@ async def endpoint_create_poll(request: Request) -> Response:
 
 async def endpoint_cast_vote(request: Request) -> Response:
     """Casts a vote on a poll."""
+    auth = get_request_auth(request)
     poll_id = int(request.path_params["poll_id"])
     try:
         data = await request.json()
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
-    voter = data.get("voter", "Human").strip()
     option_index = int(data.get("option_index", 0))
+
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        if not auth:
+            return JSONResponse({"error": "Autenticação necessária"}, status_code=401)
+        p = auth.get("principal")
+        poll = hub.storage.v3.get_poll(poll_id)
+        if not poll:
+            return JSONResponse({"error": f"Poll #{poll_id} not found"}, status_code=404)
+        if not hub.storage.v3.authorize(p, "write_room", {"room_id": poll["room_id"]}):
+            return JSONResponse({"error": "Acesso negado: Sem permissão nesta sala."}, status_code=403)
+        try:
+            poll_res = await hub.cast_vote(poll_id, p["id"], option_index)
+            return JSONResponse(poll_res)
+        except ValueError as ve:
+            return JSONResponse({"error": str(ve)}, status_code=400)
+        except PermissionError as pe:
+            return JSONResponse({"error": str(pe)}, status_code=403)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    # v2 fallback
+    voter = data.get("voter", "Human").strip()
     try:
         poll = await hub.cast_vote(poll_id, voter, option_index)
         return JSONResponse(poll)
@@ -1121,11 +1217,37 @@ async def endpoint_get_poll(request: Request) -> Response:
 
 async def endpoint_close_poll(request: Request) -> Response:
     """Closes an active poll."""
+    auth = get_request_auth(request)
     poll_id = int(request.path_params["poll_id"])
     try:
         data = await request.json()
     except Exception:
         data = {}
+
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        if not auth:
+            return JSONResponse({"error": "Autenticação necessária"}, status_code=401)
+        p = auth.get("principal")
+        poll = hub.storage.v3.get_poll(poll_id)
+        if not poll:
+            return JSONResponse({"error": f"Poll #{poll_id} not found"}, status_code=404)
+        if not hub.storage.v3.authorize(p, "manage_poll", {"creator_id": poll["creator_id"]}):
+            return JSONResponse({"error": "Apenas o criador da votação ou um administrador pode encerrá-la."}, status_code=403)
+        try:
+            poll_res = await hub.close_poll(
+                poll_id=poll_id,
+                closer=str(p["id"]),
+                is_human=(p.get("kind") == "human"),
+            )
+            return JSONResponse(poll_res)
+        except ValueError as ve:
+            return JSONResponse({"error": str(ve)}, status_code=400)
+        except PermissionError as pe:
+            return JSONResponse({"error": str(pe)}, status_code=403)
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    # v2 fallback
     closer = data.get("closer", "Human").strip()
     member_token = data.get("member_token", "").strip()
     is_human = is_authenticated_human(request)
@@ -1147,9 +1269,18 @@ async def endpoint_close_poll(request: Request) -> Response:
 
 
 async def endpoint_archive_room(request: Request) -> Response:
-    """Archives a room. Restricted strictly to authenticated human users."""
-    if not is_authenticated_human(request):
-        return JSONResponse({"error": "Apenas o utilizador humano autenticado tem permissão para arquivar salas."}, status_code=403)
+    """Archives a room. Restricted strictly to admin in v3, or authenticated human in v2."""
+    auth = get_request_auth(request)
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        if not auth:
+            return JSONResponse({"error": "Autenticação necessária"}, status_code=401)
+        p = auth.get("principal")
+        if not hub.storage.v3.authorize(p, "admin"):
+            return JSONResponse({"error": "Apenas administradores podem arquivar salas."}, status_code=403)
+    else:
+        if not is_authenticated_human(request):
+            return JSONResponse({"error": "Apenas o utilizador humano autenticado tem permissão para arquivar salas."}, status_code=403)
+
     room_name = request.path_params["room_name"]
     try:
         res = hub.archive_room(room_name, requester_role="human")
@@ -1160,9 +1291,18 @@ async def endpoint_archive_room(request: Request) -> Response:
 
 
 async def endpoint_unarchive_room(request: Request) -> Response:
-    """Unarchives a room. Restricted strictly to authenticated human users."""
-    if not is_authenticated_human(request):
-        return JSONResponse({"error": "Apenas o utilizador humano autenticado tem permissão para desarquivar salas."}, status_code=403)
+    """Unarchives a room. Restricted strictly to admin in v3, or authenticated human in v2."""
+    auth = get_request_auth(request)
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        if not auth:
+            return JSONResponse({"error": "Autenticação necessária"}, status_code=401)
+        p = auth.get("principal")
+        if not hub.storage.v3.authorize(p, "admin"):
+            return JSONResponse({"error": "Apenas administradores podem desarquivar salas."}, status_code=403)
+    else:
+        if not is_authenticated_human(request):
+            return JSONResponse({"error": "Apenas o utilizador humano autenticado tem permissão para desarquivar salas."}, status_code=403)
+
     room_name = request.path_params["room_name"]
     try:
         res = hub.unarchive_room(room_name, requester_role="human")
@@ -1216,7 +1356,10 @@ async def endpoint_change_password(request: Request) -> Response:
 
     old_password = data.get("old_password", "") or request.headers.get("x-room-password", "")
     new_password = data.get("new_password", "")
-    actor_name = data.get("actor_name", "") or ("Rui" if is_authenticated_human(request) else "")
+    auth = get_request_auth(request)
+    p = auth.get("principal") if auth else None
+    default_actor = (p.get("name") if p else auth.get("name")) if auth else (hub.human_name if is_authenticated_human(request) else "")
+    actor_name = data.get("actor_name", "") or default_actor
     supervisor_token = hub.human_token if is_authenticated_human(request) else data.get("supervisor_token", "")
 
     try:
@@ -1248,7 +1391,10 @@ async def endpoint_kick_member(request: Request) -> Response:
     if not member_to_kick:
         return JSONResponse({"error": "member_to_kick is required"}, status_code=400)
 
-    actor_name = data.get("actor_name", "") or ("Rui" if is_authenticated_human(request) else "")
+    auth = get_request_auth(request)
+    p = auth.get("principal") if auth else None
+    default_actor = (p.get("name") if p else auth.get("name")) if auth else (hub.human_name if is_authenticated_human(request) else "")
+    actor_name = data.get("actor_name", "") or default_actor
     supervisor_token = hub.human_token if is_authenticated_human(request) else data.get("supervisor_token", "")
     room_password = data.get("room_password", "") or request.headers.get("x-room-password", "")
 
@@ -1421,7 +1567,10 @@ async def endpoint_create_task(request: Request) -> Response:
     is_human = is_authenticated_human(request)
     human_tok = hub.human_token if is_human else ""
     member_tok = data.get("member_token", "")
-    creator = "Rui" if is_human else (data.get("created_by") or data.get("creator") or "WebUser")
+    auth = get_request_auth(request)
+    p = auth.get("principal") if auth else None
+    human_name = (p.get("display_name") or p.get("name") if p else auth.get("name")) if auth else hub.human_name
+    creator = human_name if is_human else (data.get("created_by") or data.get("creator") or "WebUser")
 
     try:
         task = await hub.create_task(
@@ -1464,7 +1613,10 @@ async def endpoint_update_task(request: Request) -> Response:
     is_human = is_authenticated_human(request)
     human_tok = hub.human_token if is_human else ""
     member_tok = data.get("member_token", "")
-    actor = "Rui" if is_human else (data.get("actor") or data.get("assignee") or "")
+    auth = get_request_auth(request)
+    p = auth.get("principal") if auth else None
+    human_name = (p.get("display_name") or p.get("name") if p else auth.get("name")) if auth else hub.human_name
+    actor = human_name if is_human else (data.get("actor") or data.get("assignee") or "")
 
     allowed_fields = [
         "title", "description", "status", "assignee", "waiting_for_agent",
@@ -1498,6 +1650,9 @@ async def endpoint_delete_task(request: Request) -> Response:
     human_tok = hub.human_token if is_human else ""
     member_tok = request.headers.get("x-member-token", "")
     password = request.query_params.get("password", "")
+    auth = get_request_auth(request)
+    p = auth.get("principal") if auth else None
+    human_name = (p.get("display_name") or p.get("name") if p else auth.get("name")) if auth else hub.human_name
 
     try:
         res = await hub.delete_task(
@@ -1505,7 +1660,7 @@ async def endpoint_delete_task(request: Request) -> Response:
             member_token=member_tok,
             human_token=human_tok,
             password=password,
-            actor="Rui" if is_human else "",
+            actor=human_name if is_human else "",
         )
         return JSONResponse(res)
     except PermissionError as pe:
@@ -1685,7 +1840,9 @@ async def endpoint_create_calendar_event(request: Request) -> Response:
     is_human = auth["is_human"]
     human_tok = hub.human_token if is_human else ""
     member_tok = data.get("member_token", "") or (auth["token"] if not is_human else "")
-    creator = "Rui" if is_human else (auth["name"] or data.get("created_by") or "WebUser")
+    p = auth.get("principal") if auth else None
+    human_name = (p.get("display_name") or p.get("name") if p else auth.get("name")) if auth else hub.human_name
+    creator = human_name if is_human else (auth["name"] or data.get("created_by") or "WebUser")
     password = data.get("password", "") or request.headers.get("x-room-password", "")
     force = bool(data.get("force", False))
 
@@ -2549,11 +2706,13 @@ async def endpoint_admin_set_room_password(request: Request) -> Response:
     else:
         password = data.get("password", "")
     try:
+        principal = current_principal.get(None)
+        actor_name = principal.get("name") if principal else hub.human_name
         res = hub.change_room_password(
             room_name=room_name,
             old_password="",
             new_password=password,
-            actor_name="Rui",
+            actor_name=actor_name,
             supervisor_token=hub.human_token,
         )
         res["password"] = password

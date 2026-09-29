@@ -406,7 +406,7 @@
               </div>
               <div>
                 <label class="block text-[10px] text-slate-500 uppercase font-bold mb-0.5">Responsável</label>
-                <input id="task-input-assignee" type="text" placeholder="ex: Claude, Rui" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-xs" />
+                <input id="task-input-assignee" type="text" placeholder="ex: Claude, dev, admin" class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2 py-1 text-slate-200 focus:outline-none focus:border-indigo-500 text-xs" />
               </div>
             </div>
             <div class="grid grid-cols-2 gap-2">
@@ -908,7 +908,7 @@
           <div>
             <h3 class="font-bold text-white text-base flex items-center gap-2">
               Painel de Gestão do Supervisor
-              <span class="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-mono font-medium border border-emerald-500/30">Rui</span>
+              <span class="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-mono font-medium border border-emerald-500/30">Admin</span>
             </h3>
             <p class="text-xs text-slate-400">Controlo centralizado de agentes, tokens e senhas de salas</p>
           </div>
@@ -1339,17 +1339,21 @@
             <a href="/admin" title="Consola de Administração" class="px-2.5 py-1 rounded-lg bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold flex items-center space-x-1 mr-2 transition shadow-sm">
               <i data-lucide="shield-alert" class="w-3.5 h-3.5"></i>
               <span class="hidden md:inline">Admin</span>
-            </a>` : ''}
+            </a>
             <button onclick="openAdminModal()" title="Painel de Gestão do Supervisor (Agentes & Salas)" class="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center space-x-1 mr-2 transition shadow-sm">
               <i data-lucide="settings" class="w-3.5 h-3.5"></i>
               <span class="hidden md:inline">Gestão</span>
-            </button>
+            </button>` : ''}
           `;
         }
         if (userStatus) {
-          userStatus.textContent = '✓ Autenticado';
+          userStatus.textContent = '✓ ' + displayName;
           userStatus.className = 'text-[10px] text-emerald-400 font-medium truncate';
           userStatus.onclick = null;
+        }
+        const usernameInput = document.getElementById('my-username');
+        if (usernameInput && displayName) {
+          usernameInput.value = displayName;
         }
       } else {
         if (container) {
@@ -1357,10 +1361,6 @@
             <button onclick="openAuthModal()" class="px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-medium flex items-center space-x-1 transition mr-1.5" title="Autenticar como humano para enviar mensagens e votar">
               <i data-lucide="lock" class="w-3.5 h-3.5"></i>
               <span>Entrar</span>
-            </button>
-            <button onclick="openAdminModal()" title="Painel de Gestão do Supervisor (Agentes & Salas)" class="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center space-x-1 mr-2 transition shadow-sm">
-              <i data-lucide="settings" class="w-3.5 h-3.5"></i>
-              <span>Gestão</span>
             </button>
           `;
         }
@@ -2205,6 +2205,11 @@
           ? `<span class="flex items-center space-x-1 text-[10px] text-indigo-300 font-mono bg-indigo-950/60 px-1.5 py-0.5 rounded border border-indigo-500/30 flex-shrink-0" title="Destinatários"><span class="text-slate-500">→</span><span>${escapeHtml(msg.to.join(', '))}</span></span>`
           : '';
 
+        const displayName = msg.display_name || msg.sender;
+        const usernameSubtitle = (msg.sender_username && msg.display_name && msg.display_name !== msg.sender_username)
+          ? `<span class="text-[11px] text-slate-400 font-normal">@${escapeHtml(msg.sender_username)}</span>`
+          : '';
+
         return `
           <div id="msg-${msg.id}" class="flex items-start space-x-3 group animate-fadeIn max-w-full rounded-2xl transition duration-500">
             <div class="w-9 h-9 rounded-xl flex-shrink-0 flex items-center justify-center font-bold text-xs ${
@@ -2215,7 +2220,8 @@
             <div class="flex-1 min-w-0 bg-slate-900/80 border border-slate-800/80 rounded-2xl p-3.5 shadow-sm overflow-hidden">
               <div class="flex items-center space-x-2 mb-1.5 flex-wrap gap-y-1">
                 <span class="font-mono text-[11px] text-slate-400 font-semibold px-1.5 py-0.5 rounded bg-slate-950/80 border border-slate-700/60 flex-shrink-0" title="Mensagem ID #${msg.id}">#${msg.id}</span>
-                <span class="font-semibold text-sm text-slate-200 truncate max-w-[200px]">${escapeHtml(msg.sender)}</span>
+                <span class="font-semibold text-sm text-slate-200 truncate max-w-[200px]" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</span>
+                ${usernameSubtitle}
                 <span class="px-2 py-0.5 rounded text-[10px] font-medium border flex-shrink-0 ${badgeColor}">${roleLabel}</span>
                 ${verifiedBadge}
                 ${toBadge}
@@ -2973,7 +2979,7 @@
         if (t.status === 'in_progress') {
           statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1">🟢 Em Curso</span>';
         } else if (t.status === 'waiting_human') {
-          statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/25 text-amber-300 border border-amber-500/40 animate-pulse flex items-center gap-1">⏳ Espera Rui</span>';
+          statusBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/25 text-amber-300 border border-amber-500/40 animate-pulse flex items-center gap-1">⏳ Espera Humano</span>';
         } else if (t.status === 'waiting_agent') {
           statusBadge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">⏳ Espera @${escapeHtml(t.waiting_for_agent || 'Agente')}</span>`;
         } else if (t.status === 'done') {

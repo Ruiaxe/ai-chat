@@ -81,6 +81,19 @@ class StorageV3:
     def is_v3(self) -> bool:
         return True
 
+    @property
+    def v3(self) -> "StorageV3":
+        return self
+
+    def mask_tokens_in_text(self, text: str, human_token: str = "") -> str:
+        """Data Loss Prevention (DLP): Masks any secret tokens in text."""
+        if not text:
+            return text
+        masked = text
+        if human_token and len(human_token) >= 16:
+            masked = masked.replace(human_token, "[REDACTED_TOKEN]")
+        return masked
+
     def _init_db(self) -> None:
         """Initializes database schema from schema_v3.sql if not already initialized."""
         conn = self._get_connection()
@@ -204,9 +217,9 @@ class StorageV3:
             LEFT JOIN humans h ON p.id = h.principal_id
             LEFT JOIN agents a ON p.id = a.principal_id
             LEFT JOIN agent_roles ar ON a.default_role_id = ar.id
-            WHERE p.name = ? COLLATE NOCASE;
+            WHERE p.name = ? COLLATE NOCASE OR p.display_name = ? COLLATE NOCASE;
             """,
-            (name.strip(),),
+            (name.strip(), name.strip()),
         ).fetchone()
         return dict(row) if row else None
 
@@ -1110,7 +1123,11 @@ class StorageV3:
         return result
 
     def archive_room(self, room_id_or_name: int | str, actor_id: int | None = None, actor_name: str = "admin") -> bool:
-        """Marks a room as archived."""
+        """Marks a room as archived. Restricted to admins."""
+        if actor_id is not None:
+            actor = self.get_principal_by_id(actor_id)
+            if actor and not self.authorize(actor, "admin"):
+                raise PermissionError("Acesso negado: Apenas administradores podem arquivar salas.")
         room = self._resolve_room(room_id_or_name)
         if not room:
             return False
@@ -1131,7 +1148,11 @@ class StorageV3:
         return archived
 
     def unarchive_room(self, room_id_or_name: int | str, actor_id: int | None = None, actor_name: str = "admin") -> bool:
-        """Unarchives a room."""
+        """Unarchives a room. Restricted to admins."""
+        if actor_id is not None:
+            actor = self.get_principal_by_id(actor_id)
+            if actor and not self.authorize(actor, "admin"):
+                raise PermissionError("Acesso negado: Apenas administradores podem desarquivar salas.")
         room = self._resolve_room(room_id_or_name)
         if not room:
             return False
@@ -1713,7 +1734,8 @@ class StorageV3:
         if room.get("is_archived"):
             raise ValueError(f"Sala '{room['name']}' está arquivada: apenas leitura permitida.")
 
-        principal = self._resolve_principal(sender) if sender else None
+        sender_id_param = kwargs.get("sender_id")
+        principal = (self._resolve_principal(sender_id_param) if sender_id_param else None) or (self._resolve_principal(sender) if sender else None)
         sender_id = principal["id"] if principal else None
         sender_kind = (role if role else (principal.get("kind") if principal else "system")) or "system"
         sender_name = (principal.get("display_name") or principal.get("name")) if principal else (str(sender) if sender else "System")
@@ -1730,6 +1752,8 @@ class StorageV3:
             t_id = r.get("target_id")
             t_name = r.get("target_name") or ""
             if t_kind == "principal":
+                if t_id == 0:
+                    continue
                 p_recip = self.get_principal_by_id(t_id)
                 if p_recip and p_recip.get("kind") == "human" and p_recip.get("access_role") == "admin":
                     continue
@@ -1791,9 +1815,10 @@ class StorageV3:
         conn = self._get_connection()
         row = conn.execute(
             """
-            SELECT m.*, r.name as room_name
+            SELECT m.*, r.name as room_name, p.display_name as sender_display_name, p.name as sender_username
             FROM messages m
             JOIN rooms r ON m.room_id = r.id
+            LEFT JOIN principals p ON m.sender_id = p.id
             WHERE m.id = ?;
             """,
             (message_id,),
@@ -1803,6 +1828,8 @@ class StorageV3:
         msg = dict(row)
         msg["metadata"] = json.loads(msg["metadata"]) if msg["metadata"] else {}
         msg["sender"] = msg["sender_name"]
+        msg["display_name"] = msg.get("sender_display_name") or msg["sender_name"]
+        msg["sender_username"] = msg.get("sender_username") or msg["sender_name"]
         msg["role"] = msg["sender_kind"]
 
         # Fetch recipients
@@ -1831,9 +1858,10 @@ class StorageV3:
         if since_id > 0 and before_id > 0:
             rows = conn.execute(
                 """
-                SELECT m.*, r.name as room_name
+                SELECT m.*, r.name as room_name, p.display_name as sender_display_name, p.name as sender_username
                 FROM messages m
                 JOIN rooms r ON m.room_id = r.id
+                LEFT JOIN principals p ON m.sender_id = p.id
                 WHERE m.room_id = ? AND m.id > ? AND m.id < ?
                 ORDER BY m.id ASC
                 LIMIT ?;
@@ -1844,9 +1872,10 @@ class StorageV3:
             rows = conn.execute(
                 """
                 SELECT * FROM (
-                    SELECT m.*, r.name as room_name
+                    SELECT m.*, r.name as room_name, p.display_name as sender_display_name, p.name as sender_username
                     FROM messages m
                     JOIN rooms r ON m.room_id = r.id
+                    LEFT JOIN principals p ON m.sender_id = p.id
                     WHERE m.room_id = ? AND m.id < ?
                     ORDER BY m.id DESC
                     LIMIT ?
@@ -1857,9 +1886,10 @@ class StorageV3:
         elif since_id > 0 or (since_id == 0 and from_beginning):
             rows = conn.execute(
                 """
-                SELECT m.*, r.name as room_name
+                SELECT m.*, r.name as room_name, p.display_name as sender_display_name, p.name as sender_username
                 FROM messages m
                 JOIN rooms r ON m.room_id = r.id
+                LEFT JOIN principals p ON m.sender_id = p.id
                 WHERE m.room_id = ? AND m.id > ?
                 ORDER BY m.id ASC
                 LIMIT ?;
@@ -1870,9 +1900,10 @@ class StorageV3:
             rows = conn.execute(
                 """
                 SELECT * FROM (
-                    SELECT m.*, r.name as room_name
+                    SELECT m.*, r.name as room_name, p.display_name as sender_display_name, p.name as sender_username
                     FROM messages m
                     JOIN rooms r ON m.room_id = r.id
+                    LEFT JOIN principals p ON m.sender_id = p.id
                     WHERE m.room_id = ?
                     ORDER BY m.id DESC
                     LIMIT ?
@@ -1890,6 +1921,8 @@ class StorageV3:
             m = dict(r)
             m["metadata"] = json.loads(m["metadata"]) if m["metadata"] else {}
             m["sender"] = m["sender_name"]
+            m["display_name"] = m.get("sender_display_name") or m["sender_name"]
+            m["sender_username"] = m.get("sender_username") or m["sender_name"]
             m["role"] = m["sender_kind"]
             m["reactions"] = reactions_map.get(m["id"], [])
             recips = recipients_map.get(m["id"], [{"target_kind": "all", "target_id": None, "target_name": "all"}])
@@ -2022,27 +2055,25 @@ class StorageV3:
         if sender_name and sender_name.strip().lower() == p["name"].strip().lower():
             return False
 
-        # 2. Human admins see/receive everything
-        if p.get("kind") == "human" and p.get("access_role") == "admin":
-            return True
-
         target_room = room_name_or_id if room_name_or_id is not None else msg.get("room_id", msg.get("room_name"))
         room = self._resolve_room(target_room) if target_room is not None else None
         if not room:
             return True
 
-        # Check room membership and observer status
+        is_admin = (p.get("kind") == "human" and p.get("access_role") == "admin")
         access = self.get_room_access(room["id"], p["id"])
-        if not access:
+        if not access and not is_admin:
             # Not a member of the room
             return False
 
-        is_observer = (access.get("can_write", 1) == 0)
+        is_observer = bool(access and access.get("can_write", 1) == 0)
 
         # Check recipients
         recipients = msg.get("recipients", [])
         if not recipients:
             # Default or legacy = "all"
+            if is_admin:
+                return True
             return not is_observer
 
         # Check if explicitly targeted by principal_id
@@ -2064,6 +2095,8 @@ class StorageV3:
         # Check if broadcast to 'all'
         for r in recipients:
             if r.get("target_kind") == "all":
+                if is_admin:
+                    return True
                 if is_observer:
                     return False  # Observers never wake on 'all'
                 return True
@@ -2219,19 +2252,25 @@ class StorageV3:
         message_id: int,
         decision: str,
         decider_name_or_id: int | str | dict[str, Any] = "admin",
+        decider: int | str | dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any] | None:
         """Resolves a pending human decision request."""
-        decider_p = self._resolve_principal(decider_name_or_id)
-        decider_name = (decider_p.get("display_name") or decider_p.get("name")) if decider_p else str(decider_name_or_id)
+        target_decider = decider if decider is not None else decider_name_or_id
+        decider_p = self._resolve_principal(target_decider)
+        decider_name = (decider_p.get("display_name") or decider_p.get("name")) if decider_p else str(target_decider)
         conn = self._get_connection()
         cursor = conn.execute("SELECT metadata FROM messages WHERE id = ?;", (message_id,))
         row = cursor.fetchone()
         if not row:
             return None
         meta = json.loads(row["metadata"] or "{}")
+        if meta.get("status") == "resolved":
+            raise ValueError(f"A decisão para a mensagem #{message_id} já foi resolvida anteriormente.")
         meta["status"] = "resolved"
         meta["decision"] = decision
-        meta["decided_by"] = decider_name
+        meta["decided_by"] = decider_p["id"] if decider_p else (target_decider if isinstance(target_decider, int) else decider_name)
+        meta["decided_by_name"] = decider_name
         meta["decided_at"] = utc_now()
         with conn:
             conn.execute(
@@ -2366,19 +2405,25 @@ class StorageV3:
         return self.get_poll(poll_id)
 
     def close_poll(self, poll_id: int, closer_name_or_id: int | str | dict[str, Any] | None = None) -> dict[str, Any]:
-        """Closes an active poll."""
+        """Closes an active poll. Enforces that closer is creator or admin."""
         conn = self._get_connection()
+        poll_row = conn.execute("SELECT creator_id, is_closed FROM polls WHERE id = ?;", (poll_id,)).fetchone()
+        if not poll_row:
+            raise ValueError(f"Poll #{poll_id} não existe.")
+        if poll_row["is_closed"]:
+            raise ValueError(f"Poll #{poll_id} já se encontra encerrada.")
+
+        if closer_name_or_id is not None:
+            closer_p = self._resolve_principal(closer_name_or_id)
+            if closer_p and not self.authorize(closer_p, "manage_poll", {"creator_id": poll_row["creator_id"]}):
+                raise PermissionError("Apenas o criador da votação ou um administrador pode encerrá-la.")
+
         now_str = utc_now()
         with conn:
-            cursor = conn.execute(
+            conn.execute(
                 "UPDATE polls SET is_closed = 1, closed_at = ? WHERE id = ? AND is_closed = 0;",
                 (now_str, poll_id),
             )
-            if cursor.rowcount == 0:
-                poll = self.get_poll(poll_id)
-                if not poll:
-                    raise ValueError(f"Poll #{poll_id} não existe.")
-                raise ValueError(f"Poll #{poll_id} já se encontra encerrada.")
         return self.get_poll(poll_id)
 
     # ------------------------------------------------------------------ Tasks (Gantt-ready)

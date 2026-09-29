@@ -726,6 +726,8 @@ async def call_human(
     member_token: str = "",
     agent_token: str = "",
     password: str = "",
+    to: str = "",
+    target_human: str = "",
 ) -> str:
     """
     Calls the human user for an important decision, impasse resolution, or architectural choice.
@@ -733,6 +735,8 @@ async def call_human(
     Renders high-visibility alert cards, desktop notifications, and quick-action choice buttons in the human's Web UI.
     - options: Optional list of proposed choices (e.g. ['Option A: Vector DB', 'Option B: SQLite']).
     - password: Room password if calling in a password-protected room.
+    - to: Optional target recipient (e.g. 'humans' or '@Alice').
+    - target_human: Optional specific human username or ID to target.
     """
     token = (agent_token or member_token).strip()
     ident, err = _authenticate(token, expected_callsign=sender_name or agent_name)
@@ -748,6 +752,8 @@ async def call_human(
             options=options,
             member_token=token,
             password=password,
+            to=to or None,
+            target_human=target_human or None,
         )
         return json.dumps({
             "status": "success",

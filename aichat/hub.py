@@ -691,7 +691,7 @@ class ChatHub:
                             f"Conversação entre agentes pausada até intervenção do utilizador humano."
                         )
                         humans = self.storage.v3.get_room_humans(r_obj["id"])
-                        human_targets = [f"@{h['name']}" for h in humans] if humans else "all"
+                        human_targets = [f"@{h['name']}" for h in humans] if humans else [{"target_kind": "principal", "target_id": 0, "target_name": "nobody"}]
                         sys_msg = self.storage.v3.add_message(
                             room_name_or_id=r_obj["id"],
                             sender="System",
@@ -817,8 +817,10 @@ class ChatHub:
         options: list[str] | None = None,
         member_token: str = "",
         password: str = "",
+        to: str | list[Any] | None = None,
+        target_human: str | int | None = None,
     ) -> dict[str, Any]:
-        """Calls the human user for a decision with optional predefined choices."""
+        """Calls human user(s) for a decision with optional predefined choices."""
         opts = options or []
         metadata = {
             "status": "pending",
@@ -833,6 +835,32 @@ class ChatHub:
             formatted_opts = "\n\n**Opções propostas:**\n" + "\n".join(f"- **{i+1}.** {opt}" for i, opt in enumerate(opts))
 
         content = f"🚨 **[DECISÃO HUMANA SOLICITADA]**\n\n{question.strip()}{formatted_opts}"
+
+        # Determine target recipients
+        is_v3 = hasattr(self.storage, "is_v3") and self.storage.is_v3()
+        final_to: Any = "all"
+        if is_v3:
+            room = self.storage.v3.get_room(room_name)
+            if not room:
+                raise ValueError(f"Room '{room_name}' does not exist.")
+            target_candidate = target_human or to
+            if target_candidate and target_candidate not in ("humans", ["humans"], "@humans"):
+                # Directed to a specific human
+                p_target = self.storage.v3._resolve_principal(target_candidate)
+                if not p_target:
+                    raise ValueError(f"Humano '{target_candidate}' não encontrado.")
+                if p_target.get("kind") != "human":
+                    raise ValueError(f"'{target_candidate}' não é um utilizador humano.")
+                if not self.storage.v3.authorize(p_target, "read_room", {"room_id": room["id"]}):
+                    raise ValueError(f"O humano '{p_target['name']}' não tem acesso à sala '{room['name']}'.")
+                final_to = [f"@{p_target['name']}"]
+            else:
+                # Open call to all humans with room access
+                humans = self.storage.v3.get_room_humans(room["id"])
+                final_to = [f"@{h['name']}" for h in humans] if humans else [{"target_kind": "principal", "target_id": 0, "target_name": "nobody"}]
+        else:
+            final_to = "all"
+
         msg = await self.send_message(
             room_name=room_name,
             sender=sender,
@@ -842,6 +870,7 @@ class ChatHub:
             member_token=member_token,
             message_type="decision_request",
             metadata=metadata,
+            to=final_to,
         )
         try:
             task = self.storage.create_task(
@@ -863,15 +892,35 @@ class ChatHub:
         message_id: int,
         room_name: str,
         decision: str,
-        decider: str = "Rui",
+        decider: str | dict[str, Any] = "",
         human_token: str = "",
     ) -> dict[str, Any]:
         """Human submits their decision, resolving the request and posting a confirmation."""
         import secrets
+        is_v3 = hasattr(self.storage, "is_v3") and self.storage.is_v3()
         clean_ht = (human_token or "").strip()
-        if clean_ht and not secrets.compare_digest(clean_ht, self.human_token):
-            raise PermissionError("Acesso negado: Apenas o utilizador humano com autenticação válida pode tomar decisões.")
-        meta = self.storage.resolve_decision(message_id, decision, decider=decider)
+        if not is_v3:
+            if clean_ht and not secrets.compare_digest(clean_ht, self.human_token):
+                raise PermissionError("Acesso negado: Apenas o utilizador humano com autenticação válida pode tomar decisões.")
+            decider_name = decider if isinstance(decider, str) and decider else self.human_name
+            decider_param: Any = decider_name
+        else:
+            if isinstance(decider, dict):
+                decider_name = decider.get("display_name") or decider.get("name") or "Humano"
+                decider_param = decider
+            elif isinstance(decider, int) or (isinstance(decider, str) and decider.isdigit()):
+                decider_p = self.storage.v3.get_principal_by_id(int(decider))
+                decider_name = (decider_p.get("display_name") or decider_p.get("name")) if decider_p else str(decider)
+                decider_param = decider
+            elif decider:
+                decider_p = self.storage.v3.get_principal_by_name(str(decider))
+                decider_name = (decider_p.get("display_name") or decider_p.get("name")) if decider_p else str(decider)
+                decider_param = decider_p["id"] if decider_p else decider
+            else:
+                decider_name = "Humano"
+                decider_param = decider_name
+
+        meta = self.storage.resolve_decision(message_id, decision, decider=decider_param)
         if not meta:
             raise ValueError(f"Mensagem #{message_id} não encontrada.")
         if not room_name:
@@ -893,7 +942,7 @@ class ChatHub:
             for r in rows:
                 updated_t = self.storage.update_task(
                     r[0],
-                    actor=decider,
+                    actor=decider_name,
                     status="done",
                     description=f"Decisão do humano: {decision}",
                 )
@@ -907,7 +956,7 @@ class ChatHub:
 
         resp_msg = await self.send_message(
             room_name=canonical_name,
-            sender=decider,
+            sender=decider_name,
             content=f"👤 **[DECISÃO DO HUMANO]**:\n\nOpção escolhida: **{decision}**",
             role="human",
             human_token=self.human_token,
@@ -1001,29 +1050,52 @@ class ChatHub:
         if p_current.get("is_closed"):
             raise ValueError(f"A votação #{poll_id} já se encontra encerrada.")
 
-        clean_ht = (human_token or "").strip()
-        if is_human:
-            if clean_ht and not secrets.compare_digest(clean_ht, self.human_token):
-                raise PermissionError("Acesso negado: encerramento como humano requer autenticação válida.")
-            role_to_use = "human"
+        is_v3 = hasattr(self.storage, "is_v3") and self.storage.is_v3()
+        closer_p = None
+        if is_v3:
+            closer_p = self.storage.v3._resolve_principal(closer)
+            if not closer_p:
+                raise PermissionError(f"Principal '{closer}' não encontrado.")
+            if not self.storage.v3.authorize(closer_p, "manage_poll", {"creator_id": p_current.get("creator_id")}):
+                raise PermissionError("Apenas o criador da votação ou um administrador pode encerrá-la.")
+            role_to_use = closer_p.get("kind", "human")
             tok_to_use = ""
-            ht_to_use = self.human_token
+            ht_to_use = self.human_token if role_to_use == "human" else ""
+            poll = self.storage.v3.close_poll(poll_id, closer_name_or_id=closer_p["id"])
         else:
-            if p_current["creator"].strip().lower() != closer.strip().lower():
-                raise PermissionError("Apenas o criador da votação ou o humano podem encerrá-la.")
-            valid, err = self.storage.verify_member_token(p_current["room_name"], closer, member_token)
-            if not valid or not member_token:
-                raise PermissionError(f"Acesso negado: É obrigatório fornecer o member_token do criador para encerrar a votação.")
-            role_to_use = "agent"
-            tok_to_use = member_token
-            ht_to_use = ""
+            clean_ht = (human_token or "").strip()
+            if is_human:
+                if clean_ht and not secrets.compare_digest(clean_ht, self.human_token):
+                    raise PermissionError("Acesso negado: encerramento como humano requer autenticação válida.")
+                role_to_use = "human"
+                tok_to_use = ""
+                ht_to_use = self.human_token
+            else:
+                if p_current["creator"].strip().lower() != closer.strip().lower():
+                    raise PermissionError("Apenas o criador da votação ou o humano podem encerrá-la.")
+                valid, err = self.storage.verify_member_token(p_current["room_name"], closer, member_token)
+                if not valid or not member_token:
+                    raise PermissionError(f"Acesso negado: É obrigatório fornecer o member_token do criador para encerrar a votação.")
+                role_to_use = "agent"
+                tok_to_use = member_token
+                ht_to_use = ""
 
-        poll = self.storage.close_poll(poll_id)
-        results_str = "\n".join(f"- {opt['text']}: **{opt['votes']} votos ({opt['percentage']}%)**" for opt in poll["options"])
+            poll = self.storage.close_poll(poll_id)
+
+        if "results" in poll:
+            tot = poll.get("total_votes", 0) or 1
+            results_str = "\n".join(
+                f"- {r['option']}: **{r['votes']} votos ({round(r['votes']/tot*100)}%)**"
+                for r in poll["results"]
+            )
+        else:
+            results_str = "\n".join(f"- {opt['text']}: **{opt['votes']} votos ({opt['percentage']}%)**" for opt in poll["options"])
+
+        sender_to_use = (closer_p.get("display_name") or closer_p.get("name")) if is_v3 and closer_p else closer
 
         await self.send_message(
             room_name=poll["room_name"],
-            sender=closer,
+            sender=sender_to_use,
             content=f"🏁 **[VOTAÇÃO ENCERRADA #{poll['id']}]**\n\n**{poll['question']}**\n\n**Resultado Final:**\n{results_str}\nTotal de votos: {poll['total_votes']}",
             role=role_to_use,
             password=password,
@@ -1858,7 +1930,7 @@ class ChatHub:
         is_human = bool(clean_ht and secrets.compare_digest(clean_ht, self.human_token))
 
         if is_human:
-            effective_creator = clean_created_by or "Rui"
+            effective_creator = clean_created_by or self.human_name
         elif clean_created_by:
             valid, err = self.storage.verify_member_token(canonical_name, clean_created_by, member_token)
             if not valid:
@@ -1913,7 +1985,7 @@ class ChatHub:
 
         clean_actor = actor.strip()
         if is_human:
-            effective_actor = clean_actor or "Rui"
+            effective_actor = clean_actor or self.human_name
         else:
             expected_owners = [o for o in (existing.get("assignee"), existing.get("created_by")) if o]
             if expected_owners and clean_actor:
@@ -2127,7 +2199,7 @@ class ChatHub:
         is_human = bool(clean_ht and secrets.compare_digest(clean_ht, self.human_token))
 
         if is_human:
-            effective_creator = clean_created_by or "Rui"
+            effective_creator = clean_created_by or self.human_name
         elif clean_created_by:
             valid, err = self.storage.verify_member_token(canonical_name, clean_created_by, member_token)
             if not valid:
