@@ -769,6 +769,41 @@ class StorageV3:
 
         return self.get_principal_by_id(row["p_id"]), None
 
+    def verify_member_token(self, room_name: str, member_name: str, token: str) -> tuple[bool, str]:
+        """
+        Validates the member's authentication token and room permissions in v3.
+        Returns (is_valid, error_msg).
+        """
+        clean_room = (room_name or "").strip()
+        clean_member = (member_name or "").strip()
+        clean_token = (token or "").strip()
+
+        if not clean_token:
+            return False, f"Acesso negado: Remetente '{clean_member}' não autenticado (token em falta)."
+
+        principal, err = self.authenticate_agent_token(clean_token)
+        if not principal:
+            principal = self.authenticate_human_session(clean_token)
+        if not principal:
+            return False, f"Acesso negado: Credenciais inválidas para '{clean_member}'."
+
+        if principal.get("status") != "active":
+            return False, f"Acesso negado: O registo de '{clean_member}' está desativado pelo supervisor (status='{principal.get('status')}')."
+
+        p_name = principal.get("name", "")
+        p_display = principal.get("display_name", "")
+        if clean_member and clean_member.lower() not in (p_name.lower(), p_display.lower()):
+            return False, f"Impersonation blocked: Remetente '{clean_member}' é uma identidade protegida. Token fornecido pertence a '{p_name}'."
+
+        if clean_room:
+            room = self.get_room(clean_room)
+            if not room:
+                return False, f"Acesso negado: Sala '{clean_room}' não existe."
+            if not self.authorize(principal, "write_room", {"room_id": room["id"]}):
+                return False, f"Acesso negado: '{p_name}' não tem permissão de escrita na sala '{clean_room}'."
+
+        return True, ""
+
     def rotate_agent_token(
         self,
         principal_id: int,
@@ -3228,24 +3263,32 @@ class StorageV3:
         clean_start = start_at.strip()
         clean_end = end_at.strip() if end_at and end_at.strip() else clean_start
         query = """
-            SELECT id, title, start_at, end_at, status
-            FROM calendar_events
-            WHERE resource = ? COLLATE NOCASE
-              AND status IN ('scheduled', 'in_progress')
+            SELECT ce.id, ce.title, ce.start_at, ce.end_at, ce.status, ce.resource,
+                   r.name as room_name,
+                   pc.name as creator_name, pc.display_name as creator_display, pc.kind as creator_kind
+            FROM calendar_events ce
+            LEFT JOIN rooms r ON ce.room_id = r.id
+            LEFT JOIN principals pc ON ce.created_by = pc.id
+            WHERE ce.resource = ? COLLATE NOCASE
+              AND ce.status IN ('scheduled', 'in_progress')
         """
         params: list[Any] = [clean_res]
         if clean_start == clean_end:
-            query += " AND (start_at <= ? AND COALESCE(end_at, start_at) >= ?)"
+            query += " AND (ce.start_at <= ? AND COALESCE(ce.end_at, ce.start_at) >= ?)"
             params.extend([clean_start, clean_start])
         else:
-            query += " AND (start_at < ? AND COALESCE(end_at, start_at) > ?)"
+            query += " AND (ce.start_at < ? AND COALESCE(ce.end_at, ce.start_at) > ?)"
             params.extend([clean_end, clean_start])
 
         if exclude_event_id:
-            query += " AND id != ?"
+            query += " AND ce.id != ?"
             params.append(exclude_event_id)
         rows = conn.execute(query, params).fetchall()
-        conflicts = [dict(r) for r in rows]
+        conflicts = []
+        for r in rows:
+            c = dict(r)
+            c["created_by"] = c.get("creator_display") or c.get("creator_name") or "utilizador"
+            conflicts.append(c)
         return {
             "resource": clean_res,
             "available": len(conflicts) == 0,

@@ -127,7 +127,6 @@ class TestV3Phase1Acceptance(unittest.IsolatedAsyncioTestCase):
     def tearDownClass(cls):
         hub.storage.close()
         hub.storage = cls.orig_storage
-        os.environ.pop("AICHAT_TESTING", None)
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def test_01_schema_v3_contract_and_integrity(self):

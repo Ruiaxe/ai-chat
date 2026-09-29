@@ -822,6 +822,9 @@ class ChatStorage:
         Unregistered senders cannot send messages.
         Returns (is_valid, error_msg).
         """
+        if self.is_v3():
+            return self.v3.verify_member_token(room_name, member_name, token)
+
         import secrets
         conn = self._get_connection()
         clean_room = room_name.strip()
@@ -1507,7 +1510,7 @@ class ChatStorage:
     ) -> dict[str, Any] | None:
         """Resolves a pending human decision request."""
         if self.is_v3():
-            return self.v3.resolve_decision(message_id=message_id, status=decision)
+            return self.v3.resolve_decision(message_id=message_id, decision=decision, decider=decider)
         conn = self._get_connection()
         cursor = conn.execute("SELECT metadata FROM messages WHERE id = ?", (message_id,))
         row = cursor.fetchone()
@@ -1767,6 +1770,8 @@ class ChatStorage:
 
     def get_message_by_id(self, message_id: int) -> dict[str, Any] | None:
         """Retrieves a single message by ID, including its parsed metadata and reactions."""
+        if self.is_v3():
+            return self.v3.get_message_by_id(message_id)
         conn = self._get_connection()
         cursor = conn.execute(
             """
@@ -2460,7 +2465,7 @@ class ChatStorage:
                 conflicts = self.check_resource_conflicts(clean_resource, clean_start, clean_end)
                 if conflicts:
                     c = conflicts[0]
-                    ex_by = c.get("created_by", "outro agente")
+                    ex_by = c.get("creator_display") or c.get("creator_name") or c.get("created_by") or "outro utilizador"
                     ex_title = c.get("title", "")
                     ex_s = c.get("start_at", "")
                     ex_e = c.get("end_at", "") or "indeterminado"
@@ -2489,7 +2494,7 @@ class ChatStorage:
             conflicts = self.check_resource_conflicts(clean_resource, clean_start, clean_end)
             if conflicts:
                 c = conflicts[0]
-                ex_by = c.get("created_by", "outro agente")
+                ex_by = c.get("creator_display") or c.get("creator_name") or c.get("created_by") or "outro utilizador"
                 ex_title = c.get("title", "")
                 ex_s = c.get("start_at", "")
                 ex_e = c.get("end_at", "") or "indeterminado"

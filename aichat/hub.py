@@ -1993,7 +1993,9 @@ class ChatHub:
         if is_human:
             effective_actor = clean_actor or self.human_name
         else:
-            expected_owners = [o for o in (existing.get("assignee"), existing.get("created_by")) if o]
+            creator_name = existing.get("creator_name") or (existing.get("created_by") if isinstance(existing.get("created_by"), str) else "") or ""
+            assignee_name = existing.get("assignee_name") or (existing.get("assignee") if isinstance(existing.get("assignee"), str) else "") or ""
+            expected_owners = [str(o).strip() for o in (assignee_name, creator_name) if o and str(o).strip()]
             if expected_owners and clean_actor:
                 if clean_actor.lower() in [o.lower() for o in expected_owners]:
                     valid, err = self.storage.verify_member_token(canonical_name, clean_actor, member_token)
@@ -2001,13 +2003,13 @@ class ChatHub:
                         raise PermissionError(f"Acesso negado: {err}")
                 else:
                     # Exception: If claiming an unassigned task
-                    if not existing.get("assignee") and fields.get("assignee") == clean_actor:
+                    if not assignee_name and fields.get("assignee") == clean_actor:
                         valid, err = self.storage.verify_member_token(canonical_name, clean_actor, member_token)
                         if not valid:
                             raise PermissionError(f"Acesso negado: {err}")
                     else:
                         raise PermissionError(
-                            f"Acesso negado: Apenas o responsável (@{existing.get('assignee')}) ou o criador (@{existing.get('created_by')}) podem modificar esta tarefa."
+                            f"Acesso negado: Apenas o responsável (@{assignee_name or 'não atribuído'}) ou o criador (@{creator_name or 'desconhecido'}) podem modificar esta tarefa."
                         )
             elif expected_owners and not clean_actor:
                 token_matched = False
@@ -2081,7 +2083,9 @@ class ChatHub:
 
         if not is_human:
             clean_actor = actor.strip()
-            expected_owners = [o for o in (existing.get("assignee"), existing.get("created_by")) if o]
+            creator_name = existing.get("creator_name") or (existing.get("created_by") if isinstance(existing.get("created_by"), str) else "") or ""
+            assignee_name = existing.get("assignee_name") or (existing.get("assignee") if isinstance(existing.get("assignee"), str) else "") or ""
+            expected_owners = [str(o).strip() for o in (assignee_name, creator_name) if o and str(o).strip()]
             if expected_owners and clean_actor:
                 if clean_actor.lower() in [o.lower() for o in expected_owners]:
                     valid, err = self.storage.verify_member_token(canonical_name, clean_actor, member_token)
@@ -2277,6 +2281,8 @@ class ChatHub:
         else:
             effective_creator = "Agent"
 
+        if force and not is_human:
+            raise PermissionError("Acesso negado: Apenas utilizadores humanos podem forçar sobreposição de reservas de recursos (force=True).")
         allow_force = force and is_human
 
         event = self.storage.create_calendar_event(
@@ -2324,6 +2330,8 @@ class ChatHub:
 
         clean_ht = (human_token or "").strip()
         is_human = bool(clean_ht and secrets.compare_digest(clean_ht, self.human_token))
+        if force and not is_human:
+            raise PermissionError("Acesso negado: Apenas utilizadores humanos podem forçar sobreposição de reservas de recursos (force=True).")
         allow_force = force and is_human
 
         updated = self.storage.update_calendar_event(

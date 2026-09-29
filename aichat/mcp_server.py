@@ -56,12 +56,14 @@ def _authenticate(agent_token: str = "", member_token: str = "", expected_callsi
     # 1. From active principal context (e.g. set by ASGI Authorization header middleware)
     p = current_principal.get()
     if p:
+        tok = (current_auth_token.get() or "").strip()
         ident = {
             "callsign": p.get("name"),
             "role": p.get("default_role_key") or ("admin" if p.get("access_role") == "admin" else "user"),
             "is_human": p.get("kind") == "human",
             "status": p.get("status", "active"),
             "principal": p,
+            "token": tok,
         }
         return ident, None
 
@@ -87,6 +89,7 @@ def _authenticate(agent_token: str = "", member_token: str = "", expected_callsi
                 "is_human": p.get("kind") == "human",
                 "status": p.get("status", "active"),
                 "principal": p,
+                "token": token,
             }
             return ident, None
         return None, json.dumps({
@@ -111,6 +114,7 @@ def _authenticate(agent_token: str = "", member_token: str = "", expected_callsi
 
     try:
         ident = hub.authenticate_agent(token, expected_callsign=expected_callsign)
+        ident["token"] = token
         return ident, None
     except Exception as e:
         return None, json.dumps({"status": "error", "error": str(e)}, indent=2)
@@ -745,12 +749,13 @@ async def call_human(
     callsign = ident["callsign"]
 
     try:
+        eff_token = ident.get("token") or token
         msg = await hub.call_human(
             room_name=room_name,
             sender=callsign,
             question=question,
             options=options,
-            member_token=token,
+            member_token=eff_token,
             password=password,
             to=to or None,
             target_human=target_human or None,
@@ -792,12 +797,13 @@ async def create_poll(
     callsign = ident["callsign"]
 
     try:
+        eff_token = ident.get("token") or token
         poll = await hub.create_poll(
             room_name=room_name,
             creator=callsign,
             question=question,
             options=options,
-            member_token=token,
+            member_token=eff_token,
             password=password,
         )
         return json.dumps({"status": "success", "poll": poll}, indent=2)
@@ -875,12 +881,13 @@ async def close_poll(
     callsign = ident["callsign"]
 
     try:
+        eff_token = ident.get("token") or token
         poll = await hub.close_poll(
             poll_id=poll_id,
             closer=callsign,
             password=password,
             is_human=ident.get("is_human", False),
-            member_token=token,
+            member_token=eff_token,
         )
         return json.dumps({"status": "success", "poll": poll}, indent=2)
     except Exception as e:
@@ -948,6 +955,7 @@ async def create_task(
     callsign = ident["callsign"]
 
     try:
+        eff_token = ident.get("token") or token
         task = await hub.create_task(
             room_name=room_name,
             title=title,
@@ -962,7 +970,7 @@ async def create_task(
             due_at=due_at,
             resource=resource,
             message_id=message_id if message_id > 0 else None,
-            member_token=token,
+            member_token=eff_token,
             password=password,
             created_by=callsign,
         )
@@ -1036,9 +1044,10 @@ async def update_task(
         if resource:
             fields["resource"] = resource
 
+        eff_token = ident.get("token") or token
         task = await hub.update_task(
             task_id=task_id,
-            member_token=token,
+            member_token=eff_token,
             password=password,
             actor=callsign,
             **fields,
@@ -1109,10 +1118,11 @@ async def reorder_tasks(
     if err:
         return err
     try:
+        eff_token = ident.get("token") or token
         tasks = await hub.reorder_tasks(
             room_name=room_name,
             task_ids=task_ids,
-            member_token=token,
+            member_token=eff_token,
             password=password,
         )
         return json.dumps({
@@ -1240,6 +1250,7 @@ async def create_calendar_event(
     callsign = ident["callsign"]
 
     try:
+        eff_token = ident.get("token") or token
         ev = await hub.create_calendar_event(
             room_name=room_name,
             title=title,
@@ -1252,7 +1263,7 @@ async def create_calendar_event(
             target_agent=target_agent,
             wake_on_start=wake_on_start,
             wake_on_end=wake_on_end,
-            member_token=token,
+            member_token=eff_token,
             password=password,
             created_by=callsign,
         )
@@ -1315,9 +1326,10 @@ async def update_calendar_event(
         if wake_on_end is not None:
             fields["wake_on_end"] = wake_on_end
 
+        eff_token = ident.get("token") or token
         ev = await hub.update_calendar_event(
             event_id=event_id,
-            member_token=token,
+            member_token=eff_token,
             password=password,
             **fields,
         )
@@ -1346,9 +1358,10 @@ async def delete_calendar_event(
     if err:
         return err
     try:
+        eff_token = ident.get("token") or token
         res = await hub.delete_calendar_event(
             event_id=event_id,
-            member_token=token,
+            member_token=eff_token,
             password=password,
         )
         return json.dumps(res, indent=2)

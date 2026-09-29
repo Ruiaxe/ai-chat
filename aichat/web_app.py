@@ -16,6 +16,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route, WebSocketRoute
+from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
@@ -258,6 +259,7 @@ class V3AuthenticationMiddleware:
                         "/api/auth/change-password",
                         "/api/auth/logout",
                         "/api/status",
+                        "/static",
                     )
                     is_allowed = (path == "/" or any(path.startswith(p) for p in allowed_prefixes))
                     if not is_allowed:
@@ -1134,6 +1136,7 @@ async def endpoint_create_poll(request: Request) -> Response:
                 creator=creator_name,
                 question=question,
                 options=options,
+                member_token=auth.get("token", "") if role == "agent" else "",
                 human_token=hub.human_token if role == "human" else "",
                 role=role,
             )
@@ -1555,6 +1558,20 @@ async def endpoint_get_tasks(request: Request) -> Response:
 async def endpoint_create_task(request: Request) -> Response:
     """Creates a new task in a room."""
     room_name = request.path_params["room_name"]
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse({"error": "Acesso negado: Autenticação obrigatória."}, status_code=401)
+
+    p = auth.get("principal")
+    is_human = auth["is_human"]
+
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        room = hub.storage.v3.get_room(room_name)
+        if not room:
+            return JSONResponse({"error": f"Room '{room_name}' does not exist."}, status_code=404)
+        if not hub.storage.v3.authorize(p, "write_room", {"room_id": room["id"]}):
+            return JSONResponse({"error": f"Acesso negado: sem permissão de escrita na sala '{room_name}'."}, status_code=403)
+
     try:
         data = await request.json()
     except Exception:
@@ -1564,13 +1581,10 @@ async def endpoint_create_task(request: Request) -> Response:
     if not title:
         return JSONResponse({"error": "O título da tarefa é obrigatório."}, status_code=400)
 
-    is_human = is_authenticated_human(request)
     human_tok = hub.human_token if is_human else ""
-    member_tok = data.get("member_token", "")
-    auth = get_request_auth(request)
-    p = auth.get("principal") if auth else None
-    human_name = (p.get("display_name") or p.get("name") if p else auth.get("name")) if auth else hub.human_name
-    creator = human_name if is_human else (data.get("created_by") or data.get("creator") or "WebUser")
+    member_tok = (auth["token"] if not is_human else "") or data.get("member_token", "")
+    human_name = (p.get("display_name") or p.get("name") if p else auth.get("name")) if is_human else ""
+    creator = human_name if is_human else (auth.get("name") or data.get("created_by") or data.get("creator") or "Agent")
 
     parent_task_id = data.get("parent_task_id")
     if parent_task_id is not None:
@@ -1626,13 +1640,15 @@ async def endpoint_update_task(request: Request) -> Response:
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
-    is_human = is_authenticated_human(request)
-    human_tok = hub.human_token if is_human else ""
-    member_tok = data.get("member_token", "")
     auth = get_request_auth(request)
-    p = auth.get("principal") if auth else None
-    human_name = (p.get("display_name") or p.get("name") if p else auth.get("name")) if auth else hub.human_name
-    actor = human_name if is_human else (data.get("actor") or data.get("assignee") or "")
+    if not auth:
+        return JSONResponse({"error": "Acesso negado: Autenticação obrigatória."}, status_code=401)
+    is_human = auth["is_human"]
+    p = auth.get("principal")
+    human_tok = hub.human_token if is_human else ""
+    member_tok = (auth["token"] if not is_human else "") or data.get("member_token", "")
+    human_name = (p.get("display_name") or p.get("name") if p else auth.get("name")) if is_human else ""
+    actor = human_name if is_human else (auth.get("name") or data.get("actor") or data.get("assignee") or "")
 
     allowed_fields = [
         "title", "description", "status", "assignee", "waiting_for_agent",
@@ -1704,13 +1720,16 @@ async def endpoint_remove_task_dependency(request: Request) -> Response:
 async def endpoint_delete_task(request: Request) -> Response:
     """Deletes a task."""
     task_id = int(request.path_params["task_id"])
-    is_human = is_authenticated_human(request)
-    human_tok = hub.human_token if is_human else ""
-    member_tok = request.headers.get("x-member-token", "")
-    password = request.query_params.get("password", "")
     auth = get_request_auth(request)
-    p = auth.get("principal") if auth else None
-    human_name = (p.get("display_name") or p.get("name") if p else auth.get("name")) if auth else hub.human_name
+    if not auth:
+        return JSONResponse({"error": "Acesso negado: Autenticação obrigatória."}, status_code=401)
+    is_human = auth["is_human"]
+    p = auth.get("principal")
+    human_tok = hub.human_token if is_human else ""
+    member_tok = (auth["token"] if not is_human else "") or request.headers.get("x-member-token", "")
+    password = request.query_params.get("password", "")
+    human_name = (p.get("display_name") or p.get("name") if p else auth.get("name")) if is_human else ""
+    actor = human_name if is_human else (auth.get("name") or "")
 
     try:
         res = await hub.delete_task(
@@ -1887,10 +1906,27 @@ async def endpoint_create_calendar_event(request: Request) -> Response:
             status_code=401,
         )
     room_name = request.path_params.get("room_name") or "general"
+    p = auth.get("principal") if auth else None
+    is_human = auth["is_human"]
+
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        room = hub.storage.v3.get_room(room_name)
+        if not room:
+            return JSONResponse({"error": f"Room '{room_name}' does not exist."}, status_code=404)
+        if not hub.storage.v3.authorize(p, "write_room", {"room_id": room["id"]}):
+            return JSONResponse({"error": f"Acesso negado: sem permissão de escrita na sala '{room_name}'."}, status_code=403)
+
     try:
         data = await request.json()
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    force = bool(data.get("force", False))
+    if force and not is_human:
+        return JSONResponse(
+            {"error": "Acesso negado: Apenas utilizadores humanos podem forçar sobreposição de reservas de recursos (force=True)."},
+            status_code=403,
+        )
 
     title = (data.get("title") or "").strip()
     if not title:
@@ -1899,14 +1935,11 @@ async def endpoint_create_calendar_event(request: Request) -> Response:
     if not start_at:
         return JSONResponse({"error": "A data/hora de início ('start_at') é obrigatória."}, status_code=400)
 
-    is_human = auth["is_human"]
     human_tok = hub.human_token if is_human else ""
-    member_tok = data.get("member_token", "") or (auth["token"] if not is_human else "")
-    p = auth.get("principal") if auth else None
-    human_name = (p.get("display_name") or p.get("name") if p else auth.get("name")) if auth else hub.human_name
-    creator = human_name if is_human else (auth["name"] or data.get("created_by") or "WebUser")
+    member_tok = (auth["token"] if not is_human else "") or data.get("member_token", "")
+    human_name = (p.get("display_name") or p.get("name") if p else auth.get("name")) if is_human else ""
+    creator = human_name if is_human else (auth.get("name") or data.get("created_by") or "Agent")
     password = data.get("password", "") or request.headers.get("x-room-password", "")
-    force = bool(data.get("force", False))
     is_personal = bool(data.get("is_personal", False))
 
     try:
@@ -3038,6 +3071,7 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
         *mcp_sse.routes,
         # Mount FastMCP Streamable HTTP routes: /mcp
         *mcp_http.routes,
+        Mount("/static", StaticFiles(directory=STATIC_DIR), name="static"),
     ]
 
     middleware = [
