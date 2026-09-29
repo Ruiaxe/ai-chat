@@ -308,7 +308,7 @@ class ChatHub:
 
     def authenticate_agent(self, token: str, expected_callsign: str = "") -> dict[str, Any]:
         """
-        Authenticates an agent token against the closed registry.
+        Authenticates an agent token against the registry (v3 or v2).
         Returns identity dict: {"callsign": ..., "role": ..., "is_human": bool, "status": ...}.
         Raises PermissionError if token is missing, invalid, or belongs to a different callsign.
         """
@@ -327,7 +327,26 @@ class ChatHub:
                 "is_system": True,
             }
 
-        # Check registered agent
+        # v3 authentication
+        if self.storage.is_v3():
+            agent, err = self.storage.authenticate_agent_token(clean_token)
+            if err:
+                raise PermissionError(f"Acesso negado: {err}")
+            if expected_callsign:
+                clean_expected = expected_callsign.strip().lower()
+                if agent["name"].lower() != clean_expected:
+                    raise PermissionError(f"Impersonation blocked: O token fornecido pertence a '{agent['name']}', não pode agir como '{expected_callsign}'.")
+            return {
+                "id": agent["id"],
+                "callsign": agent["name"],
+                "role": agent.get("default_role_key") or "agent",
+                "is_human": False,
+                "status": agent.get("status", "active"),
+                "is_system": bool(agent.get("is_system", False)),
+                "principal": agent,
+            }
+
+        # v2 fallback
         agent = self.storage.get_agent_identity_by_token(clean_token, include_inactive=True)
         if not agent:
             raise PermissionError("Acesso negado: Token de agente inválido ou não autorizado. Registo fechado, consulte o supervisor Rui.")

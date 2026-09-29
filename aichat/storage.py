@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -8,19 +9,121 @@ from typing import Any
 
 from aichat.config import DATA_DIR, LOGS_DIR
 
-DB_PATH = DATA_DIR / "chat.db"
+DB_PATH = DATA_DIR / os.environ.get("AICHAT_DB_NAME", "chat.db")
 
 
 class ChatStorage:
-    """Manages SQLite storage and file-based transcripts for chat rooms."""
+    """Manages SQLite storage and file-based transcripts for chat rooms (supports v2 and v3 schemas)."""
 
     _local = threading.local()
 
-    def __init__(self, db_path: Path = DB_PATH, logs_dir: Path = LOGS_DIR):
+    def __init__(self, db_path: Path = DB_PATH, logs_dir: Path = LOGS_DIR, schema_version: int | None = None):
         self.db_path = Path(db_path)
         self.logs_dir = Path(logs_dir)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
-        self._init_db()
+        self._v3_storage: Any = None
+        self._init_db(schema_version=schema_version)
+
+    def is_v3(self) -> bool:
+        """Returns True if the current database uses the v3 schema."""
+        if self._v3_storage is not None:
+            return True
+        conn = self._get_connection()
+        row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_version';").fetchone()
+        return row is not None
+
+    @property
+    def v3(self) -> Any:
+        """Returns the underlying StorageV3 instance for v3 operations."""
+        if self._v3_storage is None:
+            from aichat.storage_v3 import StorageV3
+            self._v3_storage = StorageV3(self.db_path, self.logs_dir)
+        return self._v3_storage
+
+    # -------------------------------------------------------------- v3 delegation methods
+    def create_principal(self, *args, **kwargs):
+        return self.v3.create_principal(*args, **kwargs)
+
+    def get_principal_by_id(self, *args, **kwargs):
+        return self.v3.get_principal_by_id(*args, **kwargs)
+
+    def get_principal_by_name(self, *args, **kwargs):
+        return self.v3.get_principal_by_name(*args, **kwargs)
+
+    def list_principals(self, *args, **kwargs):
+        return self.v3.list_principals(*args, **kwargs)
+
+    def update_principal_status(self, *args, **kwargs):
+        return self.v3.update_principal_status(*args, **kwargs)
+
+    def create_human(self, *args, **kwargs):
+        return self.v3.create_human(*args, **kwargs)
+
+    def authenticate_human(self, *args, **kwargs):
+        return self.v3.authenticate_human(*args, **kwargs)
+
+    def change_human_password(self, *args, **kwargs):
+        return self.v3.change_human_password(*args, **kwargs)
+
+    def create_human_session(self, *args, **kwargs):
+        return self.v3.create_human_session(*args, **kwargs)
+
+    def authenticate_human_session(self, *args, **kwargs):
+        return self.v3.authenticate_human_session(*args, **kwargs)
+
+    def revoke_human_session(self, *args, **kwargs):
+        return self.v3.revoke_human_session(*args, **kwargs)
+
+    def create_agent(self, *args, **kwargs):
+        return self.v3.create_agent(*args, **kwargs)
+
+    def authenticate_agent_token(self, *args, **kwargs):
+        return self.v3.authenticate_agent_token(*args, **kwargs)
+
+    def rotate_agent_token(self, *args, **kwargs):
+        return self.v3.rotate_agent_token(*args, **kwargs)
+
+    def revoke_credential_by_hint(self, *args, **kwargs):
+        return self.v3.revoke_credential_by_hint(*args, **kwargs)
+
+    def list_agent_credentials(self, *args, **kwargs):
+        return self.v3.list_agent_credentials(*args, **kwargs)
+
+    def get_role_by_id(self, *args, **kwargs):
+        return self.v3.get_role_by_id(*args, **kwargs)
+
+    def get_role_by_key(self, *args, **kwargs):
+        return self.v3.get_role_by_key(*args, **kwargs)
+
+    def list_roles(self, *args, **kwargs):
+        return self.v3.list_roles(*args, **kwargs)
+
+    def update_role_reminder(self, *args, **kwargs):
+        return self.v3.update_role_reminder(*args, **kwargs)
+
+    def grant_room_access(self, *args, **kwargs):
+        return self.v3.grant_room_access(*args, **kwargs)
+
+    def revoke_room_access(self, *args, **kwargs):
+        return self.v3.revoke_room_access(*args, **kwargs)
+
+    def get_room_access(self, *args, **kwargs):
+        return self.v3.get_room_access(*args, **kwargs)
+
+    def list_room_members(self, *args, **kwargs):
+        return self.v3.list_room_members(*args, **kwargs)
+
+    def list_rooms_for_principal(self, *args, **kwargs):
+        return self.v3.list_rooms_for_principal(*args, **kwargs)
+
+    def authorize(self, *args, **kwargs):
+        return self.v3.authorize(*args, **kwargs)
+
+    def get_read_cursor(self, *args, **kwargs):
+        return self.v3.get_read_cursor(*args, **kwargs)
+
+    def update_read_cursor(self, *args, **kwargs):
+        return self.v3.update_read_cursor(*args, **kwargs)
 
     def _get_connection(self) -> sqlite3.Connection:
         """Returns a thread-local SQLite connection with row_factory enabled."""
@@ -50,9 +153,21 @@ class ChatStorage:
                 except Exception:
                     pass
 
-    def _init_db(self) -> None:
+    def _init_db(self, schema_version: int | None = None) -> None:
         """Initializes database schema with tables and indexes."""
+        # Explicit or detected v3
+        if schema_version == 3 or "v3" in self.db_path.name.lower():
+            from aichat.storage_v3 import StorageV3
+            self._v3_storage = StorageV3(self.db_path, self.logs_dir)
+            return
+
         conn = self._get_connection()
+        has_v3 = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_version';").fetchone()
+        if has_v3:
+            from aichat.storage_v3 import StorageV3
+            self._v3_storage = StorageV3(self.db_path, self.logs_dir)
+            return
+
         with conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS rooms (
