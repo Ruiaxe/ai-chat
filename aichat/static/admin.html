@@ -1,0 +1,1525 @@
+<!DOCTYPE html>
+<html lang="pt" class="h-full bg-slate-950 text-slate-100">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ai-chat v3 — Consola de Administração</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@0.378.0/dist/umd/lucide.min.js" integrity="sha384-qhUDVxItfTfdldcM+OXATzmed102bu7gbQzEzi7677Xh/Swfmh1R3gajkj18PhRK" crossorigin="anonymous"></script>
+  <style>
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0f172a; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+  </style>
+</head>
+<body class="h-full flex flex-col bg-slate-950 text-slate-100 font-sans antialiased">
+
+  <!-- Top Navigation Header -->
+  <header class="bg-slate-900 border-b border-slate-800 px-4 py-3 flex items-center justify-between sticky top-0 z-30 shadow-md">
+    <div class="flex items-center space-x-3">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center text-white shadow-lg shadow-indigo-500/20">
+        <i data-lucide="shield-alert" class="w-5 h-5"></i>
+      </div>
+      <div>
+        <h1 class="text-base font-bold text-white tracking-tight flex items-center gap-2">
+          ai-chat <span class="text-xs px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 font-semibold border border-indigo-500/30">v3 Admin</span>
+        </h1>
+        <p class="text-[11px] text-slate-400">Consola de Administração e Controlo de Acessos</p>
+      </div>
+    </div>
+
+    <!-- Active Admin Info & Actions -->
+    <div class="flex items-center space-x-3">
+      <div id="admin-user-badge" class="flex items-center space-x-2 px-3 py-1 rounded-lg bg-slate-800/80 border border-slate-700/80 text-xs">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        <span id="admin-user-name" class="font-medium text-slate-200">A carregar...</span>
+        <span class="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 text-[10px] font-bold uppercase">admin</span>
+      </div>
+      <a href="/" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-medium flex items-center space-x-1.5 transition border border-slate-700">
+        <i data-lucide="message-square" class="w-3.5 h-3.5"></i>
+        <span>Chat</span>
+      </a>
+      <button onclick="handleLogout()" class="px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs font-medium flex items-center space-x-1.5 transition">
+        <i data-lucide="log-out" class="w-3.5 h-3.5"></i>
+        <span class="hidden sm:inline">Sair</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Layout -->
+  <div class="flex-1 flex flex-col md:flex-row overflow-hidden">
+    
+    <!-- Sidebar Tabs Navigation -->
+    <aside class="w-full md:w-60 bg-slate-900/60 border-r border-slate-800/80 flex md:flex-col p-2 md:p-3 space-x-1 md:space-x-0 md:space-y-1.5 overflow-x-auto md:overflow-y-auto shrink-0">
+      <button onclick="switchTab('users')" id="tab-btn-users" class="tab-btn flex items-center space-x-2.5 px-3 py-2 rounded-lg text-xs font-medium transition text-indigo-400 bg-indigo-500/10 border border-indigo-500/20">
+        <i data-lucide="users" class="w-4 h-4"></i>
+        <span>Utilizadores</span>
+      </button>
+      <button onclick="switchTab('agents')" id="tab-btn-agents" class="tab-btn flex items-center space-x-2.5 px-3 py-2 rounded-lg text-xs font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent">
+        <i data-lucide="bot" class="w-4 h-4"></i>
+        <span>Agentes</span>
+      </button>
+      <button onclick="switchTab('rooms')" id="tab-btn-rooms" class="tab-btn flex items-center space-x-2.5 px-3 py-2 rounded-lg text-xs font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent">
+        <i data-lucide="door-open" class="w-4 h-4"></i>
+        <span>Salas & Acessos</span>
+      </button>
+      <button onclick="switchTab('roles')" id="tab-btn-roles" class="tab-btn flex items-center space-x-2.5 px-3 py-2 rounded-lg text-xs font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent">
+        <i data-lucide="tag" class="w-4 h-4"></i>
+        <span>Papéis</span>
+      </button>
+      <button onclick="switchTab('audit')" id="tab-btn-audit" class="tab-btn flex items-center space-x-2.5 px-3 py-2 rounded-lg text-xs font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent">
+        <i data-lucide="file-text" class="w-4 h-4"></i>
+        <span>Auditoria</span>
+      </button>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 overflow-y-auto p-4 md:p-6 bg-slate-950">
+      
+      <!-- Feedback Notification Banner -->
+      <div id="alert-banner" class="hidden mb-4 p-3 rounded-xl text-xs flex items-center justify-between transition-all">
+        <div class="flex items-center space-x-2">
+          <i id="alert-icon" data-lucide="info" class="w-4 h-4"></i>
+          <span id="alert-text" class="font-medium"></span>
+        </div>
+        <button onclick="hideAlert()" class="opacity-70 hover:opacity-100"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>
+      </div>
+
+      <!-- ================= TAB: USERS ================= -->
+      <section id="tab-users" class="tab-content space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+          <div>
+            <h2 class="text-lg font-bold text-white">Utilizadores Humanos</h2>
+            <p class="text-xs text-slate-400">Gere utilizadores, funções administrativas e reposição de palavras-passe.</p>
+          </div>
+          <button onclick="openCreateUserModal()" class="px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center space-x-1.5 transition shadow-sm w-fit">
+            <i data-lucide="user-plus" class="w-4 h-4"></i>
+            <span>Novo Utilizador</span>
+          </button>
+        </div>
+
+        <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs text-slate-300">
+              <thead class="bg-slate-800/60 text-slate-400 uppercase font-semibold text-[10px] tracking-wider border-b border-slate-800">
+                <tr>
+                  <th class="py-3 px-4">ID</th>
+                  <th class="py-3 px-4">Utilizador / Nome</th>
+                  <th class="py-3 px-4">Papel</th>
+                  <th class="py-3 px-4">Estado</th>
+                  <th class="py-3 px-4">Segurança</th>
+                  <th class="py-3 px-4 text-right">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="users-table-body" class="divide-y divide-slate-800/60">
+                <tr><td colspan="6" class="py-8 text-center text-slate-500">A carregar utilizadores...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= TAB: AGENTS ================= -->
+      <section id="tab-agents" class="tab-content hidden space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+          <div>
+            <h2 class="text-lg font-bold text-white">Agentes IA</h2>
+            <p class="text-xs text-slate-400">Registo de agentes, atribuição de papéis por defeito e gestão de credenciais (tokens).</p>
+          </div>
+          <button onclick="openCreateAgentModal()" class="px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center space-x-1.5 transition shadow-sm w-fit">
+            <i data-lucide="bot" class="w-4 h-4"></i>
+            <span>Novo Agente</span>
+          </button>
+        </div>
+
+        <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs text-slate-300">
+              <thead class="bg-slate-800/60 text-slate-400 uppercase font-semibold text-[10px] tracking-wider border-b border-slate-800">
+                <tr>
+                  <th class="py-3 px-4">ID</th>
+                  <th class="py-3 px-4">Callsign / Nome</th>
+                  <th class="py-3 px-4">Papel por Defeito</th>
+                  <th class="py-3 px-4">Estado</th>
+                  <th class="py-3 px-4">Credenciais Ativas</th>
+                  <th class="py-3 px-4 text-right">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="agents-table-body" class="divide-y divide-slate-800/60">
+                <tr><td colspan="6" class="py-8 text-center text-slate-500">A carregar agentes...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= TAB: ROOMS & ACCESS ================= -->
+      <section id="tab-rooms" class="tab-content hidden space-y-6">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+          <div>
+            <h2 class="text-lg font-bold text-white">Salas & Controlo de Acesso</h2>
+            <p class="text-xs text-slate-400">Criação, arquivo e matriz salas × principais com modo observador só de leitura e atribuição em massa.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button onclick="openBulkGrantModal()" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center space-x-1.5 transition">
+              <i data-lucide="layers" class="w-4 h-4 text-purple-400"></i>
+              <span>Atribuição em Massa</span>
+            </button>
+            <button onclick="openCreateRoomModal()" class="px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center space-x-1.5 transition shadow-sm">
+              <i data-lucide="plus-circle" class="w-4 h-4"></i>
+              <span>Nova Sala</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Room Selector & Details -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <!-- Room List Sidebar -->
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col space-y-3">
+            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400">Salas Disponíveis</h3>
+            <div id="rooms-list-container" class="space-y-1.5 max-h-96 overflow-y-auto pr-1">
+              <div class="text-xs text-slate-500 py-4 text-center">A carregar salas...</div>
+            </div>
+          </div>
+
+          <!-- Room Permissions & Members -->
+          <div class="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col space-y-4">
+            <div id="room-members-header" class="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div>
+                <h3 id="selected-room-title" class="text-sm font-bold text-white">Selecione uma sala</h3>
+                <p id="selected-room-topic" class="text-xs text-slate-400">Selecione uma sala à esquerda para gerir permissões.</p>
+              </div>
+              <div id="room-header-actions" class="hidden flex items-center space-x-2">
+                <button id="archive-room-btn" onclick="toggleArchiveSelectedRoom()" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition"></button>
+                <button onclick="openAddMemberModal()" class="px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition flex items-center space-x-1">
+                  <i data-lucide="user-plus" class="w-3.5 h-3.5"></i>
+                  <span>Adicionar Membro</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Members Table -->
+            <div class="overflow-x-auto">
+              <table class="w-full text-left text-xs text-slate-300">
+                <thead class="bg-slate-800/40 text-slate-400 uppercase font-semibold text-[10px] tracking-wider border-b border-slate-800">
+                  <tr>
+                    <th class="py-2.5 px-3">Principal</th>
+                    <th class="py-2.5 px-3">Tipo</th>
+                    <th class="py-2.5 px-3">Papel na Sala</th>
+                    <th class="py-2.5 px-3">Permissão</th>
+                    <th class="py-2.5 px-3 text-right">Ação</th>
+                  </tr>
+                </thead>
+                <tbody id="room-members-table-body" class="divide-y divide-slate-800/60">
+                  <tr><td colspan="5" class="py-6 text-center text-slate-500">Nenhuma sala selecionada.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= TAB: ROLES ================= -->
+      <section id="tab-roles" class="tab-content hidden space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+          <div>
+            <h2 class="text-lg font-bold text-white">Papéis de Agente</h2>
+            <p class="text-xs text-slate-400">Configure papéis, descrições e os textos de lembrete (reminder_text) enviados aos agentes.</p>
+          </div>
+          <button onclick="openCreateRoleModal()" class="px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center space-x-1.5 transition shadow-sm w-fit">
+            <i data-lucide="plus-circle" class="w-4 h-4"></i>
+            <span>Novo Papel</span>
+          </button>
+        </div>
+
+        <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs text-slate-300">
+              <thead class="bg-slate-800/60 text-slate-400 uppercase font-semibold text-[10px] tracking-wider border-b border-slate-800">
+                <tr>
+                  <th class="py-3 px-4">Identificador</th>
+                  <th class="py-3 px-4">Nome de Apresentação</th>
+                  <th class="py-3 px-4">Descrição</th>
+                  <th class="py-3 px-4">Texto de Lembrete</th>
+                  <th class="py-3 px-4">Tipo</th>
+                  <th class="py-3 px-4 text-right">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="roles-table-body" class="divide-y divide-slate-800/60">
+                <tr><td colspan="6" class="py-8 text-center text-slate-500">A carregar papéis...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= TAB: AUDIT LOG ================= -->
+      <section id="tab-audit" class="tab-content hidden space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+          <div>
+            <h2 class="text-lg font-bold text-white">Registo de Auditoria (Audit Log)</h2>
+            <p class="text-xs text-slate-400">Consulta detalhada de todas as ações administrativas realizadas no sistema.</p>
+          </div>
+          <button onclick="loadAuditLog()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium flex items-center space-x-1.5 transition border border-slate-700 w-fit">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+            <span>Atualizar</span>
+          </button>
+        </div>
+
+        <!-- Filters Form -->
+        <div class="bg-slate-900/80 border border-slate-800 rounded-xl p-3 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+          <div>
+            <label class="block text-[10px] font-semibold uppercase text-slate-400 mb-1">Ação</label>
+            <input type="text" id="audit-filter-action" placeholder="Ex: create_human, rotate_token" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-indigo-500">
+          </div>
+          <div>
+            <label class="block text-[10px] font-semibold uppercase text-slate-400 mb-1">Tipo de Alvo</label>
+            <input type="text" id="audit-filter-target-type" placeholder="Ex: principal, credential, room" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-indigo-500">
+          </div>
+          <div>
+            <label class="block text-[10px] font-semibold uppercase text-slate-400 mb-1">ID da Sala</label>
+            <input type="number" id="audit-filter-room-id" placeholder="Ex: 1" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-indigo-500">
+          </div>
+          <div class="flex items-end">
+            <button onclick="applyAuditFilters()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-1.5 px-3 rounded-lg transition text-xs">
+              Filtrar
+            </button>
+          </div>
+        </div>
+
+        <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs text-slate-300">
+              <thead class="bg-slate-800/60 text-slate-400 uppercase font-semibold text-[10px] tracking-wider border-b border-slate-800">
+                <tr>
+                  <th class="py-3 px-4">ID</th>
+                  <th class="py-3 px-4">Data / Hora (UTC)</th>
+                  <th class="py-3 px-4">Ator</th>
+                  <th class="py-3 px-4">Ação</th>
+                  <th class="py-3 px-4">Alvo</th>
+                  <th class="py-3 px-4">Sala</th>
+                  <th class="py-3 px-4">Detalhes</th>
+                </tr>
+              </thead>
+              <tbody id="audit-table-body" class="divide-y divide-slate-800/60 font-mono text-[11px]">
+                <tr><td colspan="7" class="py-8 text-center text-slate-500 font-sans text-xs">A carregar registos de auditoria...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          
+          <!-- Audit Pagination Footer -->
+          <div class="bg-slate-900 border-t border-slate-800 px-4 py-3 flex items-center justify-between text-xs text-slate-400">
+            <span id="audit-count-info">0 registos</span>
+            <div class="flex items-center space-x-2">
+              <button id="audit-prev-btn" onclick="prevAuditPage()" disabled class="px-2.5 py-1 rounded bg-slate-800 text-slate-400 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-700 transition">Anterior</button>
+              <span id="audit-page-info" class="text-slate-300">Pág. 1</span>
+              <button id="audit-next-btn" onclick="nextAuditPage()" disabled class="px-2.5 py-1 rounded bg-slate-800 text-slate-400 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-700 transition">Seguinte</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ================= MODALS ================= -->
+
+  <!-- Modal: Criar Utilizador -->
+  <div id="modal-create-user" class="fixed inset-0 bg-black/70 backdrop-blur-xs z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i data-lucide="user-plus" class="w-5 h-5 text-indigo-400"></i>
+          <span>Criar Utilizador Humano</span>
+        </h3>
+        <button onclick="closeModal('modal-create-user')" class="text-slate-400 hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+      </div>
+      <form onsubmit="handleCreateUser(event)" class="space-y-3 text-xs">
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Nome de Utilizador (login)*</label>
+          <input type="text" id="cu-username" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+        </div>
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Nome de Apresentação</label>
+          <input type="text" id="cu-display-name" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+        </div>
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Palavra-passe Inicial*</label>
+          <input type="password" id="cu-password" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+          <span class="text-[10px] text-amber-400/80">O utilizador será obrigado a alterá-la no primeiro início de sessão.</span>
+        </div>
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Função de Acesso*</label>
+          <select id="cu-access-role" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+            <option value="user" selected>Utilizador Padrão (user)</option>
+            <option value="admin">Administrador (admin)</option>
+          </select>
+        </div>
+        <div class="flex justify-end space-x-2 pt-2">
+          <button type="button" onclick="closeModal('modal-create-user')" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition">Cancelar</button>
+          <button type="submit" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition">Criar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Repor Password -->
+  <div id="modal-reset-password" class="fixed inset-0 bg-black/70 backdrop-blur-xs z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i data-lucide="key" class="w-5 h-5 text-amber-400"></i>
+          <span>Repor Palavra-passe</span>
+        </h3>
+        <button onclick="closeModal('modal-reset-password')" class="text-slate-400 hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+      </div>
+      <p id="rp-username-label" class="text-xs text-slate-400"></p>
+      <form onsubmit="handleResetPassword(event)" class="space-y-3 text-xs">
+        <input type="hidden" id="rp-principal-id">
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Nova Palavra-passe Provisória*</label>
+          <input type="password" id="rp-new-password" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-amber-500">
+          <span class="text-[10px] text-amber-400/80">O utilizador terá de alterá-la no próximo login. Bloqueios de IP e tentativas falhadas serão limpos.</span>
+        </div>
+        <div class="flex justify-end space-x-2 pt-2">
+          <button type="button" onclick="closeModal('modal-reset-password')" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition">Cancelar</button>
+          <button type="submit" class="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold transition">Repor</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Criar Agente -->
+  <div id="modal-create-agent" class="fixed inset-0 bg-black/70 backdrop-blur-xs z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i data-lucide="bot" class="w-5 h-5 text-indigo-400"></i>
+          <span>Registar Novo Agente</span>
+        </h3>
+        <button onclick="closeModal('modal-create-agent')" class="text-slate-400 hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+      </div>
+      <form onsubmit="handleCreateAgent(event)" class="space-y-3 text-xs">
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Callsign (Identificador único)*</label>
+          <input type="text" id="ca-callsign" placeholder="Ex: Claude-Dev, Tester-1" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+        </div>
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Nome de Apresentação</label>
+          <input type="text" id="ca-display-name" placeholder="Ex: Claude 3.7 Sonnet (Dev)" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+        </div>
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Papel por Defeito</label>
+          <select id="ca-default-role" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+            <option value="">Sem papel pré-definido</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Estado</label>
+          <select id="ca-status" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+            <option value="active" selected>Ativo</option>
+            <option value="inactive">Inativo</option>
+          </select>
+        </div>
+        <div class="flex justify-end space-x-2 pt-2">
+          <button type="button" onclick="closeModal('modal-create-agent')" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition">Cancelar</button>
+          <button type="submit" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition">Registar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Exibir Token Gerado (UMA SÓ VEZ) -->
+  <div id="modal-token-display" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-amber-500/40 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-4">
+      <div class="flex items-center space-x-2 text-amber-400">
+        <i data-lucide="alert-triangle" class="w-6 h-6"></i>
+        <h3 class="text-base font-bold text-white">Token de Agente Gerado</h3>
+      </div>
+      <p class="text-xs text-slate-300">
+        Copie o token agora. <span class="text-rose-400 font-bold">Por razões de segurança, este token não voltará a ser mostrado</span> nem fica guardado em texto simples na base de dados.
+      </p>
+      
+      <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-2">
+        <code id="td-token-value" class="text-xs font-mono text-emerald-400 break-all select-all"></code>
+        <button onclick="copyGeneratedToken()" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shrink-0 flex items-center gap-1.5">
+          <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+          <span id="td-copy-btn-text">Copiar</span>
+        </button>
+      </div>
+
+      <div class="text-[11px] text-slate-400 bg-slate-800/40 p-3 rounded-lg border border-slate-800">
+        <p><strong>Identificador (Hint):</strong> <span id="td-token-hint" class="font-mono text-slate-200"></span></p>
+        <p class="mt-1">Use nos cabeçalhos: <code class="text-indigo-300">Authorization: Bearer &lt;token&gt;</code></p>
+      </div>
+
+      <div class="flex justify-end pt-2">
+        <button onclick="closeModal('modal-token-display')" class="px-5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold transition">
+          Compreendi e guardei o token
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Criar Sala -->
+  <div id="modal-create-room" class="fixed inset-0 bg-black/70 backdrop-blur-xs z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i data-lucide="plus-circle" class="w-5 h-5 text-indigo-400"></i>
+          <span>Criar Nova Sala</span>
+        </h3>
+        <button onclick="closeModal('modal-create-room')" class="text-slate-400 hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+      </div>
+      <form onsubmit="handleCreateRoom(event)" class="space-y-3 text-xs">
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Nome da Sala*</label>
+          <input type="text" id="cr-name" placeholder="Ex: dev, producao, seguranca" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+        </div>
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Tópico</label>
+          <input type="text" id="cr-topic" placeholder="Descrição ou tema da sala" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+        </div>
+        <div class="flex justify-end space-x-2 pt-2">
+          <button type="button" onclick="closeModal('modal-create-room')" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition">Cancelar</button>
+          <button type="submit" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition">Criar Sala</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Adicionar Membro à Sala -->
+  <div id="modal-add-member" class="fixed inset-0 bg-black/70 backdrop-blur-xs z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i data-lucide="user-plus" class="w-5 h-5 text-indigo-400"></i>
+          <span>Atribuir Acesso à Sala</span>
+        </h3>
+        <button onclick="closeModal('modal-add-member')" class="text-slate-400 hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+      </div>
+      <form onsubmit="handleAddMember(event)" class="space-y-3 text-xs">
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Principal (Utilizador ou Agente)*</label>
+          <select id="am-principal-id" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+            <option value="">A carregar...</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Papel na Sala (opcional para agentes)</label>
+          <select id="am-role-id" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+            <option value="">Sem papel específico na sala</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Permissão de Escrita*</label>
+          <select id="am-can-write" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+            <option value="1" selected>Leitura e Escrita (Normal)</option>
+            <option value="0">Observador (Só de Leitura - can_write = 0)</option>
+          </select>
+        </div>
+        <div class="flex justify-end space-x-2 pt-2">
+          <button type="button" onclick="closeModal('modal-add-member')" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition">Cancelar</button>
+          <button type="submit" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition">Guardar Acesso</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Atribuição em Massa (Bulk Grant) -->
+  <div id="modal-bulk-grant" class="fixed inset-0 bg-black/70 backdrop-blur-xs z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i data-lucide="layers" class="w-5 h-5 text-purple-400"></i>
+          <span>Atribuição de Acessos em Massa</span>
+        </h3>
+        <button onclick="closeModal('modal-bulk-grant')" class="text-slate-400 hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+      </div>
+      <p class="text-xs text-slate-400">
+        Atribua rapidamente acesso a múltiplos principais ou salas de uma só vez com modo observador configurável.
+      </p>
+      
+      <form onsubmit="handleBulkGrant(event)" class="space-y-3 text-xs">
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Sala Alvo*</label>
+          <select id="bg-room-id" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-purple-500"></select>
+        </div>
+        
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Principais a Atribuir* (selecione múltiplos com Ctrl/Shift)</label>
+          <select id="bg-principals" multiple required size="5" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-purple-500"></select>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-slate-400 font-medium mb-1">Papel na Sala (opcional)</label>
+            <select id="bg-role-id" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-purple-500">
+              <option value="">Nenhum / Padrão</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-slate-400 font-medium mb-1">Modo de Acesso</label>
+            <select id="bg-can-write" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-purple-500">
+              <option value="1" selected>Leitura e Escrita</option>
+              <option value="0">Observador (Só Leitura)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="flex justify-end space-x-2 pt-2">
+          <button type="button" onclick="closeModal('modal-bulk-grant')" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition">Cancelar</button>
+          <button type="submit" class="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-semibold transition">Aplicar em Massa</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Criar/Editar Papel -->
+  <div id="modal-role" class="fixed inset-0 bg-black/70 backdrop-blur-xs z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 id="role-modal-title" class="text-base font-bold text-white flex items-center gap-2">
+          <i data-lucide="tag" class="w-5 h-5 text-indigo-400"></i>
+          <span>Papel de Agente</span>
+        </h3>
+        <button onclick="closeModal('modal-role')" class="text-slate-400 hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+      </div>
+      <form onsubmit="handleSaveRole(event)" class="space-y-3 text-xs">
+        <input type="hidden" id="ro-id">
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Chave do Papel (role_key)*</label>
+          <input type="text" id="ro-key" placeholder="Ex: developer, qa, security" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+        </div>
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Nome de Apresentação*</label>
+          <input type="text" id="ro-display-name" placeholder="Ex: Programador" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+        </div>
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Descrição</label>
+          <textarea id="ro-description" rows="2" placeholder="Responsabilidades e tarefas do papel" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500"></textarea>
+        </div>
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Texto de Lembrete (reminder_text)*</label>
+          <textarea id="ro-reminder-text" rows="3" placeholder="Mensagem enviada a cada ativação do agente" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500"></textarea>
+          <span class="text-[10px] text-slate-500">Lembrete injetado pelo servidor quando o agente acorda.</span>
+        </div>
+        <div class="flex justify-end space-x-2 pt-2">
+          <button type="button" onclick="closeModal('modal-role')" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition">Cancelar</button>
+          <button type="submit" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition">Guardar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Application Logic -->
+  <script>
+    let currentAdmin = null;
+    let rolesCache = [];
+    let roomsCache = [];
+    let principalsCache = [];
+    let selectedRoomId = null;
+    let auditOffset = 0;
+    const auditLimit = 30;
+
+    // --- Tab Switching ---
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.className = 'tab-btn flex items-center space-x-2.5 px-3 py-2 rounded-lg text-xs font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent';
+      });
+      const activeBtn = document.getElementById(`tab-btn-${tabId}`);
+      if (activeBtn) {
+        activeBtn.className = 'tab-btn flex items-center space-x-2.5 px-3 py-2 rounded-lg text-xs font-medium transition text-indigo-400 bg-indigo-500/10 border border-indigo-500/20';
+      }
+
+      document.querySelectorAll('.tab-content').forEach(section => section.classList.add('hidden'));
+      const activeSection = document.getElementById(`tab-${tabId}`);
+      if (activeSection) activeSection.classList.remove('hidden');
+
+      if (tabId === 'users') loadUsers();
+      if (tabId === 'agents') loadAgents();
+      if (tabId === 'rooms') loadRooms();
+      if (tabId === 'roles') loadRoles();
+      if (tabId === 'audit') loadAuditLog();
+    }
+
+    // --- Alerts ---
+    function showAlert(msg, isError = false) {
+      const banner = document.getElementById('alert-banner');
+      const text = document.getElementById('alert-text');
+      const icon = document.getElementById('alert-icon');
+      if (!banner || !text) return;
+      banner.className = isError 
+        ? 'mb-4 p-3 rounded-xl text-xs flex items-center justify-between transition-all bg-rose-500/10 text-rose-300 border border-rose-500/30'
+        : 'mb-4 p-3 rounded-xl text-xs flex items-center justify-between transition-all bg-emerald-500/10 text-emerald-300 border border-emerald-500/30';
+      text.textContent = msg;
+      banner.classList.remove('hidden');
+      setTimeout(hideAlert, 6000);
+    }
+    function hideAlert() {
+      const banner = document.getElementById('alert-banner');
+      if (banner) banner.classList.add('hidden');
+    }
+
+    // --- Modal Controls ---
+    function openModal(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.remove('hidden');
+    }
+    function closeModal(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.add('hidden');
+    }
+
+    // --- Initialization & Auth Check ---
+    async function initAdmin() {
+      try {
+        const res = await fetch('/api/admin/me');
+        if (res.status === 401) {
+          window.location.href = '/?login=1';
+          return;
+        }
+        if (res.status === 403) {
+          document.body.innerHTML = `
+            <div class="h-full flex items-center justify-center p-6 text-center">
+              <div class="bg-slate-900 border border-rose-500/30 p-8 rounded-2xl max-w-md shadow-2xl space-y-4">
+                <i data-lucide="shield-x" class="w-12 h-12 text-rose-400 mx-auto"></i>
+                <h2 class="text-xl font-bold text-white">403 Acesso Proibido</h2>
+                <p class="text-xs text-slate-300">Esta consola é restrita a administradores ativos do sistema.</p>
+                <a href="/" class="inline-block mt-4 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold">Voltar ao Chat</a>
+              </div>
+            </div>
+          `;
+          lucide.createIcons();
+          return;
+        }
+        const data = await res.json();
+        currentAdmin = data.principal;
+        const nameEl = document.getElementById('admin-user-name');
+        if (nameEl) nameEl.textContent = currentAdmin.display_name || currentAdmin.name;
+
+        await loadRoles();
+        await loadUsers();
+      } catch (err) {
+        console.error('Init failed:', err);
+      }
+      lucide.createIcons();
+    }
+
+    async function handleLogout() {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+      } catch (e) {}
+      window.location.href = '/';
+    }
+
+    // ================= USERS LOGIC =================
+    async function loadUsers() {
+      try {
+        const res = await fetch('/api/admin/humans');
+        if (!res.ok) throw new Error('Falha ao carregar utilizadores');
+        const data = await res.json();
+        const tbody = document.getElementById('users-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        (data.humans || []).forEach(u => {
+          const tr = document.createElement('tr');
+          tr.className = 'hover:bg-slate-800/30 transition';
+          const isAdmin = u.access_role === 'admin';
+          const isActive = u.status === 'active';
+          tr.innerHTML = `
+            <td class="py-3 px-4 font-mono text-[11px] text-slate-400">#${u.id}</td>
+            <td class="py-3 px-4">
+              <div class="font-semibold text-white">${escapeHtml(u.name)}</div>
+              <div class="text-[11px] text-slate-400">${escapeHtml(u.display_name || '')}</div>
+            </td>
+            <td class="py-3 px-4">
+              <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase ${isAdmin ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30' : 'bg-slate-800 text-slate-400'}">
+                ${u.access_role}
+              </span>
+            </td>
+            <td class="py-3 px-4">
+              <span class="px-2 py-0.5 rounded text-[10px] font-medium ${isActive ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}">
+                ${isActive ? 'Ativo' : 'Inativo'}
+              </span>
+            </td>
+            <td class="py-3 px-4 text-[11px] text-slate-400">
+              ${u.must_change_password ? '<span class="text-amber-400 font-medium">Troca obrigatória</span>' : '<span class="text-slate-500">OK</span>'}
+            </td>
+            <td class="py-3 px-4 text-right space-x-1">
+              <button onclick="toggleUserAdmin(${u.id}, '${isAdmin ? 'user' : 'admin'}')" title="Mudar papel" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">
+                ${isAdmin ? 'Tornar User' : 'Tornar Admin'}
+              </button>
+              <button onclick="toggleUserStatus(${u.id}, '${isActive ? 'inactive' : 'active'}')" title="Ativar/Desativar" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">
+                ${isActive ? 'Desativar' : 'Ativar'}
+              </button>
+              <button onclick="openResetPasswordModal(${u.id}, '${escapeHtml(u.name)}')" title="Repor Palavra-passe" class="px-2 py-1 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-[10px] font-medium transition">
+                Repor Senha
+              </button>
+              <button onclick="deleteUser(${u.id})" title="Remover utilizador" class="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
+                <i data-lucide="trash-2" class="w-3 h-3 inline"></i>
+              </button>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+        lucide.createIcons();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    function openCreateUserModal() {
+      openModal('modal-create-user');
+    }
+
+    async function handleCreateUser(e) {
+      e.preventDefault();
+      const username = document.getElementById('cu-username').value.trim();
+      const displayName = document.getElementById('cu-display-name').value.trim();
+      const password = document.getElementById('cu-password').value.trim();
+      const accessRole = document.getElementById('cu-access-role').value;
+
+      try {
+        const res = await fetch('/api/admin/humans', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, display_name: displayName, password, access_role: accessRole })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao criar utilizador');
+        closeModal('modal-create-user');
+        showAlert(`Utilizador '${username}' criado com sucesso.`);
+        loadUsers();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function toggleUserAdmin(userId, newRole) {
+      try {
+        const res = await fetch(`/api/admin/humans/${userId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ access_role: newRole })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Falha ao alterar papel');
+        showAlert('Papel do utilizador alterado.');
+        loadUsers();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function toggleUserStatus(userId, newStatus) {
+      try {
+        const res = await fetch(`/api/admin/humans/${userId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: newStatus })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Falha ao alterar estado');
+        showAlert(`Estado do utilizador alterado para '${newStatus}'.`);
+        loadUsers();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    function openResetPasswordModal(userId, name) {
+      document.getElementById('rp-principal-id').value = userId;
+      document.getElementById('rp-username-label').textContent = `A repor palavra-passe para ${name} (#${userId})`;
+      document.getElementById('rp-new-password').value = '';
+      openModal('modal-reset-password');
+    }
+
+    async function handleResetPassword(e) {
+      e.preventDefault();
+      const userId = document.getElementById('rp-principal-id').value;
+      const newPassword = document.getElementById('rp-new-password').value.trim();
+      try {
+        const res = await fetch(`/api/admin/humans/${userId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reset_password: newPassword })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao repor palavra-passe');
+        closeModal('modal-reset-password');
+        showAlert('Palavra-passe reposta com sucesso.');
+        loadUsers();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function deleteUser(userId) {
+      if (!confirm('Tem a certeza que deseja eliminar este utilizador? Esta ação não pode ser desfeita.')) return;
+      try {
+        const res = await fetch(`/api/admin/humans/${userId}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao eliminar utilizador');
+        showAlert('Utilizador eliminado.');
+        loadUsers();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    // ================= AGENTS LOGIC =================
+    async function loadAgents() {
+      try {
+        const res = await fetch('/api/admin/agents');
+        if (!res.ok) throw new Error('Falha ao carregar agentes');
+        const data = await res.json();
+        const tbody = document.getElementById('agents-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        (data.agents || []).forEach(a => {
+          const tr = document.createElement('tr');
+          tr.className = 'hover:bg-slate-800/30 transition';
+          const isActive = a.status === 'active';
+          const creds = a.credentials || [];
+          const activeCreds = creds.filter(c => !c.revoked_at);
+          const hintsHtml = activeCreds.map(c => `<span class="font-mono bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800 text-[10px]">...${escapeHtml(c.token_hint)}</span>`).join(' ');
+
+          tr.innerHTML = `
+            <td class="py-3 px-4 font-mono text-[11px] text-slate-400">#${a.id}</td>
+            <td class="py-3 px-4">
+              <div class="font-semibold text-white flex items-center gap-1.5">
+                <i data-lucide="bot" class="w-3.5 h-3.5 text-indigo-400"></i>
+                <span>${escapeHtml(a.name)}</span>
+              </div>
+              <div class="text-[11px] text-slate-400">${escapeHtml(a.display_name || '')}</div>
+            </td>
+            <td class="py-3 px-4">
+              <span class="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-800 text-slate-300">
+                ${escapeHtml(a.default_role_name || a.default_role_key || 'Sem papel')}
+              </span>
+            </td>
+            <td class="py-3 px-4">
+              <span class="px-2 py-0.5 rounded text-[10px] font-medium ${isActive ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}">
+                ${isActive ? 'Ativo' : 'Inativo'}
+              </span>
+            </td>
+            <td class="py-3 px-4">
+              <div class="flex items-center gap-1 flex-wrap">${hintsHtml || '<span class="text-slate-500 text-[10px]">Sem tokens ativos</span>'}</div>
+            </td>
+            <td class="py-3 px-4 text-right space-x-1">
+              <button onclick="rotateAgentToken(${a.id})" title="Rodar Token" class="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-medium transition">
+                Rodar Token
+              </button>
+              ${activeCreds.length > 0 ? `
+                <button onclick="revokeAgentToken(${a.id}, '${activeCreds[0].token_hint}')" title="Revogar Token Atual" class="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
+                  Revogar
+                </button>
+              ` : ''}
+              <button onclick="toggleAgentStatus(${a.id}, '${isActive ? 'inactive' : 'active'}')" title="Ativar/Desativar" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">
+                ${isActive ? 'Desativar' : 'Ativar'}
+              </button>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+        lucide.createIcons();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    function openCreateAgentModal() {
+      // populate roles dropdown
+      const sel = document.getElementById('ca-default-role');
+      if (sel) {
+        sel.innerHTML = '<option value="">Sem papel pré-definido</option>';
+        rolesCache.forEach(r => {
+          sel.innerHTML += `<option value="${r.id}">${escapeHtml(r.display_name)} (${r.role_key})</option>`;
+        });
+      }
+      openModal('modal-create-agent');
+    }
+
+    async function handleCreateAgent(e) {
+      e.preventDefault();
+      const callsign = document.getElementById('ca-callsign').value.trim();
+      const displayName = document.getElementById('ca-display-name').value.trim();
+      const defaultRoleId = document.getElementById('ca-default-role').value ? parseInt(document.getElementById('ca-default-role').value) : null;
+      const status = document.getElementById('ca-status').value;
+
+      try {
+        const res = await fetch('/api/admin/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ callsign, display_name: displayName, default_role_id: defaultRoleId, status })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao criar agente');
+        closeModal('modal-create-agent');
+        
+        // Show plain token ONCE
+        showGeneratedToken(data.token, data.token_hint);
+        loadAgents();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function rotateAgentToken(agentId) {
+      if (!confirm('Deseja gerar um novo token para este agente? O token anterior será revogado.')) return;
+      try {
+        const res = await fetch(`/api/admin/agents/${agentId}/rotate-token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ revoke_previous: true })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao rodar token');
+        showGeneratedToken(data.token, data.token_hint);
+        loadAgents();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function revokeAgentToken(agentId, hint) {
+      if (!confirm(`Deseja revogar a credencial com hint '${hint}'?`)) return;
+      try {
+        const res = await fetch(`/api/admin/agents/${agentId}/revoke-token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token_hint: hint })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao revogar credencial');
+        showAlert('Credencial revogada.');
+        loadAgents();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function toggleAgentStatus(agentId, newStatus) {
+      try {
+        const res = await fetch(`/api/admin/agents/${agentId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: newStatus })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao alterar estado do agente');
+        showAlert(`Estado do agente alterado para '${newStatus}'.`);
+        loadAgents();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    function showGeneratedToken(token, hint) {
+      document.getElementById('td-token-value').textContent = token;
+      document.getElementById('td-token-hint').textContent = hint;
+      document.getElementById('td-copy-btn-text').textContent = 'Copiar';
+      openModal('modal-token-display');
+    }
+
+    function copyGeneratedToken() {
+      const val = document.getElementById('td-token-value').textContent;
+      navigator.clipboard.writeText(val).then(() => {
+        document.getElementById('td-copy-btn-text').textContent = 'Copiado!';
+        setTimeout(() => document.getElementById('td-copy-btn-text').textContent = 'Copiar', 2500);
+      });
+    }
+
+    // ================= ROOMS & ACCESS LOGIC =================
+    async function loadRooms() {
+      try {
+        const res = await fetch('/api/admin/rooms');
+        if (!res.ok) throw new Error('Falha ao carregar salas');
+        const data = await res.json();
+        roomsCache = data.rooms || [];
+        const container = document.getElementById('rooms-list-container');
+        if (!container) return;
+        container.innerHTML = '';
+        roomsCache.forEach(r => {
+          const btn = document.createElement('button');
+          btn.className = `w-full text-left px-3 py-2 rounded-lg text-xs transition flex items-center justify-between ${selectedRoomId === r.id ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30' : 'hover:bg-slate-800/60 text-slate-300'}`;
+          btn.onclick = () => selectRoom(r.id);
+          btn.innerHTML = `
+            <div class="truncate">
+              <span class="font-bold">${escapeHtml(r.name)}</span>
+              ${r.is_archived ? '<span class="ml-1 text-[10px] text-amber-400">(arquivada)</span>' : ''}
+              <div class="text-[10px] text-slate-500 truncate">${escapeHtml(r.topic || 'Sem tópico')}</div>
+            </div>
+            <span class="text-[10px] bg-slate-800 px-1.5 py-0.5 rounded text-slate-400 font-mono">${r.member_count || 0}</span>
+          `;
+          container.appendChild(btn);
+        });
+
+        if (!selectedRoomId && roomsCache.length > 0) {
+          selectRoom(roomsCache[0].id);
+        }
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function selectRoom(roomId) {
+      selectedRoomId = roomId;
+      const room = roomsCache.find(r => r.id === roomId);
+      if (!room) return;
+
+      document.getElementById('selected-room-title').textContent = room.name;
+      document.getElementById('selected-room-topic').textContent = room.topic || 'Sem tópico configurado.';
+      document.getElementById('room-header-actions').classList.remove('hidden');
+      
+      const archBtn = document.getElementById('archive-room-btn');
+      if (archBtn) {
+        archBtn.textContent = room.is_archived ? 'Desarquivar' : 'Arquivar';
+      }
+
+      await loadRoomMembers(roomId);
+      loadRooms(); // refresh selection styles
+    }
+
+    async function loadRoomMembers(roomId) {
+      try {
+        const res = await fetch(`/api/admin/rooms/${roomId}/members`);
+        if (!res.ok) throw new Error('Falha ao carregar membros da sala');
+        const data = await res.json();
+        const tbody = document.getElementById('room-members-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        if (!data.members || data.members.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="5" class="py-6 text-center text-slate-500">Nenhum membro atribuído a esta sala.</td></tr>';
+          return;
+        }
+
+        data.members.forEach(m => {
+          const tr = document.createElement('tr');
+          tr.className = 'hover:bg-slate-800/30 transition';
+          const isObserver = !m.can_write;
+          tr.innerHTML = `
+            <td class="py-2.5 px-3">
+              <span class="font-semibold text-white">${escapeHtml(m.name)}</span>
+              ${m.display_name && m.display_name !== m.name ? `<span class="text-slate-400 text-[10px]"> (${escapeHtml(m.display_name)})</span>` : ''}
+            </td>
+            <td class="py-2.5 px-3">
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${m.kind === 'human' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-indigo-500/10 text-indigo-400'}">
+                ${m.kind}
+              </span>
+            </td>
+            <td class="py-2.5 px-3 text-slate-400">
+              ${escapeHtml(m.role_display_name || m.role_key || '—')}
+            </td>
+            <td class="py-2.5 px-3">
+              <button onclick="toggleMemberWritePermission(${roomId}, ${m.principal_id}, ${isObserver ? 1 : 0}, ${m.role_id || 'null'})" class="px-2 py-0.5 rounded text-[10px] font-medium transition ${isObserver ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}">
+                ${isObserver ? '👁️ Observador (Só Leitura)' : '✏️ Leitura e Escrita'}
+              </button>
+            </td>
+            <td class="py-2.5 px-3 text-right">
+              <button onclick="revokeRoomAccess(${roomId}, ${m.principal_id})" class="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
+                Remover
+              </button>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    function openCreateRoomModal() {
+      openModal('modal-create-room');
+    }
+
+    async function handleCreateRoom(e) {
+      e.preventDefault();
+      const name = document.getElementById('cr-name').value.trim();
+      const topic = document.getElementById('cr-topic').value.trim();
+      try {
+        const res = await fetch('/api/admin/rooms', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, topic })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao criar sala');
+        closeModal('modal-create-room');
+        showAlert(`Sala '${name}' criada.`);
+        selectedRoomId = data.room.id;
+        loadRooms();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function toggleArchiveSelectedRoom() {
+      if (!selectedRoomId) return;
+      const room = roomsCache.find(r => r.id === selectedRoomId);
+      if (!room) return;
+      const action = room.is_archived ? 'unarchive' : 'archive';
+      try {
+        const res = await fetch(`/api/admin/rooms/${selectedRoomId}/${action}`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro na operação de arquivo');
+        showAlert(room.is_archived ? 'Sala desarquivada.' : 'Sala arquivada.');
+        loadRooms();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function toggleMemberWritePermission(roomId, principalId, newCanWrite, roleId) {
+      try {
+        const res = await fetch(`/api/admin/rooms/${roomId}/access`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ principal_id: principalId, can_write: newCanWrite, role_id: roleId })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Falha ao atualizar permissão');
+        loadRoomMembers(roomId);
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function revokeRoomAccess(roomId, principalId) {
+      if (!confirm('Deseja revogar o acesso deste principal à sala?')) return;
+      try {
+        const res = await fetch(`/api/admin/rooms/${roomId}/access/${principalId}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao revogar acesso');
+        showAlert('Acesso revogado.');
+        loadRoomMembers(roomId);
+        loadRooms();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function openAddMemberModal() {
+      await refreshPrincipalsList();
+      const pSel = document.getElementById('am-principal-id');
+      if (pSel) {
+        pSel.innerHTML = '<option value="">Selecione um principal...</option>';
+        principalsCache.forEach(p => {
+          pSel.innerHTML += `<option value="${p.id}">${escapeHtml(p.name)} (${p.kind})</option>`;
+        });
+      }
+      const rSel = document.getElementById('am-role-id');
+      if (rSel) {
+        rSel.innerHTML = '<option value="">Sem papel específico na sala</option>';
+        rolesCache.forEach(r => {
+          rSel.innerHTML += `<option value="${r.id}">${escapeHtml(r.display_name)} (${r.role_key})</option>`;
+        });
+      }
+      openModal('modal-add-member');
+    }
+
+    async function handleAddMember(e) {
+      e.preventDefault();
+      const principalId = parseInt(document.getElementById('am-principal-id').value);
+      const roleId = document.getElementById('am-role-id').value ? parseInt(document.getElementById('am-role-id').value) : null;
+      const canWrite = parseInt(document.getElementById('am-can-write').value);
+      try {
+        const res = await fetch(`/api/admin/rooms/${selectedRoomId}/access`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ principal_id: principalId, role_id: roleId, can_write: canWrite })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao atribuir acesso');
+        closeModal('modal-add-member');
+        showAlert('Acesso atribuído com sucesso.');
+        loadRoomMembers(selectedRoomId);
+        loadRooms();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    // ================= BULK GRANT LOGIC =================
+    async function openBulkGrantModal() {
+      await refreshPrincipalsList();
+      const rSel = document.getElementById('bg-room-id');
+      if (rSel) {
+        rSel.innerHTML = '';
+        roomsCache.forEach(r => {
+          rSel.innerHTML += `<option value="${r.id}" ${r.id === selectedRoomId ? 'selected' : ''}>${escapeHtml(r.name)}</option>`;
+        });
+      }
+      const pSel = document.getElementById('bg-principals');
+      if (pSel) {
+        pSel.innerHTML = '';
+        principalsCache.forEach(p => {
+          pSel.innerHTML += `<option value="${p.id}">${escapeHtml(p.name)} [${p.kind}]</option>`;
+        });
+      }
+      const roleSel = document.getElementById('bg-role-id');
+      if (roleSel) {
+        roleSel.innerHTML = '<option value="">Nenhum / Padrão</option>';
+        rolesCache.forEach(r => {
+          roleSel.innerHTML += `<option value="${r.id}">${escapeHtml(r.display_name)} (${r.role_key})</option>`;
+        });
+      }
+      openModal('modal-bulk-grant');
+    }
+
+    async function handleBulkGrant(e) {
+      e.preventDefault();
+      const roomId = parseInt(document.getElementById('bg-room-id').value);
+      const pSelect = document.getElementById('bg-principals');
+      const selectedPrincipals = Array.from(pSelect.selectedOptions).map(opt => parseInt(opt.value));
+      const roleId = document.getElementById('bg-role-id').value ? parseInt(document.getElementById('bg-role-id').value) : null;
+      const canWrite = parseInt(document.getElementById('bg-can-write').value);
+
+      if (selectedPrincipals.length === 0) {
+        alert('Por favor selecione pelo menos um principal.');
+        return;
+      }
+
+      const grants = selectedPrincipals.map(pid => ({
+        room_id: roomId,
+        principal_id: pid,
+        role_id: roleId,
+        can_write: canWrite,
+        remove: false
+      }));
+
+      try {
+        const res = await fetch('/api/admin/rooms/bulk-grant', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ grants })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro na atribuição em massa');
+        closeModal('modal-bulk-grant');
+        showAlert(`Atribuição em massa concluída: ${data.count} acessos atribuídos.`);
+        if (selectedRoomId === roomId) loadRoomMembers(roomId);
+        loadRooms();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function refreshPrincipalsList() {
+      try {
+        const [hRes, aRes] = await Promise.all([
+          fetch('/api/admin/humans'),
+          fetch('/api/admin/agents')
+        ]);
+        const hData = await hRes.json();
+        const aData = await aRes.json();
+        const humans = (hData.humans || []).map(h => ({ id: h.id, name: h.name, kind: 'human' }));
+        const agents = (aData.agents || []).map(a => ({ id: a.id, name: a.name, kind: 'agent' }));
+        principalsCache = [...humans, ...agents];
+      } catch (e) {
+        console.warn('Failed to refresh principals:', e);
+      }
+    }
+
+    // ================= ROLES LOGIC =================
+    async function loadRoles() {
+      try {
+        const res = await fetch('/api/admin/roles');
+        if (!res.ok) throw new Error('Falha ao carregar papéis');
+        const data = await res.json();
+        rolesCache = data.roles || [];
+        const tbody = document.getElementById('roles-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        rolesCache.forEach(r => {
+          const tr = document.createElement('tr');
+          tr.className = 'hover:bg-slate-800/30 transition';
+          tr.innerHTML = `
+            <td class="py-3 px-4 font-mono text-[11px] font-bold text-indigo-300">${escapeHtml(r.role_key)}</td>
+            <td class="py-3 px-4 font-semibold text-white">${escapeHtml(r.display_name)}</td>
+            <td class="py-3 px-4 text-slate-300 max-w-xs truncate" title="${escapeHtml(r.description)}">${escapeHtml(r.description || '—')}</td>
+            <td class="py-3 px-4 text-slate-400 max-w-sm truncate text-[11px] font-mono" title="${escapeHtml(r.reminder_text)}">${escapeHtml(r.reminder_text || '—')}</td>
+            <td class="py-3 px-4">
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${r.is_builtin ? 'bg-purple-500/20 text-purple-300' : 'bg-slate-800 text-slate-400'}">
+                ${r.is_builtin ? 'Sistema' : 'Custom'}
+              </span>
+            </td>
+            <td class="py-3 px-4 text-right space-x-1">
+              <button onclick="openEditRoleModal(${r.id})" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">
+                Editar
+              </button>
+              ${!r.is_builtin ? `
+                <button onclick="deleteRole(${r.id})" class="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
+                  Eliminar
+                </button>
+              ` : ''}
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
+        lucide.createIcons();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    function openCreateRoleModal() {
+      document.getElementById('role-modal-title').textContent = 'Novo Papel de Agente';
+      document.getElementById('ro-id').value = '';
+      document.getElementById('ro-key').value = '';
+      document.getElementById('ro-key').disabled = false;
+      document.getElementById('ro-display-name').value = '';
+      document.getElementById('ro-description').value = '';
+      document.getElementById('ro-reminder-text').value = '';
+      openModal('modal-role');
+    }
+
+    function openEditRoleModal(roleId) {
+      const r = rolesCache.find(x => x.id === roleId);
+      if (!r) return;
+      document.getElementById('role-modal-title').textContent = `Editar Papel: ${r.role_key}`;
+      document.getElementById('ro-id').value = r.id;
+      document.getElementById('ro-key').value = r.role_key;
+      document.getElementById('ro-key').disabled = true;
+      document.getElementById('ro-display-name').value = r.display_name;
+      document.getElementById('ro-description').value = r.description || '';
+      document.getElementById('ro-reminder-text').value = r.reminder_text || '';
+      openModal('modal-role');
+    }
+
+    async function handleSaveRole(e) {
+      e.preventDefault();
+      const roleId = document.getElementById('ro-id').value;
+      const roleKey = document.getElementById('ro-key').value.trim();
+      const displayName = document.getElementById('ro-display-name').value.trim();
+      const description = document.getElementById('ro-description').value.trim();
+      const reminderText = document.getElementById('ro-reminder-text').value.trim();
+
+      try {
+        let res;
+        if (roleId) {
+          res = await fetch(`/api/admin/roles/${roleId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ display_name: displayName, description, reminder_text: reminderText })
+          });
+        } else {
+          res = await fetch('/api/admin/roles', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role_key: roleKey, display_name: displayName, description, reminder_text: reminderText })
+          });
+        }
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao guardar papel');
+        closeModal('modal-role');
+        showAlert('Papel guardado com sucesso.');
+        loadRoles();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function deleteRole(roleId) {
+      if (!confirm('Deseja eliminar este papel?')) return;
+      try {
+        const res = await fetch(`/api/admin/roles/${roleId}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao eliminar papel');
+        showAlert('Papel eliminado.');
+        loadRoles();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    // ================= AUDIT LOG LOGIC =================
+    async function loadAuditLog() {
+      const action = document.getElementById('audit-filter-action')?.value.trim();
+      const targetType = document.getElementById('audit-filter-target-type')?.value.trim();
+      const roomId = document.getElementById('audit-filter-room-id')?.value.trim();
+
+      const params = new URLSearchParams();
+      params.set('limit', auditLimit);
+      params.set('offset', auditOffset);
+      if (action) params.set('action', action);
+      if (targetType) params.set('target_type', targetType);
+      if (roomId) params.set('room_id', roomId);
+
+      try {
+        const res = await fetch(`/api/admin/audit?${params.toString()}`);
+        if (!res.ok) throw new Error('Falha ao carregar registo de auditoria');
+        const data = await res.json();
+        const tbody = document.getElementById('audit-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        if (!data.items || data.items.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="7" class="py-8 text-center text-slate-500 font-sans text-xs">Nenhum registo de auditoria encontrado.</td></tr>';
+          return;
+        }
+
+        data.items.forEach(log => {
+          const tr = document.createElement('tr');
+          tr.className = 'hover:bg-slate-800/30 transition';
+          tr.innerHTML = `
+            <td class="py-2 px-4 text-slate-500">#${log.id}</td>
+            <td class="py-2 px-4 text-slate-400 whitespace-nowrap">${escapeHtml(log.created_at || '')}</td>
+            <td class="py-2 px-4 font-sans text-slate-200">${escapeHtml(log.actor_name || 'sistema')}</td>
+            <td class="py-2 px-4 font-bold text-indigo-400">${escapeHtml(log.action)}</td>
+            <td class="py-2 px-4 text-slate-400">${escapeHtml(log.target_type || '—')} ${log.target_id ? `(#${log.target_id})` : ''}</td>
+            <td class="py-2 px-4 text-slate-400">${log.room_id ? `#${log.room_id}` : '—'}</td>
+            <td class="py-2 px-4 font-sans text-slate-300 max-w-md truncate" title="${escapeHtml(log.details)}">${escapeHtml(log.details || '—')}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+
+        const countInfo = document.getElementById('audit-count-info');
+        if (countInfo) countInfo.textContent = `A mostrar ${data.items.length} de ${data.total} registos`;
+
+        const curPage = Math.floor(auditOffset / auditLimit) + 1;
+        const totalPages = Math.max(1, Math.ceil(data.total / auditLimit));
+        document.getElementById('audit-page-info').textContent = `Pág. ${curPage} de ${totalPages}`;
+
+        document.getElementById('audit-prev-btn').disabled = auditOffset === 0;
+        document.getElementById('audit-next-btn').disabled = (auditOffset + auditLimit) >= data.total;
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    function applyAuditFilters() {
+      auditOffset = 0;
+      loadAuditLog();
+    }
+    function prevAuditPage() {
+      if (auditOffset >= auditLimit) {
+        auditOffset -= auditLimit;
+        loadAuditLog();
+      }
+    }
+    function nextAuditPage() {
+      auditOffset += auditLimit;
+      loadAuditLog();
+    }
+
+    // --- Utility Functions ---
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    window.addEventListener('DOMContentLoaded', initAdmin);
+  </script>
+</body>
+</html>

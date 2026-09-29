@@ -74,6 +74,13 @@ class StorageV3:
                 except Exception:
                     pass
 
+    @property
+    def v3(self) -> "StorageV3":
+        return self
+
+    def is_v3(self) -> bool:
+        return True
+
     def _init_db(self) -> None:
         """Initializes database schema from schema_v3.sql if not already initialized."""
         conn = self._get_connection()
@@ -239,13 +246,25 @@ class StorageV3:
             )
             return cursor.rowcount > 0
 
-    def delete_principal(self, principal_id: int) -> bool:
+    def delete_principal(self, principal_id: int, actor_id: int | None = None, actor_name: str = "admin") -> bool:
         """Deletes a principal. Protects last admin."""
         self._ensure_not_last_active_admin(principal_id, "remover")
+        p = self.get_principal_by_id(principal_id)
+        p_name = p["name"] if p else str(principal_id)
         conn = self._get_connection()
         with conn:
             cursor = conn.execute("DELETE FROM principals WHERE id = ?;", (principal_id,))
-            return cursor.rowcount > 0
+            deleted = cursor.rowcount > 0
+        if deleted:
+            self.log_audit(
+                actor_id=actor_id,
+                actor_name=actor_name,
+                action="delete_principal",
+                target_type="principal",
+                target_id=principal_id,
+                details=f"Removeu principal '{p_name}' (#{principal_id})",
+            )
+        return deleted
 
     # ------------------------------------------------------------------ Humans & Passwords
     def create_human(
@@ -255,6 +274,8 @@ class StorageV3:
         display_name: str = "",
         access_role: str = "user",
         must_change_password: int = 1,
+        actor_id: int | None = None,
+        actor_name: str = "admin",
     ) -> int:
         """Creates a new human principal and record in humans table. Returns principal id."""
         conn = self._get_connection()
@@ -273,7 +294,92 @@ class StorageV3:
                 """,
                 (pid, access_role, pwd_hash, must_change_password),
             )
+            self.log_audit(
+                actor_id=actor_id,
+                actor_name=actor_name,
+                action="create_human",
+                target_type="principal",
+                target_id=pid,
+                details=f"Criou utilizador '{username}' (role={access_role})",
+            )
             return pid
+
+    def list_humans(self) -> list[dict[str, Any]]:
+        """Lists all human principals with their humans table data."""
+        conn = self._get_connection()
+        rows = conn.execute(
+            """
+            SELECT p.id, p.name, p.display_name, p.status, p.is_legacy, p.created_at,
+                   h.access_role, h.must_change_password, h.failed_logins, h.locked_until, h.last_login_at
+            FROM principals p
+            JOIN humans h ON p.id = h.principal_id
+            ORDER BY p.id ASC;
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_human(
+        self,
+        principal_id: int,
+        display_name: str | None = None,
+        access_role: str | None = None,
+        status: str | None = None,
+        reset_password: str | None = None,
+        actor_id: int | None = None,
+        actor_name: str = "admin",
+    ) -> dict[str, Any]:
+        """
+        Updates human profile, access role, status, or resets password.
+        Enforces safeguard preventing demoting, deactivating, or removing the last active admin.
+        """
+        p = self.get_principal_by_id(principal_id)
+        if not p or p.get("kind") != "human":
+            raise ValueError(f"Utilizador #{principal_id} não encontrado.")
+
+        # Safeguard: cannot deactivate or demote the last active admin
+        if (access_role and access_role != "admin") or (status and status != "active"):
+            self._ensure_not_last_active_admin(principal_id, "despromover ou desativar")
+
+        conn = self._get_connection()
+        p_updates = []
+        p_params = []
+        if display_name is not None and display_name.strip():
+            p_updates.append("display_name = ?")
+            p_params.append(display_name.strip())
+        if status is not None and status.strip():
+            p_updates.append("status = ?")
+            p_params.append(status.strip())
+
+        h_updates = []
+        h_params = []
+        if access_role is not None and access_role.strip():
+            h_updates.append("access_role = ?")
+            h_params.append(access_role.strip())
+        if reset_password is not None and reset_password.strip():
+            pwd_hash = hash_password(reset_password.strip())
+            h_updates.append("password_hash = ?")
+            h_params.append(pwd_hash)
+            h_updates.append("must_change_password = 1")
+            h_updates.append("failed_logins = 0")
+            h_updates.append("locked_until = NULL")
+
+        with conn:
+            if p_updates:
+                p_params.append(principal_id)
+                conn.execute(f"UPDATE principals SET {', '.join(p_updates)} WHERE id = ?;", p_params)
+            if h_updates:
+                h_params.append(principal_id)
+                conn.execute(f"UPDATE humans SET {', '.join(h_updates)} WHERE principal_id = ?;", h_params)
+
+        self.log_audit(
+            actor_id=actor_id,
+            actor_name=actor_name,
+            action="update_human",
+            target_type="principal",
+            target_id=principal_id,
+            details=f"Atualizou utilizador '{p['name']}' (role={access_role}, status={status}, pwd_reset={bool(reset_password)})",
+        )
+        return self.get_principal_by_id(principal_id)  # type: ignore
 
     def update_human_role(self, principal_id: int, access_role: str) -> bool:
         """Updates human access role ('admin' or 'user'). Protects last admin."""
@@ -487,10 +593,12 @@ class StorageV3:
         is_system: int = 0,
         status: str = "active",
         default_role_id: int | None = None,
+        actor_id: int | None = None,
+        actor_name: str = "admin",
     ) -> tuple[int, str]:
         """
         Creates an agent principal, agents row, and initial credential.
-        Returns (principal_id, raw_agent_token).
+        Returns (principal_id, raw_agent_token). Plain token is never logged.
         """
         conn = self._get_connection()
         now_str = utc_now()
@@ -524,7 +632,84 @@ class StorageV3:
                 """,
                 (pid, t_hash, t_hint, now_str),
             )
-            return pid, raw_token
+
+        self.log_audit(
+            actor_id=actor_id,
+            actor_name=actor_name,
+            action="create_agent",
+            target_type="principal",
+            target_id=pid,
+            details=f"Criou agente '{clean_callsign}' (role_id={target_role_id}, hint={t_hint})",
+        )
+        return pid, raw_token
+
+    def list_agents(self) -> list[dict[str, Any]]:
+        """Lists all agent principals with default role information and credential summaries."""
+        conn = self._get_connection()
+        rows = conn.execute(
+            """
+            SELECT p.id, p.name, p.display_name, p.status, p.is_system, p.is_legacy, p.created_at,
+                   a.default_role_id, ar.role_key as default_role_key, ar.display_name as default_role_name
+            FROM principals p
+            JOIN agents a ON p.id = a.principal_id
+            LEFT JOIN agent_roles ar ON a.default_role_id = ar.id
+            ORDER BY p.id ASC;
+            """
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["credentials"] = self.list_agent_credentials(d["id"])
+            result.append(d)
+        return result
+
+    def update_agent(
+        self,
+        principal_id: int,
+        display_name: str | None = None,
+        status: str | None = None,
+        default_role_id: int | None = None,
+        actor_id: int | None = None,
+        actor_name: str = "admin",
+    ) -> dict[str, Any]:
+        """Updates agent display name, status, or default role."""
+        p = self.get_principal_by_id(principal_id)
+        if not p or p.get("kind") != "agent":
+            raise ValueError(f"Agente #{principal_id} não encontrado.")
+
+        conn = self._get_connection()
+        p_updates = []
+        p_params = []
+        if display_name is not None and display_name.strip():
+            p_updates.append("display_name = ?")
+            p_params.append(display_name.strip())
+        if status is not None and status.strip():
+            p_updates.append("status = ?")
+            p_params.append(status.strip())
+
+        a_updates = []
+        a_params = []
+        if default_role_id is not None:
+            a_updates.append("default_role_id = ?")
+            a_params.append(default_role_id if default_role_id > 0 else None)
+
+        with conn:
+            if p_updates:
+                p_params.append(principal_id)
+                conn.execute(f"UPDATE principals SET {', '.join(p_updates)} WHERE id = ?;", p_params)
+            if a_updates:
+                a_params.append(principal_id)
+                conn.execute(f"UPDATE agents SET {', '.join(a_updates)} WHERE principal_id = ?;", a_params)
+
+        self.log_audit(
+            actor_id=actor_id,
+            actor_name=actor_name,
+            action="update_agent",
+            target_type="principal",
+            target_id=principal_id,
+            details=f"Atualizou agente '{p['name']}' (status={status}, default_role_id={default_role_id})",
+        )
+        return self.get_principal_by_id(principal_id)  # type: ignore
 
     def authenticate_agent_token(self, token: str) -> tuple[dict[str, Any] | None, str | None]:
         """
@@ -576,6 +761,8 @@ class StorageV3:
         principal_id: int,
         revoke_old: bool = True,
         revoke_previous: bool | None = None,
+        actor_id: int | None = None,
+        actor_name: str = "admin",
     ) -> tuple[str, str]:
         """Generates a new token for an agent. Optionally revokes previous active tokens. Returns (token, hint)."""
         should_revoke = revoke_previous if revoke_previous is not None else revoke_old
@@ -598,9 +785,24 @@ class StorageV3:
                 """,
                 (principal_id, t_hash, t_hint, now_str),
             )
+
+        self.log_audit(
+            actor_id=actor_id,
+            actor_name=actor_name,
+            action="rotate_token",
+            target_type="credential",
+            target_id=principal_id,
+            details=f"Rodou token do agente #{principal_id} (novo hint={t_hint})",
+        )
         return raw_token, t_hint
 
-    def revoke_credential_by_hint(self, principal_id: int, hint: str) -> bool:
+    def revoke_credential_by_hint(
+        self,
+        principal_id: int,
+        hint: str,
+        actor_id: int | None = None,
+        actor_name: str = "admin",
+    ) -> bool:
         """Revokes a credential identified by its 4-character hint."""
         conn = self._get_connection()
         now_str = utc_now()
@@ -613,7 +815,49 @@ class StorageV3:
                 """,
                 (now_str, principal_id, hint.strip()),
             )
-            return cursor.rowcount > 0
+            revoked = cursor.rowcount > 0
+        if revoked:
+            self.log_audit(
+                actor_id=actor_id,
+                actor_name=actor_name,
+                action="revoke_token",
+                target_type="credential",
+                target_id=principal_id,
+                details=f"Revogou token hint={hint.strip()} do agente #{principal_id}",
+            )
+        return revoked
+
+    def revoke_agent_credential(
+        self,
+        principal_id: int,
+        credential_id: int | None = None,
+        hint: str | None = None,
+        actor_id: int | None = None,
+        actor_name: str = "admin",
+    ) -> bool:
+        """Revokes an agent credential by ID or hint."""
+        if hint:
+            return self.revoke_credential_by_hint(principal_id, hint, actor_id=actor_id, actor_name=actor_name)
+        if credential_id is not None:
+            conn = self._get_connection()
+            now_str = utc_now()
+            with conn:
+                cursor = conn.execute(
+                    "UPDATE credentials SET revoked_at = ? WHERE id = ? AND principal_id = ? AND revoked_at IS NULL;",
+                    (now_str, credential_id, principal_id),
+                )
+                revoked = cursor.rowcount > 0
+            if revoked:
+                self.log_audit(
+                    actor_id=actor_id,
+                    actor_name=actor_name,
+                    action="revoke_token",
+                    target_type="credential",
+                    target_id=principal_id,
+                    details=f"Revogou credencial #{credential_id} do agente #{principal_id}",
+                )
+            return revoked
+        return False
 
     def list_agent_credentials(self, principal_id: int) -> list[dict[str, Any]]:
         """Lists metadata of all credentials for an agent (token_hint, created_at, last_used_at, revoked_at)."""
@@ -648,23 +892,123 @@ class StorageV3:
         rows = conn.execute("SELECT * FROM agent_roles ORDER BY id ASC;").fetchall()
         return [dict(r) for r in rows]
 
-    def update_role_reminder(self, role_id: int, reminder_text: str, updated_by_id: int | None = None) -> bool:
-        """Updates reminder text for an agent role. Only admins should call this."""
+    def create_role(
+        self,
+        role_key: str,
+        display_name: str,
+        description: str = "",
+        reminder_text: str = "",
+        actor_id: int | None = None,
+        actor_name: str = "admin",
+    ) -> dict[str, Any]:
+        """Creates a new agent role and logs audit."""
+        clean_key = role_key.strip().lower()
+        clean_disp = display_name.strip()
         conn = self._get_connection()
         now_str = utc_now()
         with conn:
             cursor = conn.execute(
                 """
-                UPDATE agent_roles 
-                SET reminder_text = ?, updated_at = ?, updated_by = ?
-                WHERE id = ?;
+                INSERT INTO agent_roles (role_key, display_name, description, reminder_text, is_builtin, updated_at, updated_by)
+                VALUES (?, ?, ?, ?, 0, ?, ?);
                 """,
-                (reminder_text.strip(), now_str, updated_by_id, role_id),
+                (clean_key, clean_disp, description.strip(), reminder_text.strip(), now_str, actor_id),
             )
-            return cursor.rowcount > 0
+            role_id = cursor.lastrowid
+
+        self.log_audit(
+            actor_id=actor_id,
+            actor_name=actor_name,
+            action="create_role",
+            target_type="role",
+            target_id=role_id,
+            details=f"Criou papel '{clean_key}' ({clean_disp})",
+        )
+        return self.get_role_by_id(role_id)  # type: ignore
+
+    def update_role(
+        self,
+        role_id: int,
+        display_name: str | None = None,
+        description: str | None = None,
+        reminder_text: str | None = None,
+        actor_id: int | None = None,
+        actor_name: str = "admin",
+    ) -> dict[str, Any]:
+        """Updates agent role fields (reminder_text, description, display_name) and logs audit."""
+        role = self.get_role_by_id(role_id)
+        if not role:
+            raise ValueError(f"Papel #{role_id} não encontrado.")
+
+        updates = ["updated_at = ?", "updated_by = ?"]
+        now_str = utc_now()
+        params: list[Any] = [now_str, actor_id]
+
+        if display_name is not None and display_name.strip():
+            updates.append("display_name = ?")
+            params.append(display_name.strip())
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description.strip())
+        if reminder_text is not None:
+            updates.append("reminder_text = ?")
+            params.append(reminder_text.strip())
+
+        params.append(role_id)
+        conn = self._get_connection()
+        with conn:
+            conn.execute(f"UPDATE agent_roles SET {', '.join(updates)} WHERE id = ?;", params)
+
+        self.log_audit(
+            actor_id=actor_id,
+            actor_name=actor_name,
+            action="update_role",
+            target_type="role",
+            target_id=role_id,
+            details=f"Atualizou papel '{role['role_key']}' (#{role_id})",
+        )
+        return self.get_role_by_id(role_id)  # type: ignore
+
+    def delete_role(self, role_id: int, actor_id: int | None = None, actor_name: str = "admin") -> bool:
+        """Deletes an agent role if it's not a builtin role."""
+        role = self.get_role_by_id(role_id)
+        if not role:
+            return False
+        if role.get("is_builtin"):
+            raise ValueError(f"Papel do sistema '{role['role_key']}' não pode ser removido.")
+        conn = self._get_connection()
+        with conn:
+            cur = conn.execute("DELETE FROM agent_roles WHERE id = ?;", (role_id,))
+            deleted = cur.rowcount > 0
+        if deleted:
+            self.log_audit(
+                actor_id=actor_id,
+                actor_name=actor_name,
+                action="delete_role",
+                target_type="role",
+                target_id=role_id,
+                details=f"Removeu papel '{role['role_key']}' (#{role_id})",
+            )
+        return deleted
+
+    def update_role_reminder(self, role_id: int, reminder_text: str, updated_by_id: int | None = None) -> bool:
+        """Updates reminder text for an agent role. Only admins should call this."""
+        try:
+            self.update_role(role_id, reminder_text=reminder_text, actor_id=updated_by_id)
+            return True
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------ Rooms & Room Access
-    def create_room(self, name: str, topic: str = "", created_by_id: int | None = None, created_by: int | None = None) -> dict[str, Any]:
+    def create_room(
+        self,
+        name: str,
+        topic: str = "",
+        created_by_id: int | None = None,
+        created_by: int | None = None,
+        actor_id: int | None = None,
+        actor_name: str = "admin",
+    ) -> dict[str, Any]:
         """Creates a new room. Access is strictly controlled via room_access."""
         actual_creator = created_by_id if created_by_id is not None else created_by
         conn = self._get_connection()
@@ -697,6 +1041,15 @@ class StorageV3:
                     (actual_creator, room_id, now_str),
                 )
 
+        self.log_audit(
+            actor_id=actor_id or actual_creator,
+            actor_name=actor_name,
+            action="create_room",
+            target_type="room",
+            target_id=room_id,
+            room_id=room_id,
+            details=f"Criou sala '{clean_name}'",
+        )
         return self.get_room_by_id(room_id)  # type: ignore
 
     def get_room(self, room_id_or_name: int | str) -> dict[str, Any] | None:
@@ -756,17 +1109,28 @@ class StorageV3:
             result.append(d)
         return result
 
-    def archive_room(self, room_id_or_name: int | str) -> bool:
+    def archive_room(self, room_id_or_name: int | str, actor_id: int | None = None, actor_name: str = "admin") -> bool:
         """Marks a room as archived."""
-        room = self._resolve_room(room_name_or_id if (room_name_or_id := room_id_or_name) else "")
+        room = self._resolve_room(room_id_or_name)
         if not room:
             return False
         conn = self._get_connection()
         with conn:
             cursor = conn.execute("UPDATE rooms SET is_archived = 1 WHERE id = ?;", (room["id"],))
-            return cursor.rowcount > 0
+            archived = cursor.rowcount > 0
+        if archived:
+            self.log_audit(
+                actor_id=actor_id,
+                actor_name=actor_name,
+                action="archive_room",
+                target_type="room",
+                target_id=room["id"],
+                room_id=room["id"],
+                details=f"Arquivou sala '{room['name']}' (#{room['id']})",
+            )
+        return archived
 
-    def unarchive_room(self, room_id_or_name: int | str) -> bool:
+    def unarchive_room(self, room_id_or_name: int | str, actor_id: int | None = None, actor_name: str = "admin") -> bool:
         """Unarchives a room."""
         room = self._resolve_room(room_id_or_name)
         if not room:
@@ -774,7 +1138,18 @@ class StorageV3:
         conn = self._get_connection()
         with conn:
             cursor = conn.execute("UPDATE rooms SET is_archived = 0 WHERE id = ?;", (room["id"],))
-            return cursor.rowcount > 0
+            unarchived = cursor.rowcount > 0
+        if unarchived:
+            self.log_audit(
+                actor_id=actor_id,
+                actor_name=actor_name,
+                action="unarchive_room",
+                target_type="room",
+                target_id=room["id"],
+                room_id=room["id"],
+                details=f"Desarquivou sala '{room['name']}' (#{room['id']})",
+            )
+        return unarchived
 
     def grant_room_access(
         self,
@@ -783,6 +1158,8 @@ class StorageV3:
         role_id: int | None = None,
         can_write: int = 1,
         granted_by_id: int | None = None,
+        actor_id: int | None = None,
+        actor_name: str = "admin",
     ) -> None:
         """Grants or updates room access for a principal with specific role and write permission."""
         room = self._resolve_room(room_id)
@@ -793,6 +1170,8 @@ class StorageV3:
             raise ValueError(f"Principal '{principal_id}' não encontrado.")
         conn = self._get_connection()
         now_str = utc_now()
+        eff_can_write = 1 if can_write else 0
+        effective_granter = actor_id or granted_by_id
         with conn:
             conn.execute(
                 """
@@ -804,7 +1183,7 @@ class StorageV3:
                     granted_by = excluded.granted_by,
                     granted_at = excluded.granted_at;
                 """,
-                (room["id"], principal["id"], role_id, can_write, granted_by_id, now_str),
+                (room["id"], principal["id"], role_id, eff_can_write, effective_granter, now_str),
             )
             max_mid = self.get_max_message_id(room["id"])
             conn.execute(
@@ -815,15 +1194,121 @@ class StorageV3:
                 (principal["id"], room["id"], max_mid, now_str),
             )
 
-    def revoke_room_access(self, room_id: int, principal_id: int) -> bool:
+        mode = "leitura/escrita" if eff_can_write else "observador (leitura)"
+        self.log_audit(
+            actor_id=effective_granter,
+            actor_name=actor_name,
+            action="grant_room_access",
+            target_type="room_access",
+            target_id=principal["id"],
+            room_id=room["id"],
+            details=f"Atribuiu acesso à sala '{room['name']}' ao principal '{principal['name']}' ({mode}, role_id={role_id})",
+        )
+
+    def revoke_room_access(
+        self,
+        room_id: int | str | dict[str, Any],
+        principal_id: int | str | dict[str, Any],
+        actor_id: int | None = None,
+        actor_name: str = "admin",
+    ) -> bool:
         """Revokes a principal's access to a room."""
+        room = self._resolve_room(room_id)
+        if not room:
+            return False
+        principal = self._resolve_principal(principal_id)
+        if not principal:
+            return False
         conn = self._get_connection()
         with conn:
             cursor = conn.execute(
                 "DELETE FROM room_access WHERE room_id = ? AND principal_id = ?;",
-                (room_id, principal_id),
+                (room["id"], principal["id"]),
             )
-            return cursor.rowcount > 0
+            revoked = cursor.rowcount > 0
+        if revoked:
+            self.log_audit(
+                actor_id=actor_id,
+                actor_name=actor_name,
+                action="revoke_room_access",
+                target_type="room_access",
+                target_id=principal["id"],
+                room_id=room["id"],
+                details=f"Removeu acesso do principal '{principal['name']}' à sala '{room['name']}'",
+            )
+        return revoked
+
+    def bulk_grant_room_access(
+        self,
+        grants: list[dict[str, Any]],
+        actor_id: int | None = None,
+        actor_name: str = "admin",
+    ) -> int:
+        """
+        Performs bulk assignment or revocation of room access for multiple (room, principal) pairs.
+        Each grant dict should have:
+          - room_id: int | str
+          - principal_id: int | str
+          - role_id: int | None (optional)
+          - can_write: int (0 or 1, default 1)
+          - remove: bool (default False; if True, revokes access)
+        """
+        count = 0
+        conn = self._get_connection()
+        now_str = utc_now()
+        with conn:
+            for g in grants:
+                r_spec = g.get("room_id")
+                p_spec = g.get("principal_id")
+                if not r_spec or not p_spec:
+                    continue
+                room = self._resolve_room(r_spec)
+                principal = self._resolve_principal(p_spec)
+                if not room or not principal:
+                    continue
+
+                if g.get("remove"):
+                    cur = conn.execute(
+                        "DELETE FROM room_access WHERE room_id = ? AND principal_id = ?;",
+                        (room["id"], principal["id"]),
+                    )
+                    if cur.rowcount > 0:
+                        count += 1
+                else:
+                    role_id = g.get("role_id")
+                    can_write = 1 if g.get("can_write", 1) else 0
+                    conn.execute(
+                        """
+                        INSERT INTO room_access (room_id, principal_id, role_id, can_write, granted_by, granted_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(room_id, principal_id) DO UPDATE SET
+                            role_id = excluded.role_id,
+                            can_write = excluded.can_write,
+                            granted_by = excluded.granted_by,
+                            granted_at = excluded.granted_at;
+                        """,
+                        (room["id"], principal["id"], role_id, can_write, actor_id, now_str),
+                    )
+                    max_mid = self.get_max_message_id(room["id"])
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO read_cursors (principal_id, room_id, last_message_id, updated_at)
+                        VALUES (?, ?, ?, ?);
+                        """,
+                        (principal["id"], room["id"], max_mid, now_str),
+                    )
+                    count += 1
+
+        self.log_audit(
+            actor_id=actor_id,
+            actor_name=actor_name,
+            action="bulk_grant_room_access",
+            target_type="room_access",
+            target_id=None,
+            room_id=None,
+            details=f"Atribuição em massa de {count} acessos em salas",
+        )
+        return count
 
     def get_room_access(self, room_id: int, principal_id: int) -> dict[str, Any] | None:
         """Retrieves access details for a principal in a room."""
@@ -2568,3 +3053,48 @@ class StorageV3:
             (room["id"], limit),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def list_audit_log(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        actor_id: int | None = None,
+        action: str | None = None,
+        room_id: int | None = None,
+        target_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Queries audit log entries with optional filters (who, what, room) and pagination."""
+        conn = self._get_connection()
+        where_clauses = ["1=1"]
+        params: list[Any] = []
+        if actor_id is not None:
+            where_clauses.append("actor_id = ?")
+            params.append(actor_id)
+        if action and action.strip():
+            where_clauses.append("action = ?")
+            params.append(action.strip())
+        if room_id is not None:
+            where_clauses.append("room_id = ?")
+            params.append(room_id)
+        if target_type and target_type.strip():
+            where_clauses.append("target_type = ?")
+            params.append(target_type.strip())
+
+        where_sql = " AND ".join(where_clauses)
+        count_row = conn.execute(f"SELECT COUNT(*) as cnt FROM audit_log WHERE {where_sql};", params).fetchone()
+        total = count_row["cnt"] if count_row else 0
+
+        eff_limit = max(1, min(limit, 200))
+        eff_offset = max(0, offset)
+        fetch_params = params + [eff_limit, eff_offset]
+        rows = conn.execute(
+            f"SELECT * FROM audit_log WHERE {where_sql} ORDER BY id DESC LIMIT ? OFFSET ?;",
+            fetch_params,
+        ).fetchall()
+
+        return {
+            "total": total,
+            "limit": eff_limit,
+            "offset": eff_offset,
+            "items": [dict(r) for r in rows],
+        }

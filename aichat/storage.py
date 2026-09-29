@@ -194,6 +194,44 @@ class ChatStorage:
     def get_message_recipients(self, *args, **kwargs):
         return self.v3.get_message_recipients(*args, **kwargs)
 
+    def list_humans(self, *args, **kwargs):
+        return self.v3.list_humans(*args, **kwargs)
+
+    def update_human(self, *args, **kwargs):
+        return self.v3.update_human(*args, **kwargs)
+
+    def delete_principal(self, *args, **kwargs):
+        return self.v3.delete_principal(*args, **kwargs)
+
+    def list_agents(self, *args, **kwargs):
+        return self.v3.list_agents(*args, **kwargs)
+
+    def update_agent(self, *args, **kwargs):
+        return self.v3.update_agent(*args, **kwargs)
+
+    def revoke_agent_credential(self, *args, **kwargs):
+        return self.v3.revoke_agent_credential(*args, **kwargs)
+
+    def create_role(self, *args, **kwargs):
+        return self.v3.create_role(*args, **kwargs)
+
+    def update_role(self, *args, **kwargs):
+        return self.v3.update_role(*args, **kwargs)
+
+    def delete_role(self, *args, **kwargs):
+        return self.v3.delete_role(*args, **kwargs)
+
+    def bulk_grant_room_access(self, *args, **kwargs):
+        return self.v3.bulk_grant_room_access(*args, **kwargs)
+
+    def list_audit_log(self, *args, **kwargs):
+        return self.v3.list_audit_log(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        if self.is_v3():
+            return getattr(self.v3, name)
+        raise AttributeError(f"'ChatStorage' object has no attribute '{name}'")
+
     def _get_connection(self) -> sqlite3.Connection:
         """Returns a thread-local SQLite connection with row_factory enabled."""
         if not hasattr(self._local, "conns"):

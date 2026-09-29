@@ -25,6 +25,7 @@ from aichat.config import STATIC_DIR
 from aichat.mcp_server import current_auth_token, current_principal, hub, mcp
 
 INDEX_HTML = STATIC_DIR / "index.html"
+ADMIN_HTML = STATIC_DIR / "admin.html"
 
 
 def safe_int(val: Any, default: int = 0, min_val: int | None = None, max_val: int | None = None) -> int:
@@ -1956,13 +1957,579 @@ async def endpoint_update_agent_status(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-async def endpoint_list_admin_rooms(request: Request) -> Response:
-    """Lists all rooms including passwords for the authenticated supervisor."""
-    if not is_authenticated_human(request):
-        return JSONResponse({"error": "Acesso negado: Apenas o supervisor humano Rui pode aceder a este endpoint."}, status_code=403)
+# --- Admin Console Endpoints (Phase 3) ---
+
+def require_admin(request: Request) -> tuple[dict[str, Any] | None, Response | None]:
+    """
+    Validates that the request comes from an authenticated human admin.
+    Returns (principal, None) on success, or (None, Response) on failure (401 or 403).
+    """
+    if not (hasattr(hub.storage, "is_v3") and hub.storage.is_v3()):
+        if not is_authenticated_human(request):
+            return None, JSONResponse({"error": "Acesso restrito ao supervisor"}, status_code=403)
+        return {"id": 1, "name": hub.human_name, "kind": "human", "access_role": "admin"}, None
+
+    auth = get_request_auth(request)
+    if not auth:
+        return None, JSONResponse({"error": "Autenticação necessária"}, status_code=401)
+
+    principal = auth.get("principal") or auth
+    if not hub.storage.v3.authorize(principal, "admin"):
+        return None, JSONResponse({"error": "Acesso restrito a administradores"}, status_code=403)
+
+    return principal, None
+
+
+async def endpoint_admin_ui(request: Request) -> Response:
+    """Serves the Admin Console SPA to authenticated human admins."""
+    principal, err = require_admin(request)
+    if err:
+        if "text/html" in request.headers.get("accept", "") and err.status_code == 401:
+            return RedirectResponse(url="/?login=1", status_code=303)
+        return err
+    if ADMIN_HTML.exists():
+        return HTMLResponse(ADMIN_HTML.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>Consola de Administração</h1><p>admin.html não encontrado</p>", status_code=404)
+
+
+async def endpoint_admin_me(request: Request) -> Response:
+    """Returns current admin profile information."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    return JSONResponse({
+        "status": "success",
+        "principal": {
+            "id": principal.get("id"),
+            "name": principal.get("name"),
+            "display_name": principal.get("display_name"),
+            "kind": principal.get("kind"),
+            "role": principal.get("access_role", "admin"),
+        }
+    })
+
+
+async def endpoint_admin_list_humans(request: Request) -> Response:
+    """Lists all human principals."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        humans = hub.storage.v3.list_humans()
+        return JSONResponse({"status": "success", "count": len(humans), "humans": humans, "users": humans})
+    return JSONResponse({"status": "success", "count": 1, "humans": [{"id": 1, "name": hub.human_name, "access_role": "admin"}]})
+
+
+async def endpoint_admin_create_human(request: Request) -> Response:
+    """Creates a new human user."""
+    principal, err = require_admin(request)
+    if err:
+        return err
     try:
-        rooms = hub.storage.list_rooms(include_archived=True, include_passwords=True)
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "JSON inválido"}, status_code=400)
+    username = (data.get("username") or "").strip()
+    password = (data.get("password") or "").strip()
+    display_name = (data.get("display_name") or "").strip()
+    access_role = (data.get("access_role") or "user").strip()
+    must_change = int(data.get("must_change_password", 1))
+
+    if not username:
+        return JSONResponse({"error": "Nome de utilizador é obrigatório"}, status_code=400)
+    if not password:
+        return JSONResponse({"error": "Password é obrigatória"}, status_code=400)
+    if access_role not in ("admin", "user"):
+        return JSONResponse({"error": "Papel de acesso deve ser 'admin' ou 'user'"}, status_code=400)
+
+    try:
+        new_id = hub.storage.v3.create_human(
+            username=username,
+            password=password,
+            display_name=display_name,
+            access_role=access_role,
+            must_change_password=must_change,
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        return JSONResponse({
+            "status": "success",
+            "id": new_id,
+            "username": username,
+            "display_name": display_name or username,
+            "access_role": access_role,
+        }, status_code=201)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+async def endpoint_admin_update_human(request: Request) -> Response:
+    """Updates a human user's details, role, status, or resets password."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    principal_id = safe_int(request.path_params.get("principal_id"))
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "JSON inválido"}, status_code=400)
+    try:
+        updated = hub.storage.v3.update_human(
+            principal_id=principal_id,
+            display_name=data.get("display_name"),
+            access_role=data.get("access_role"),
+            status=data.get("status"),
+            reset_password=data.get("reset_password") or data.get("password"),
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        return JSONResponse({"status": "success", "user": updated, "human": updated})
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_admin_delete_human(request: Request) -> Response:
+    """Deletes a human user, protecting the last active admin."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    principal_id = safe_int(request.path_params.get("principal_id"))
+    try:
+        hub.storage.v3.delete_principal(
+            principal_id=principal_id,
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        return JSONResponse({"status": "success", "deleted_id": principal_id})
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_admin_list_agents(request: Request) -> Response:
+    """Lists all agents with roles and credential hints."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        agents = hub.storage.v3.list_agents()
+        return JSONResponse({"status": "success", "count": len(agents), "agents": agents})
+    return JSONResponse({"status": "success", "count": 0, "agents": []})
+
+
+async def endpoint_admin_create_agent(request: Request) -> Response:
+    """Creates a new agent with credential. Plain token is returned once and never logged."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "JSON inválido"}, status_code=400)
+    callsign = (data.get("callsign") or data.get("name") or "").strip()
+    if not callsign:
+        return JSONResponse({"error": "Callsign do agente é obrigatório"}, status_code=400)
+    display_name = (data.get("display_name") or "").strip()
+    role_key = (data.get("role_key") or "").strip() or None
+    default_role_id = data.get("default_role_id")
+    status = (data.get("status") or "active").strip()
+    is_system = int(data.get("is_system", 0))
+
+    try:
+        pid, raw_token = hub.storage.v3.create_agent(
+            callsign=callsign,
+            display_name=display_name,
+            role_key=role_key,
+            is_system=is_system,
+            status=status,
+            default_role_id=default_role_id,
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        hint = raw_token[-4:]
+        return JSONResponse({
+            "status": "success",
+            "id": pid,
+            "callsign": callsign,
+            "display_name": display_name or callsign,
+            "token": raw_token,
+            "token_hint": hint,
+        }, status_code=201)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+async def endpoint_admin_update_agent(request: Request) -> Response:
+    """Updates agent display name, status, or default role."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    principal_id = safe_int(request.path_params.get("principal_id"))
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "JSON inválido"}, status_code=400)
+    try:
+        updated = hub.storage.v3.update_agent(
+            principal_id=principal_id,
+            display_name=data.get("display_name"),
+            status=data.get("status"),
+            default_role_id=data.get("default_role_id"),
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        return JSONResponse({"status": "success", "agent": updated})
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_admin_rotate_agent_token(request: Request) -> Response:
+    """Rotates an agent's token. Plain token returned once, never logged."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    principal_id = safe_int(request.path_params.get("principal_id"))
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    revoke_prev = bool(data.get("revoke_previous", True))
+    try:
+        token, hint = hub.storage.v3.rotate_agent_token(
+            principal_id=principal_id,
+            revoke_previous=revoke_prev,
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        return JSONResponse({
+            "status": "success",
+            "principal_id": principal_id,
+            "token": token,
+            "token_hint": hint,
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_admin_revoke_agent_token(request: Request) -> Response:
+    """Revokes an agent's credential by token hint or ID."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    principal_id = safe_int(request.path_params.get("principal_id"))
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    hint = data.get("token_hint")
+    credential_id = data.get("credential_id")
+    try:
+        ok = hub.storage.v3.revoke_agent_credential(
+            principal_id=principal_id,
+            hint=hint,
+            credential_id=credential_id,
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        if not ok:
+            return JSONResponse({"error": "Credencial não encontrada ou já revogada"}, status_code=404)
+        return JSONResponse({"status": "success", "revoked": True})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_admin_list_rooms(request: Request) -> Response:
+    """Lists all rooms including archived ones for admin."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        rooms = hub.storage.v3.list_rooms(include_archived=True)
         return JSONResponse({"status": "success", "count": len(rooms), "rooms": rooms})
+    rooms = hub.storage.list_rooms(include_archived=True, include_passwords=True)
+    return JSONResponse({"status": "success", "count": len(rooms), "rooms": rooms})
+
+endpoint_list_admin_rooms = endpoint_admin_list_rooms
+
+
+async def endpoint_admin_create_room(request: Request) -> Response:
+    """Creates a new room."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "JSON inválido"}, status_code=400)
+    name = (data.get("name") or "").strip()
+    topic = (data.get("topic") or "").strip()
+    if not name:
+        return JSONResponse({"error": "Nome da sala é obrigatório"}, status_code=400)
+    try:
+        room = hub.storage.v3.create_room(
+            name=name,
+            topic=topic,
+            created_by_id=principal.get("id"),
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        return JSONResponse({"status": "success", "room": room}, status_code=201)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+async def endpoint_admin_archive_room(request: Request) -> Response:
+    """Archives a room."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    room_spec = request.path_params.get("room_id") or request.path_params.get("room_name")
+    if str(room_spec).isdigit():
+        room_spec = int(room_spec)
+    try:
+        ok = hub.storage.v3.archive_room(
+            room_spec,
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        if not ok:
+            return JSONResponse({"error": "Sala não encontrada"}, status_code=404)
+        return JSONResponse({"status": "success", "archived": True})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_admin_unarchive_room(request: Request) -> Response:
+    """Unarchives a room."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    room_spec = request.path_params.get("room_id") or request.path_params.get("room_name")
+    if str(room_spec).isdigit():
+        room_spec = int(room_spec)
+    try:
+        ok = hub.storage.v3.unarchive_room(
+            room_spec,
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        if not ok:
+            return JSONResponse({"error": "Sala não encontrada"}, status_code=404)
+        return JSONResponse({"status": "success", "unarchived": True})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_admin_list_room_members(request: Request) -> Response:
+    """Lists members and permissions of a room."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    room_spec = request.path_params.get("room_id") or request.path_params.get("room_name")
+    if str(room_spec).isdigit():
+        room_spec = int(room_spec)
+    room = hub.storage.v3.get_room(room_spec)
+    if not room:
+        return JSONResponse({"error": "Sala não encontrada"}, status_code=404)
+    try:
+        members = hub.storage.v3.list_room_members(room["id"])
+        return JSONResponse({"status": "success", "room_id": room["id"], "room_name": room["name"], "members": members})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_admin_grant_room_access(request: Request) -> Response:
+    """Grants or updates room access for a principal (with role and can_write)."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    room_spec = request.path_params.get("room_id") or request.path_params.get("room_name")
+    if str(room_spec).isdigit():
+        room_spec = int(room_spec)
+    room = hub.storage.v3.get_room(room_spec)
+    if not room:
+        return JSONResponse({"error": "Sala não encontrada"}, status_code=404)
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "JSON inválido"}, status_code=400)
+    principal_id = safe_int(data.get("principal_id"))
+    role_id = data.get("role_id")
+    can_write = 1 if data.get("can_write", 1) else 0
+    try:
+        hub.storage.v3.grant_room_access(
+            room_id=room["id"],
+            principal_id=principal_id,
+            role_id=role_id,
+            can_write=can_write,
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        return JSONResponse({"status": "success", "room_id": room["id"], "principal_id": principal_id, "can_write": can_write})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+async def endpoint_admin_revoke_room_access(request: Request) -> Response:
+    """Revokes room access for a principal."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    room_spec = request.path_params.get("room_id") or request.path_params.get("room_name")
+    if str(room_spec).isdigit():
+        room_spec = int(room_spec)
+    principal_id = safe_int(request.path_params.get("principal_id"))
+    try:
+        ok = hub.storage.v3.revoke_room_access(
+            room_id=room_spec,
+            principal_id=principal_id,
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        return JSONResponse({"status": "success", "revoked": ok})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_admin_bulk_grant_room_access(request: Request) -> Response:
+    """Bulk updates room access matrix."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "JSON inválido"}, status_code=400)
+    grants = data.get("grants") or []
+    if not isinstance(grants, list):
+        return JSONResponse({"error": "'grants' deve ser uma lista"}, status_code=400)
+    try:
+        count = hub.storage.v3.bulk_grant_room_access(
+            grants=grants,
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        return JSONResponse({"status": "success", "count": count})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+async def endpoint_admin_list_roles(request: Request) -> Response:
+    """Lists all agent roles."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    roles = hub.storage.v3.list_roles()
+    return JSONResponse({"status": "success", "count": len(roles), "roles": roles})
+
+
+async def endpoint_admin_create_role(request: Request) -> Response:
+    """Creates a new agent role."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "JSON inválido"}, status_code=400)
+    role_key = (data.get("role_key") or "").strip()
+    display_name = (data.get("display_name") or "").strip()
+    description = (data.get("description") or "").strip()
+    reminder_text = (data.get("reminder_text") or "").strip()
+
+    if not role_key or not display_name:
+        return JSONResponse({"error": "role_key e display_name são obrigatórios"}, status_code=400)
+
+    try:
+        role = hub.storage.v3.create_role(
+            role_key=role_key,
+            display_name=display_name,
+            description=description,
+            reminder_text=reminder_text,
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        return JSONResponse({"status": "success", "role": role}, status_code=201)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+async def endpoint_admin_update_role(request: Request) -> Response:
+    """Updates an agent role's display name, description, or reminder_text."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    role_id = safe_int(request.path_params.get("role_id"))
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "JSON inválido"}, status_code=400)
+    try:
+        role = hub.storage.v3.update_role(
+            role_id=role_id,
+            display_name=data.get("display_name"),
+            description=data.get("description"),
+            reminder_text=data.get("reminder_text"),
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        return JSONResponse({"status": "success", "role": role})
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_admin_delete_role(request: Request) -> Response:
+    """Deletes an agent role."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    role_id = safe_int(request.path_params.get("role_id"))
+    try:
+        ok = hub.storage.v3.delete_role(
+            role_id=role_id,
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        if not ok:
+            return JSONResponse({"error": "Papel não encontrado"}, status_code=404)
+        return JSONResponse({"status": "success", "deleted_id": role_id})
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_admin_list_audit_log(request: Request) -> Response:
+    """Queries the audit log with filters and pagination."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    actor_id_param = request.query_params.get("actor_id")
+    actor_id = safe_int(actor_id_param) if actor_id_param else None
+    action = request.query_params.get("action")
+    room_id_param = request.query_params.get("room_id")
+    room_id = safe_int(room_id_param) if room_id_param else None
+    target_type = request.query_params.get("target_type")
+    limit = safe_int(request.query_params.get("limit", 50), default=50, min_val=1, max_val=200)
+    offset = safe_int(request.query_params.get("offset", 0), default=0, min_val=0)
+
+    try:
+        res = hub.storage.v3.list_audit_log(
+            limit=limit,
+            offset=offset,
+            actor_id=actor_id,
+            action=action,
+            room_id=room_id,
+            target_type=target_type,
+        )
+        return JSONResponse({"status": "success", **res})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -2192,8 +2759,35 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
         Route("/api/agents/{callsign}", endpoint=endpoint_delete_agent, methods=["DELETE"]),
         Route("/api/agents/{callsign}/rotate", endpoint=endpoint_rotate_agent_token, methods=["POST"]),
         Route("/api/agents/{callsign}/status", endpoint=endpoint_update_agent_status, methods=["POST", "PATCH"]),
-        Route("/api/admin/rooms", endpoint=endpoint_list_admin_rooms, methods=["GET"]),
+        Route("/admin", endpoint=endpoint_admin_ui, methods=["GET"]),
+        Route("/api/admin/me", endpoint=endpoint_admin_me, methods=["GET"]),
+        Route("/api/admin/humans", endpoint=endpoint_admin_list_humans, methods=["GET"]),
+        Route("/api/admin/humans", endpoint=endpoint_admin_create_human, methods=["POST"]),
+        Route("/api/admin/humans/{principal_id:int}", endpoint=endpoint_admin_update_human, methods=["PATCH", "PUT"]),
+        Route("/api/admin/humans/{principal_id:int}", endpoint=endpoint_admin_delete_human, methods=["DELETE"]),
+        Route("/api/admin/users", endpoint=endpoint_admin_list_humans, methods=["GET"]),
+        Route("/api/admin/users", endpoint=endpoint_admin_create_human, methods=["POST"]),
+        Route("/api/admin/users/{principal_id:int}", endpoint=endpoint_admin_update_human, methods=["PATCH", "PUT"]),
+        Route("/api/admin/users/{principal_id:int}", endpoint=endpoint_admin_delete_human, methods=["DELETE"]),
+        Route("/api/admin/agents", endpoint=endpoint_admin_list_agents, methods=["GET"]),
+        Route("/api/admin/agents", endpoint=endpoint_admin_create_agent, methods=["POST"]),
+        Route("/api/admin/agents/{principal_id:int}", endpoint=endpoint_admin_update_agent, methods=["PATCH", "PUT"]),
+        Route("/api/admin/agents/{principal_id:int}/rotate-token", endpoint=endpoint_admin_rotate_agent_token, methods=["POST"]),
+        Route("/api/admin/agents/{principal_id:int}/revoke-token", endpoint=endpoint_admin_revoke_agent_token, methods=["POST"]),
+        Route("/api/admin/rooms", endpoint=endpoint_admin_list_rooms, methods=["GET"]),
+        Route("/api/admin/rooms", endpoint=endpoint_admin_create_room, methods=["POST"]),
+        Route("/api/admin/rooms/{room_id}/archive", endpoint=endpoint_admin_archive_room, methods=["POST"]),
+        Route("/api/admin/rooms/{room_id}/unarchive", endpoint=endpoint_admin_unarchive_room, methods=["POST"]),
+        Route("/api/admin/rooms/{room_id}/members", endpoint=endpoint_admin_list_room_members, methods=["GET"]),
+        Route("/api/admin/rooms/{room_id}/access", endpoint=endpoint_admin_grant_room_access, methods=["POST"]),
+        Route("/api/admin/rooms/{room_id}/access/{principal_id:int}", endpoint=endpoint_admin_revoke_room_access, methods=["DELETE"]),
+        Route("/api/admin/rooms/bulk-grant", endpoint=endpoint_admin_bulk_grant_room_access, methods=["POST"]),
         Route("/api/admin/rooms/{room_name}/password", endpoint=endpoint_admin_set_room_password, methods=["POST"]),
+        Route("/api/admin/roles", endpoint=endpoint_admin_list_roles, methods=["GET"]),
+        Route("/api/admin/roles", endpoint=endpoint_admin_create_role, methods=["POST"]),
+        Route("/api/admin/roles/{role_id:int}", endpoint=endpoint_admin_update_role, methods=["PATCH", "PUT"]),
+        Route("/api/admin/roles/{role_id:int}", endpoint=endpoint_admin_delete_role, methods=["DELETE"]),
+        Route("/api/admin/audit", endpoint=endpoint_admin_list_audit_log, methods=["GET"]),
         Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_get_tasks, methods=["GET"]),
         Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_create_task, methods=["POST"]),
         Route("/api/tasks/{task_id:int}", endpoint=endpoint_update_task, methods=["PATCH", "POST"]),
