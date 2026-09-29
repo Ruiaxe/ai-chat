@@ -641,17 +641,12 @@ class TestV3Phase2ReviewFixes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res["messages"][0]["content"], "Task for NewBot")
 
     async def test_repro_3_cycle_protection_agent_to_agent_only_and_system_notification(self):
-        """(3) Cycle protection counts only agent-to-agent messages and posts a system message on trigger."""
+        """(3) Cycle protection counts agent messages (except those directed only to humans) and posts a system message on trigger."""
         os.environ["AICHAT_MAX_AGENT_CYCLES"] = "2"
         try:
             # 5 messages from agent directed to human: should NOT increment cycle counter
             for i in range(5):
                 await self.hub.send_message("qc-room", "AgentX", f"Update to human {i}", role="agent", member_token=self.tok_x, to="@RuiAdmin")
-            self.assertEqual(self.storage_v3.count_consecutive_agent_messages(self.room_id), 0)
-
-            # 5 messages from agent with to="all": should NOT increment cycle counter
-            for i in range(5):
-                await self.hub.send_message("qc-room", "AgentX", f"Announcement {i}", role="agent", member_token=self.tok_x, to="all")
             self.assertEqual(self.storage_v3.count_consecutive_agent_messages(self.room_id), 0)
 
             # Agent-to-agent message 1
@@ -671,6 +666,9 @@ class TestV3Phase2ReviewFixes(unittest.IsolatedAsyncioTestCase):
             msgs = self.storage_v3.get_messages(self.room_id, limit=3)
             sys_msg = next((m for m in msgs if m["role"] == "system" and "Proteção de ciclo ativada" in m["content"]), None)
             self.assertIsNotNone(sys_msg)
+            # Verify system warning is targeted only to humans
+            recips = self.storage_v3.get_message_recipients(sys_msg["id"])
+            self.assertTrue(all(r["target_principal_kind"] == "human" for r in recips))
         finally:
             os.environ.pop("AICHAT_MAX_AGENT_CYCLES", None)
 
@@ -719,6 +717,92 @@ class TestV3Phase2ReviewFixes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chk["messages"], [])
         self.assertEqual(chk["skipped_count"], 5)
         self.assertEqual(len(chk["skipped_ids"]), 5)
+
+    async def test_review2_cycle_protection_triggers_on_to_all(self):
+        """(Review 2 - 1) Cycle protection triggers when agents exchange messages with default to='all'."""
+        os.environ["AICHAT_MAX_AGENT_CYCLES"] = "4"
+        try:
+            # 4 messages exchanged between agents with to="all"
+            await self.hub.send_message("qc-room", "AgentX", "Msg 1", role="agent", member_token=self.tok_x, to="all")
+            await self.hub.send_message("qc-room", "AgentY", "Msg 2", role="agent", member_token=self.tok_y, to="all")
+            await self.hub.send_message("qc-room", "AgentX", "Msg 3", role="agent", member_token=self.tok_x, to="all")
+            await self.hub.send_message("qc-room", "AgentY", "Msg 4", role="agent", member_token=self.tok_y, to="all")
+            self.assertEqual(self.storage_v3.count_consecutive_agent_messages(self.room_id), 4)
+
+            # 5th message must be blocked by cycle protection
+            with self.assertRaises(ValueError) as ctx:
+                await self.hub.send_message("qc-room", "AgentX", "Msg 5", role="agent", member_token=self.tok_x, to="all")
+            self.assertIn("Proteção de ciclo ativada", str(ctx.exception))
+
+            # Human intervention resets the cycle counter
+            await self.hub.send_message("qc-room", "RuiAdmin", "Human intervention here", role="human", human_token=self.hub.human_token, to="all")
+            self.assertEqual(self.storage_v3.count_consecutive_agent_messages(self.room_id), 0)
+
+            # Agents can now resume chatting
+            res = await self.hub.send_message("qc-room", "AgentX", "Resumed", role="agent", member_token=self.tok_x, to="all")
+            self.assertEqual(res["content"], "Resumed")
+            self.assertEqual(self.storage_v3.count_consecutive_agent_messages(self.room_id), 1)
+        finally:
+            os.environ.pop("AICHAT_MAX_AGENT_CYCLES", None)
+
+    async def test_review2_cycle_warning_does_not_wake_bystander_agents(self):
+        """(Review 2 - 2) Cycle warning notification is targeted only to room humans and does not wake bystander agents."""
+        os.environ["AICHAT_MAX_AGENT_CYCLES"] = "2"
+        try:
+            # Create a bystander agent with access to qc-room
+            bystander_id = self.storage_v3.create_principal(kind="agent", name="BystanderAgent")
+            self.storage_v3.grant_room_access(self.room_id, bystander_id, can_write=1)
+
+            # BystanderAgent starts waiting for new messages
+            wait_task = asyncio.create_task(
+                self.hub.wait_for_new_messages(
+                    room_name="qc-room",
+                    agent_name="BystanderAgent",
+                    since_id=0,
+                    timeout_seconds=0.5,
+                )
+            )
+            # Give wait loop time to register listener
+            await asyncio.sleep(0.05)
+
+            # AgentX and AgentY send 2 messages to reach threshold, directed to each other
+            await self.hub.send_message("qc-room", "AgentX", "Msg 1", role="agent", member_token=self.tok_x, to="@AgentY")
+            await self.hub.send_message("qc-room", "AgentY", "Msg 2", role="agent", member_token=self.tok_y, to="@AgentX")
+
+            # AgentX sends 3rd message, triggering cycle protection & system warning
+            with self.assertRaises(ValueError):
+                await self.hub.send_message("qc-room", "AgentX", "Msg 3", role="agent", member_token=self.tok_x, to="@AgentY")
+
+            # Await BystanderAgent's wait_task - it should NOT have been woken by the cycle warning
+            # Because it wasn't woken, it will hit its 0.5s timeout (status == 'timeout')
+            res = await wait_task
+            self.assertEqual(res["status"], "timeout")
+            self.assertEqual(res["count"], 0)
+
+            # Check that the system warning was indeed posted to the room and only targets the human(s)
+            msgs = self.storage_v3.get_messages(self.room_id, limit=1)
+            sys_msg = msgs[-1]
+            self.assertEqual(sys_msg["role"], "system")
+            self.assertIn("Proteção de ciclo ativada", sys_msg["content"])
+            recips = self.storage_v3.get_message_recipients(sys_msg["id"])
+            self.assertTrue(len(recips) > 0)
+            self.assertTrue(all(r["target_principal_kind"] == "human" for r in recips))
+        finally:
+            os.environ.pop("AICHAT_MAX_AGENT_CYCLES", None)
+
+    async def test_review2_skipped_ids_limited_and_ranges(self):
+        """(Review 2 - 3) skipped_ids is capped at 20 while skipped_count is exact and skipped_ranges shows intervals."""
+        # 60 messages targeting AgentY (IDs 1..60)
+        for i in range(1, 61):
+            await self.hub.send_message("qc-room", "RuiAdmin", f"For Y {i}", role="human", human_token=self.hub.human_token, to="@AgentY")
+
+        # AgentX checks unread messages
+        chk = self.hub.check_new_messages(room_name="qc-room", agent_name="AgentX")
+        self.assertEqual(chk["skipped_count"], 60)
+        self.assertEqual(len(chk["skipped_ids"]), 20)
+        self.assertEqual(chk["skipped_ids"][:3], [1, 2, 3])
+        self.assertEqual(chk["skipped_ids"][-3:], [58, 59, 60])
+        self.assertEqual(chk["skipped_ranges"], ["1-60"])
 
 
 if __name__ == "__main__":

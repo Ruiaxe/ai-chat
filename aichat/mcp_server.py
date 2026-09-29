@@ -389,13 +389,15 @@ async def send_message(
                         f"atingido na sala '{room['name']}' sem intervenção humana. "
                         f"Conversação entre agentes pausada até intervenção do utilizador humano."
                     )
+                    humans = hub.storage.v3.get_room_humans(room["id"])
+                    human_targets = [f"@{h['name']}" for h in humans] if humans else "all"
                     sys_msg = hub.storage.v3.add_message(
                         room_name_or_id=room["id"],
                         sender="System",
                         role="system",
                         content=warn_text,
                         is_verified=True,
-                        to="all",
+                        to=human_targets,
                     )
                     try:
                         await hub._broadcast_to_websockets(room["name"], {

@@ -9,6 +9,39 @@ from typing import Any
 from aichat.storage import ChatStorage
 
 
+def _format_id_ranges(ids: list[int]) -> list[str]:
+    """Compress a list of integer IDs into interval strings, e.g. ['2-61'] or ['1-3', '7', '10-12']."""
+    if not ids:
+        return []
+    sorted_unique = sorted(set(ids))
+    ranges: list[str] = []
+    start = sorted_unique[0]
+    prev = sorted_unique[0]
+    for x in sorted_unique[1:]:
+        if x == prev + 1:
+            prev = x
+        else:
+            if start == prev:
+                ranges.append(str(start))
+            else:
+                ranges.append(f"{start}-{prev}")
+            start = x
+            prev = x
+    if start == prev:
+        ranges.append(str(start))
+    else:
+        ranges.append(f"{start}-{prev}")
+    return ranges
+
+
+def _limit_skipped_ids(ids: list[int], max_items: int = 20) -> list[int]:
+    """Limits skipped_ids list: if exceeding max_items, returns the first N//2 and last N//2 elements."""
+    if len(ids) <= max_items:
+        return ids
+    half = max_items // 2
+    return ids[:half] + ids[-half:]
+
+
 class ChatHub:
     """Core hub managing room business logic, authentication, pub/sub events, and WebSockets."""
 
@@ -657,13 +690,15 @@ class ChatHub:
                             f"atingido na sala '{canonical_name}' sem intervenção humana. "
                             f"Conversação entre agentes pausada até intervenção do utilizador humano."
                         )
+                        humans = self.storage.v3.get_room_humans(r_obj["id"])
+                        human_targets = [f"@{h['name']}" for h in humans] if humans else "all"
                         sys_msg = self.storage.v3.add_message(
                             room_name_or_id=r_obj["id"],
                             sender="System",
                             role="system",
                             content=warn_text,
                             is_verified=True,
-                            to="all",
+                            to=human_targets,
                         )
                         try:
                             await self._broadcast_to_websockets(canonical_name, {
@@ -1202,7 +1237,8 @@ class ChatHub:
                 "messages": immediate_msgs,
                 "last_id": immediate_msgs[-1]["id"],
                 "skipped_count": len(immediate_skipped),
-                "skipped_ids": immediate_skipped,
+                "skipped_ids": _limit_skipped_ids(immediate_skipped, 20),
+                "skipped_ranges": _format_id_ranges(immediate_skipped),
             }
             if role_reminder:
                 res["role_reminder"] = role_reminder
@@ -1239,7 +1275,8 @@ class ChatHub:
                         "messages": [],
                         "last_id": self.storage.get_max_message_id(target_rooms[0]) if len(target_rooms) == 1 else 0,
                         "skipped_count": len(immediate_skipped),
-                        "skipped_ids": immediate_skipped,
+                        "skipped_ids": _limit_skipped_ids(immediate_skipped, 20),
+                        "skipped_ranges": _format_id_ranges(immediate_skipped),
                         "hint": "No new messages received within the timeout period.",
                     }
 
@@ -1295,7 +1332,8 @@ class ChatHub:
                         "messages": all_found_messages,
                         "last_id": all_found_messages[-1]["id"],
                         "skipped_count": len(event_skipped),
-                        "skipped_ids": event_skipped,
+                        "skipped_ids": _limit_skipped_ids(event_skipped, 20),
+                        "skipped_ranges": _format_id_ranges(event_skipped),
                     }
                     if role_reminder:
                         res["role_reminder"] = role_reminder
@@ -1410,7 +1448,8 @@ class ChatHub:
                 "last_id": max(m["id"] for m in all_new) if all_new else since_id,
                 "room_max_id": self.storage.get_max_message_id(target_rooms[0]),
                 "skipped_count": len(all_skipped),
-                "skipped_ids": all_skipped,
+                "skipped_ids": _limit_skipped_ids(all_skipped, 20),
+                "skipped_ranges": _format_id_ranges(all_skipped),
             }
             if role_reminder:
                 res["role_reminder"] = role_reminder
@@ -1429,7 +1468,8 @@ class ChatHub:
                     "last_id": max(m["id"] for m in all_new) if all_new else last_id,
                     "room_max_id": last_id,
                     "skipped_count": len(all_skipped),
-                    "skipped_ids": all_skipped,
+                    "skipped_ids": _limit_skipped_ids(all_skipped, 20),
+                    "skipped_ranges": _format_id_ranges(all_skipped),
                     "hint": f"{len(all_new)} new messages." if all_new else "No new messages.",
                 }
             else:
@@ -1460,7 +1500,8 @@ class ChatHub:
                 "recent_reactions": recent_reactions,
                 "last_id": last_id,
                 "skipped_count": len(all_skipped),
-                "skipped_ids": all_skipped,
+                "skipped_ids": _limit_skipped_ids(all_skipped, 20),
+                "skipped_ranges": _format_id_ranges(all_skipped),
                 "hint": f"Checked {len(target_rooms)} subscribed rooms.",
             }
             if role_reminder:

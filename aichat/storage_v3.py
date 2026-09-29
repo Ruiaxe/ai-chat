@@ -856,6 +856,28 @@ class StorageV3:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_room_humans(self, room_name_or_id: int | str) -> list[dict[str, Any]]:
+        """
+        Returns all human principals who have access to this room,
+        including principals with explicit room_access and global human admins.
+        """
+        room = self._resolve_room(room_name_or_id)
+        if not room:
+            return []
+        conn = self._get_connection()
+        rows = conn.execute(
+            """
+            SELECT DISTINCT p.id, p.name, p.display_name
+            FROM principals p
+            LEFT JOIN room_access ra ON p.id = ra.principal_id AND ra.room_id = ?
+            LEFT JOIN humans h ON p.id = h.principal_id
+            WHERE p.kind = 'human' AND (ra.room_id IS NOT NULL OR h.access_role = 'admin')
+            ORDER BY p.id ASC;
+            """,
+            (room["id"],),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def list_rooms_for_principal(self, principal: dict[str, Any], include_archived: bool = False) -> list[dict[str, Any]]:
         """
         Lists rooms accessible to a principal.
@@ -1143,7 +1165,8 @@ class StorageV3:
             f"""
             SELECT mr.message_id, mr.target_kind, mr.target_id,
                    ar.role_key as target_role_key,
-                   p.name as target_principal_name
+                   p.name as target_principal_name,
+                   p.kind as target_principal_kind
             FROM message_recipients mr
             LEFT JOIN agent_roles ar ON mr.target_kind = 'role' AND mr.target_id = ar.id
             LEFT JOIN principals p ON mr.target_kind = 'principal' AND mr.target_id = p.id
@@ -1167,8 +1190,14 @@ class StorageV3:
                 "target_kind": t_kind,
                 "target_id": t_id,
                 "target_name": t_name,
+                "target_principal_kind": r["target_principal_kind"],
             })
         return result
+
+    def get_message_recipients(self, message_id: int) -> list[dict[str, Any]]:
+        """Returns the list of recipient dicts for a message."""
+        mapping = self._get_recipients_map([message_id])
+        return mapping.get(message_id, [])
 
     def add_message(
         self,
@@ -1602,10 +1631,7 @@ class StorageV3:
                 break
             if kind == "agent":
                 m_recips = recips_by_mid.get(r["id"], [])
-                # Must be directed to other agents:
-                # 1. Must not target 'all'
-                # 2. Must not target any human
-                # 3. Must target at least one agent or role
+                # Count all agent messages EXCEPT those directed ONLY to humans:
                 has_all = any(rec.get("target_kind") == "all" for rec in m_recips)
                 has_human = any(rec.get("target_principal_kind") == "human" for rec in m_recips)
                 has_agent_target = any(
@@ -1613,7 +1639,8 @@ class StorageV3:
                     (rec.get("target_kind") == "principal" and rec.get("target_principal_kind") == "agent" and rec.get("target_id") != r["sender_id"])
                     for rec in m_recips
                 )
-                if not has_all and not has_human and has_agent_target:
+                is_only_humans = has_human and not has_all and not has_agent_target
+                if not is_only_humans:
                     count += 1
         return count
 

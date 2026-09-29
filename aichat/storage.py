@@ -188,6 +188,12 @@ class ChatStorage:
     def update_read_cursor(self, *args, **kwargs):
         return self.v3.update_read_cursor(*args, **kwargs)
 
+    def get_room_humans(self, *args, **kwargs):
+        return self.v3.get_room_humans(*args, **kwargs)
+
+    def get_message_recipients(self, *args, **kwargs):
+        return self.v3.get_message_recipients(*args, **kwargs)
+
     def _get_connection(self) -> sqlite3.Connection:
         """Returns a thread-local SQLite connection with row_factory enabled."""
         if not hasattr(self._local, "conns"):
