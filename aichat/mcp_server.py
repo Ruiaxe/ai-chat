@@ -21,20 +21,41 @@ import contextvars
 current_auth_token: contextvars.ContextVar[str | None] = contextvars.ContextVar("current_auth_token", default=None)
 current_principal: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("current_principal", default=None)
 
+STDIO_MODE = False
+stdio_agent_token: str | None = None
+
+
+def init_stdio_mode(token: str | None = None) -> None:
+    """Initializes FastMCP for stdio bridge mode with a specific agent token."""
+    global STDIO_MODE, stdio_agent_token
+    STDIO_MODE = True
+    if token:
+        stdio_agent_token = token.strip()
+        current_auth_token.set(token.strip())
+
 
 def _authenticate(agent_token: str = "", member_token: str = "", expected_callsign: str = "") -> tuple[dict[str, Any] | None, str | None]:
     """
     Validates caller against v3 storage or v2 registry.
-    Extracts token from current_principal, current_auth_token, AICHAT_AGENT_TOKEN, AI_CHAT_AGENT_TOKEN, or passed parameter.
+    In v3:
+      - Rejects calls with identity arguments (agent_token, member_token, expected_callsign).
+      - Authenticates caller strictly from current_principal context (set by ASGI Authorization header middleware)
+        or stdio bridge mode.
+      - Never reads AICHAT_AGENT_TOKEN directly in HTTP mode.
     """
+    is_v3 = hasattr(hub.storage, "is_v3") and hub.storage.is_v3()
+
+    # In v3 mode: reject if caller passed identity parameters in tool arguments
+    if is_v3:
+        if (agent_token and agent_token.strip()) or (member_token and member_token.strip()) or (expected_callsign and expected_callsign.strip()):
+            return None, json.dumps({
+                "status": "error",
+                "error": "No AI Chat v3, o envio de tokens ou nomes de identidade nos argumentos foi descontinuado. Configure o cabeçalho 'Authorization: Bearer <token>' na ligação MCP."
+            }, indent=2)
+
     # 1. From active principal context (e.g. set by ASGI Authorization header middleware)
     p = current_principal.get()
     if p:
-        if expected_callsign and p.get("name", "").lower() != expected_callsign.lower():
-            return None, json.dumps({
-                "status": "error",
-                "error": f"Token mismatch: expected callsign '{expected_callsign}', but authenticated as '{p.get('name')}'."
-            }, indent=2)
         ident = {
             "callsign": p.get("name"),
             "role": p.get("default_role_key") or ("admin" if p.get("access_role") == "admin" else "user"),
@@ -44,7 +65,36 @@ def _authenticate(agent_token: str = "", member_token: str = "", expected_callsi
         }
         return ident, None
 
-    # 2. From token in context, env var, or parameter
+    # 2. From token in context (set by ASGI middleware or stdio bridge) or stdio mode
+    if is_v3:
+        token = (current_auth_token.get() or "").strip()
+        if not token and STDIO_MODE and stdio_agent_token:
+            token = stdio_agent_token.strip()
+
+        if not token:
+            return None, json.dumps({
+                "status": "error",
+                "error": "Access denied: Missing Authorization header. Pass 'Authorization: Bearer <token>' in connection headers."
+            }, indent=2)
+
+        p, err = hub.storage.v3.authenticate_agent_token(token)
+        if not p:
+            p = hub.storage.v3.authenticate_human_session(token)
+        if p:
+            ident = {
+                "callsign": p.get("name"),
+                "role": p.get("default_role_key") or ("admin" if p.get("access_role") == "admin" else "user"),
+                "is_human": p.get("kind") == "human",
+                "status": p.get("status", "active"),
+                "principal": p,
+            }
+            return ident, None
+        return None, json.dumps({
+            "status": "error",
+            "error": f"Authentication failed: {err or 'Credenciais inválidas'}"
+        }, indent=2)
+
+    # v2 backward compatibility fallback:
     token = (
         agent_token or
         member_token or
@@ -59,36 +109,11 @@ def _authenticate(agent_token: str = "", member_token: str = "", expected_callsi
             "error": "Access denied: Missing agent_token. Pass 'Authorization: Bearer <token>' in connection headers or set AICHAT_AGENT_TOKEN in environment."
         }, indent=2)
 
-    # If v3 storage is active:
-    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
-        p, err = hub.storage.v3.authenticate_agent_token(token)
-        if not p:
-            p = hub.storage.v3.authenticate_human_session(token)
-        if p:
-            if expected_callsign and p.get("name", "").lower() != expected_callsign.lower():
-                return None, json.dumps({"status": "error", "error": f"Token mismatch: expected '{expected_callsign}'"}, indent=2)
-            ident = {
-                "callsign": p.get("name"),
-                "role": p.get("default_role_key") or ("admin" if p.get("access_role") == "admin" else "user"),
-                "is_human": p.get("kind") == "human",
-                "status": p.get("status", "active"),
-                "principal": p,
-            }
-            return ident, None
-        return None, json.dumps({
-            "status": "error",
-            "error": f"Authentication failed: {err or 'Credenciais inválidas'}"
-        }, indent=2)
-
-    # v2 fallback:
     try:
         ident = hub.authenticate_agent(token, expected_callsign=expected_callsign)
         return ident, None
     except Exception as e:
-        return None, json.dumps({
-            "status": "error",
-            "error": f"Authentication failed: {str(e)}"
-        }, indent=2)
+        return None, json.dumps({"status": "error", "error": str(e)}, indent=2)
 
 
 @mcp.tool()

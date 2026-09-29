@@ -32,6 +32,7 @@ from aichat.mcp_server import (
     mcp,
     current_auth_token,
     current_principal,
+    _authenticate,
     list_my_rooms as tool_list_my_rooms,
     read_messages as tool_read_messages,
     send_message as tool_send_message,
@@ -432,6 +433,84 @@ class TestV3Phase1Acceptance(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(res_locked.status_code, 429)
         self.assertIn("temporariamente bloqueada", res_locked.json()["error"].lower())
+
+    def test_09_server_env_token_isolation(self):
+        """Verifies that AICHAT_AGENT_TOKEN on the server does NOT authenticate HTTP or MCP callers."""
+        sentinel_tok = self.agent_tokens["Sentinel"]
+        os.environ["AICHAT_AGENT_TOKEN"] = sentinel_tok
+
+        try:
+            # 1. Unauthenticated HTTP request to REST API must return 401
+            res_rest = self.client.get("/api/rooms")
+            self.assertEqual(res_rest.status_code, 401)
+
+            # 2. Unauthenticated HTTP request to MCP /sse must return 401
+            res_sse = self.client.get("/sse")
+            self.assertEqual(res_sse.status_code, 401)
+
+            # 3. Direct MCP _authenticate in HTTP context without contextvar must fail
+            ident, err = _authenticate()
+            self.assertIsNone(ident)
+            self.assertIsNotNone(err)
+            err_data = json.loads(err)
+            self.assertEqual(err_data["status"], "error")
+            self.assertIn("Missing Authorization header", err_data["error"])
+        finally:
+            os.environ.pop("AICHAT_AGENT_TOKEN", None)
+
+    def test_10_rejection_of_deprecated_identity_arguments(self):
+        """Verifies that passing identity arguments in MCP tool calls is strictly rejected in v3."""
+        expected_msg = "No AI Chat v3, o envio de tokens ou nomes de identidade nos argumentos foi descontinuado. Configure o cabeçalho 'Authorization: Bearer <token>' na ligação MCP."
+
+        # Passing agent_token
+        ident, err = _authenticate(agent_token="some_token")
+        self.assertIsNone(ident)
+        self.assertIsNotNone(err)
+        err_json = json.loads(err)
+        self.assertEqual(err_json["error"], expected_msg)
+
+        # Passing member_token
+        ident, err = _authenticate(member_token="some_token")
+        self.assertIsNone(ident)
+        self.assertIsNotNone(err)
+        err_json = json.loads(err)
+        self.assertEqual(err_json["error"], expected_msg)
+
+        # Passing expected_callsign
+        ident, err = _authenticate(expected_callsign="Sentinel")
+        self.assertIsNone(ident)
+        self.assertIsNotNone(err)
+        err_json = json.loads(err)
+        self.assertEqual(err_json["error"], expected_msg)
+
+    def test_11_rejection_of_url_query_param_tokens(self):
+        """Verifies that query-string tokens are completely ignored and rejected in v3."""
+        dev_tok = self.agent_tokens["Claude-Dev"]
+
+        # 1. REST endpoints reject query tokens -> 401
+        res1 = self.client.get(f"/api/rooms?agent_token={dev_tok}")
+        self.assertEqual(res1.status_code, 401)
+
+        res2 = self.client.get(f"/api/rooms?token={dev_tok}")
+        self.assertEqual(res2.status_code, 401)
+
+        res3 = self.client.get(f"/api/rooms?human_token={dev_tok}")
+        self.assertEqual(res3.status_code, 401)
+
+        # 2. WebSocket rejects query tokens -> 4401
+        with self.assertRaises(WebSocketDisconnect) as cm_ws1:
+            with self.client.websocket_connect(f"/ws/geral?agent_token={dev_tok}"):
+                pass
+        self.assertEqual(cm_ws1.exception.code, 4401)
+
+        with self.assertRaises(WebSocketDisconnect) as cm_ws2:
+            with self.client.websocket_connect(f"/ws/geral?token={dev_tok}"):
+                pass
+        self.assertEqual(cm_ws2.exception.code, 4401)
+
+        # 3. But passing token in Authorization Bearer header succeeds -> 200
+        res_ok = self.client.get("/api/rooms", headers={"Authorization": f"Bearer {dev_tok}"})
+        self.assertEqual(res_ok.status_code, 200)
 
 
 if __name__ == "__main__":

@@ -200,27 +200,30 @@ class V3AuthenticationMiddleware:
                     cookies[k.strip()] = v.strip()
         cookie_session = cookies.get("human_session", "").strip()
 
+        is_v3 = hasattr(hub.storage, "is_v3") and hub.storage.is_v3()
+
         token_candidate = (
             bearer_tok or
             headers.get("x-agent-token", "") or
             headers.get("x-member-token", "")
         ).strip()
 
-        # Query params for ws or sse
-        query_string = scope.get("query_string", b"").decode("latin-1")
-        if not token_candidate and query_string:
-            from urllib.parse import parse_qs
-            qs = parse_qs(query_string)
-            token_candidate = (
-                (qs.get("agent_token", [""])[0]) or
-                (qs.get("token", [""])[0]) or
-                (qs.get("human_token", [""])[0])
-            ).strip()
+        # Query params for ws or sse (v2 backward compatibility ONLY)
+        if not is_v3:
+            query_string = scope.get("query_string", b"").decode("latin-1")
+            if not token_candidate and query_string:
+                from urllib.parse import parse_qs
+                qs = parse_qs(query_string)
+                token_candidate = (
+                    (qs.get("agent_token", [""])[0]) or
+                    (qs.get("token", [""])[0]) or
+                    (qs.get("human_token", [""])[0])
+                ).strip()
 
         principal = None
         auth_token = None
 
-        if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        if is_v3:
             # Check human session first if cookie provided
             if cookie_session:
                 principal = hub.storage.v3.authenticate_human_session(cookie_session)
@@ -266,6 +269,19 @@ class V3AuthenticationMiddleware:
                         )
                         await response(scope, receive, send)
                         return
+            else:
+                # In v3 HTTP mode: MCP endpoints (/sse, /messages) require authentication immediately
+                if scope["type"] == "http":
+                    path = scope.get("path", "")
+                    if path in ("/sse", "/messages") or path.startswith("/messages/"):
+                        response = JSONResponse(
+                            {
+                                "error": "Unauthorized: Missing or invalid Authorization header. Pass 'Authorization: Bearer <token>' in connection headers."
+                            },
+                            status_code=401,
+                        )
+                        await response(scope, receive, send)
+                        return
         else:
             # v2 fallback: if human session or agent token, set current_auth_token
             if cookie_session and hub.verify_human_session(cookie_session):
@@ -283,9 +299,8 @@ def is_authenticated_human(request: Request) -> bool:
         auth_header = request.headers.get("Authorization", "").strip()
         bearer_tok = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
         header_token = request.headers.get("X-Human-Token", "").strip()
-        query_token = (request.query_params.get("human_token") or request.query_params.get("token") or "").strip()
 
-        for tok in (cookie_token, header_token, bearer_tok, query_token):
+        for tok in (cookie_token, header_token, bearer_tok):
             if tok:
                 p = hub.storage.v3.authenticate_human_session(tok)
                 if p and p.get("kind") == "human" and p.get("status") == "active":
@@ -327,10 +342,9 @@ def get_request_auth(request: Request) -> dict[str, Any] | None:
         auth_header = request.headers.get("Authorization", "").strip()
         bearer_tok = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
         header_human_tok = request.headers.get("X-Human-Token", "").strip()
-        query_tok = (request.query_params.get("human_token") or request.query_params.get("token") or "").strip()
 
-        # Check session tokens for human
-        for s_tok in (cookie_token, header_human_tok, bearer_tok, query_tok):
+        # Check session tokens for human (cookie or Bearer / header)
+        for s_tok in (cookie_token, header_human_tok, bearer_tok):
             if s_tok:
                 p = hub.storage.v3.authenticate_human_session(s_tok)
                 if p and p.get("kind") == "human" and p.get("status") == "active":
@@ -344,14 +358,11 @@ def get_request_auth(request: Request) -> dict[str, Any] | None:
                         "role": p.get("access_role", "user"),
                     }
 
-        # Check agent token
+        # Check agent token (Bearer or header) - strictly NO query params
         agent_tok = (
-            request.headers.get("x-agent-token", "") or
-            request.headers.get("x-member-token", "") or
             bearer_tok or
-            request.query_params.get("agent_token", "") or
-            request.query_params.get("member_token", "") or
-            query_tok
+            request.headers.get("x-agent-token", "") or
+            request.headers.get("x-member-token", "")
         ).strip()
 
         if agent_tok:
@@ -1721,7 +1732,8 @@ async def endpoint_delete_calendar_event(request: Request) -> Response:
     event_id = int(request.path_params["event_id"])
     is_human = auth["is_human"]
     human_tok = hub.human_token if is_human else ""
-    member_tok = request.query_params.get("member_token", "") or (auth["token"] if not is_human else "")
+    is_v3 = hasattr(hub.storage, "is_v3") and hub.storage.is_v3()
+    member_tok = ("" if is_v3 else request.query_params.get("member_token", "")) or (auth["token"] if not is_human else "")
     password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
 
     try:
@@ -1965,10 +1977,7 @@ async def websocket_room_endpoint(websocket: WebSocket) -> None:
             token_candidate = (
                 bearer_tok or
                 websocket.headers.get("x-agent-token", "") or
-                websocket.headers.get("x-member-token", "") or
-                websocket.query_params.get("agent_token", "") or
-                websocket.query_params.get("member_token", "") or
-                query_token
+                websocket.headers.get("x-member-token", "")
             ).strip()
 
             if cookie_token:

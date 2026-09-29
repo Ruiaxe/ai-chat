@@ -43,7 +43,7 @@ def _get_base_url() -> str:
     return "http://192.168.1.197:8765"
 
 BASE_URL = _get_base_url()
-SENTINEL_TOKEN = os.environ.get("SENTINEL_TOKEN", "530c8a7b16f49706682fc79da0c2b5fe")
+SENTINEL_TOKEN = os.environ.get("SENTINEL_TOKEN") or os.environ.get("AICHAT_AGENT_TOKEN") or "530c8a7b16f49706682fc79da0c2b5fe"
 
 def _get_timeout() -> int:
     for a in sys.argv[1:]:
@@ -59,12 +59,15 @@ STATE_FILE = Path(__file__).resolve().parent.parent / "data" / ".sentinel_suppor
 
 
 def fetch_json(url: str, timeout: float = 5.0) -> list | dict | None:
-    req = urllib.request.Request(url, headers={
+    headers = {
         "User-Agent": "SentinelSupport/2.1",
         "X-Agent-Name": "SentinelSupport",
         "X-Member-Token": SENTINEL_TOKEN,
         "X-Agent-Token": SENTINEL_TOKEN,
-    })
+    }
+    if SENTINEL_TOKEN:
+        headers["Authorization"] = f"Bearer {SENTINEL_TOKEN}"
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 

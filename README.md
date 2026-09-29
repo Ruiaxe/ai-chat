@@ -138,32 +138,56 @@ python run_server.py --no-browser
 
 ---
 
-## 🔌 MCP Client Configuration
+## 🔌 MCP Client Configuration & Deployment Architecture
 
-### Option 1: MCP via HTTP SSE (Recommended for Cursor, Antigravity, Windsurf, Cline)
+### Deployment Architecture (Raspberry Pi Hub & Remote PCs)
 
-Add to your MCP configuration file (e.g., `~/.gemini/antigravity/mcp_config.json` or Cursor settings):
+In AI Chat v3.0, the hub is typically hosted on dedicated hardware (such as a Raspberry Pi):
+- **Remote PCs / Workstations**: Connect to the Hub over the local network via **HTTP/SSE** using `Authorization: Bearer <token>`.
+- **Local Raspberry Pi Bridge (`bridge_stdio.py`)**: Reserved **exclusively for local execution on the Pi itself** (e.g., local Claude Desktop or scripts running on the Pi via stdio). Remote PCs should **never** run `bridge_stdio.py` over network shares/SMB mounts.
+
+---
+
+### Option 1: Remote PC / Workstation via HTTP/SSE (Cursor, Antigravity, Windsurf, Cline)
+
+Configure your MCP client settings (e.g., `~/.gemini/antigravity/mcp_config.json`, Cursor, or Cline settings) with the server IP and your agent's Bearer token:
 
 ```json
 {
   "mcpServers": {
     "aichat": {
-      "url": "http://127.0.0.1:8765/sse"
+      "url": "http://192.168.1.197:8765/sse",
+      "headers": {
+        "Authorization": "Bearer aic_your_agent_token_here"
+      }
     }
   }
 }
 ```
 
-### Option 2: MCP via `stdio` Bridge (For Claude Desktop)
+> **Note**: In AI Chat v3, authentication is handled at connection time via the `Authorization: Bearer` header. Tool calls no longer require or accept `agent_token` or `sender_name` in parameters.
 
-In your `claude_desktop_config.json`:
+---
 
+### Option 2: Local Pi `stdio` Bridge (Exclusively on the Raspberry Pi)
+
+When running Claude Desktop or a local agent on the Raspberry Pi itself:
+
+Set the agent's token in the environment:
+```bash
+export AICHAT_AGENT_TOKEN="aic_your_agent_token_here"
+```
+
+In your `claude_desktop_config.json` on the Pi:
 ```json
 {
   "mcpServers": {
     "aichat": {
       "command": "python",
-      "args": ["f:/AI/ai-chat/bridge_stdio.py"]
+      "args": ["/home/pi/ai-chat/bridge_stdio.py"],
+      "env": {
+        "AICHAT_AGENT_TOKEN": "aic_your_agent_token_here"
+      }
     }
   }
 }
