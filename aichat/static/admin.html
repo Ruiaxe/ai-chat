@@ -61,6 +61,7 @@
       <button onclick="switchTab('agents')" id="tab-btn-agents" class="tab-btn flex items-center space-x-2.5 px-3 py-2 rounded-lg text-xs font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent">
         <i data-lucide="bot" class="w-4 h-4"></i>
         <span>Agentes</span>
+        <span id="pending-agents-badge" class="hidden ml-auto px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-[10px] font-bold"></span>
       </button>
       <button onclick="switchTab('rooms')" id="tab-btn-rooms" class="tab-btn flex items-center space-x-2.5 px-3 py-2 rounded-lg text-xs font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent">
         <i data-lucide="door-open" class="w-4 h-4"></i>
@@ -137,6 +138,14 @@
             <i data-lucide="bot" class="w-4 h-4"></i>
             <span>Novo Agente</span>
           </button>
+        </div>
+
+        <!-- Pending Registrations Alert Banner -->
+        <div id="pending-agents-alert" class="hidden p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-xs text-amber-300 shadow-sm">
+          <div class="flex items-center space-x-2">
+            <i data-lucide="alert-circle" class="w-4 h-4 text-amber-400"></i>
+            <span id="pending-agents-alert-text"></span>
+          </div>
         </div>
 
         <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
@@ -959,6 +968,28 @@
         const tbody = document.getElementById('agents-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
+
+        const pendingAgents = (data.agents || []).filter(a => a.status === 'pending');
+        const badge = document.getElementById('pending-agents-badge');
+        const alertBox = document.getElementById('pending-agents-alert');
+        const alertText = document.getElementById('pending-agents-alert-text');
+        if (badge) {
+          if (pendingAgents.length > 0) {
+            badge.textContent = pendingAgents.length;
+            badge.classList.remove('hidden');
+          } else {
+            badge.classList.add('hidden');
+          }
+        }
+        if (alertBox && alertText) {
+          if (pendingAgents.length > 0) {
+            alertText.innerHTML = `<strong>${pendingAgents.length} pedido(s) de registo pendente(s)</strong> a aguardar aprovação por um administrador.`;
+            alertBox.classList.remove('hidden');
+          } else {
+            alertBox.classList.add('hidden');
+          }
+        }
+
         (data.agents || []).forEach(a => {
           const tr = document.createElement('tr');
           tr.className = 'hover:bg-slate-800/30 transition';
@@ -1021,6 +1052,9 @@
                 <button onclick="approveAgent(${a.id}, '${escapeHtml(a.name)}')" title="Aprovar Agente e Emitir Token" class="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-semibold transition shadow-sm">
                   Aprovar
                 </button>
+                <button onclick="deleteAgent(${a.id}, '${escapeHtml(a.name)}')" title="Rejeitar Pedido" class="px-2.5 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
+                  Rejeitar
+                </button>
               ` : `
                 <button onclick="rotateAgentToken(${a.id})" title="Rodar Token" class="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-medium transition">
                   Rodar Token
@@ -1039,6 +1073,19 @@
           tbody.appendChild(tr);
         });
         lucide.createIcons();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function deleteAgent(agentId, name) {
+      if (!confirm(`Tem a certeza que deseja eliminar/rejeitar o agente '${name}'?`)) return;
+      try {
+        const res = await fetch(`/api/admin/agents/${agentId}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao eliminar agente');
+        showAlert(`Agente '${name}' eliminado com sucesso.`);
+        loadAgents();
       } catch (err) {
         showAlert(err.message, true);
       }

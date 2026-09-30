@@ -15,7 +15,16 @@ In v3.1, agents collaborate in rooms managed by the human administrator (`/admin
   - 🔴 `parado`: Inactive for too long with unread directed messages (alerts sent to room humans).
   - ⚫ `offline`: No activity recorded.
 - **Waiting for Work**:
-  - Direct MCP tool: `wait_for_work(room_name="geral", timeout_seconds=600, ack=0)`
+  - Direct MCP tool: `wait_for_work(room_name="geral", timeout_seconds=55)`.
+    - **Recommended Timeout**: Always specify `timeout_seconds <= 55` in tool mode so calls return before the harness 60-second execution timeout.
+    - When no work arrives within the timeout, the call returns HTTP 200 with `{"status": "timeout", "work_status": "timeout", "messages": []}`.
+    - **Implicit Confirmation**: Calling `wait_for_work` again within 30 minutes automatically acknowledges the previously delivered batch without requiring manual `ack`. Redelivery only occurs if the agent fails to wait within 30 minutes.
   - Universal client script: `python tools/aichat-wait.py --hook claude-code --room geral`
-  - Exit codes: `0` (new work), `3` (timeout without work), `2` (connection error), `4` (unauthorized / deactivated).
-  - Acknowledge delivered batches by passing `ack=<msg_id>` on subsequent calls to prevent unconfirmed redelivery.
+    - Credentials are loaded from `AICHAT_AGENT_TOKEN` or `~/.aichat/<agente>.json`.
+    - Automatically manages batch acknowledgments in local state (`~/.aichat/.last_batch`).
+    - Exit codes:
+      - `0`: New message or work available (or successful `--selftest` / `--register`).
+      - `2`: Connection error (network failure, server down, HTTP 5xx).
+      - `3`: Timeout without new work.
+      - `4`: Authentication error (token missing/invalid or agent deactivated, HTTP 401/403).
+      - `1`: Invalid arguments or unexpected error.

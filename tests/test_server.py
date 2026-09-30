@@ -13,6 +13,7 @@ from starlette.testclient import TestClient
 from aichat.hub import ChatHub
 from aichat.mcp_server import (
     hub,
+    current_auth_token,
     create_room as tool_create_room,
     join_room as tool_join_room,
     list_rooms as tool_list_rooms,
@@ -1299,6 +1300,7 @@ class TestMCPTools(unittest.IsolatedAsyncioTestCase):
     """Tests for FastMCP tool functions directly."""
 
     def setUp(self):
+        current_auth_token.set(None)
         self.temp_dir = tempfile.mkdtemp()
         self.test_storage = ChatStorage(
             db_path=Path(self.temp_dir) / "test_mcp.db",
@@ -1314,6 +1316,7 @@ class TestMCPTools(unittest.IsolatedAsyncioTestCase):
         self.reviewer_token = self.test_storage.register_agent_admin(callsign="ReviewerAgent")["token"]
 
     def tearDown(self):
+        current_auth_token.set(None)
         hub.storage.close()
         hub.storage = self.orig_storage
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -1321,110 +1324,116 @@ class TestMCPTools(unittest.IsolatedAsyncioTestCase):
     async def test_mcp_tools_flow(self):
         import uuid
         room_name = f"mcp-test-{uuid.uuid4().hex[:6]}"
-        create_res = json.loads(tool_create_room(room_name, topic="MCP Tool Test", agent_token=self.tester_token))
+        current_auth_token.set(self.tester_token)
+        create_res = json.loads(tool_create_room(room_name, topic="MCP Tool Test"))
         self.assertEqual(create_res["status"], "success")
 
         # Join room
-        join_res = json.loads(tool_join_room(room_name, agent_name="MCPTester", agent_token=self.tester_token))
+        join_res = json.loads(tool_join_room(room_name))
         self.assertEqual(join_res["status"], "success")
         token = join_res["member_token"]
         self.assertTrue(len(token) > 0)
 
         # List my rooms
-        my_rooms_res = json.loads(tool_list_my_rooms("MCPTester", agent_token=self.tester_token))
+        my_rooms_res = json.loads(tool_list_my_rooms())
         self.assertEqual(my_rooms_res["status"], "success")
         self.assertTrue(any(r["name"] == room_name for r in my_rooms_res["rooms"]))
 
         # Send verified message
-        send_res = json.loads(await tool_send_message(room_name, sender_name="MCPTester", content="Hello from MCP", agent_token=self.tester_token))
+        send_res = json.loads(await tool_send_message(room_name, content="Hello from MCP"))
         self.assertEqual(send_res["status"], "success")
         self.assertTrue(send_res["is_verified"])
 
         # Send without token -> error
-        err_res = json.loads(await tool_send_message(room_name, sender_name="MCPTester", content="Impersonator", member_token=""))
+        current_auth_token.set(None)
+        err_res = json.loads(await tool_send_message(room_name, content="Impersonator"))
         self.assertEqual(err_res["status"], "error")
-        self.assertIn("Missing agent_token", err_res["error"])
+        self.assertTrue("Access denied" in err_res["error"] or "Missing" in err_res["error"])
 
         # Read messages
-        read_res = json.loads(tool_read_messages(room_name, agent_token=self.tester_token))
+        current_auth_token.set(self.tester_token)
+        read_res = json.loads(tool_read_messages(room_name))
         self.assertEqual(read_res["status"], "success")
         self.assertEqual(len(read_res["messages"]), 1)
         self.assertTrue(read_res["messages"][0]["is_verified"])
+        current_auth_token.set(None)
 
     async def test_mcp_new_tools_flow(self):
         import uuid
         room_name = f"mcp-feat-{uuid.uuid4().hex[:6]}"
-        tool_create_room(room_name, topic="MCP Features", agent_token=self.feature_token)
-        join_res = json.loads(tool_join_room(room_name, agent_name="FeatureAgent", agent_token=self.feature_token))
+        current_auth_token.set(self.feature_token)
+        tool_create_room(room_name, topic="MCP Features")
+        join_res = json.loads(tool_join_room(room_name))
         token = join_res["member_token"]
 
         # Send message
-        s_res = json.loads(await tool_send_message(room_name, sender_name="FeatureAgent", content="Need help", agent_token=self.feature_token))
+        s_res = json.loads(await tool_send_message(room_name, content="Need help"))
         msg_id = s_res["message_id"]
 
         # React tool
-        r_res = json.loads(await tool_react_to_message(message_id=msg_id, room_name=room_name, agent_name="FeatureAgent", emoji="👍", agent_token=self.feature_token))
+        r_res = json.loads(await tool_react_to_message(message_id=msg_id, room_name=room_name, emoji="👍"))
         self.assertEqual(r_res["status"], "success")
 
         # Call human tool
-        call_res = json.loads(await tool_call_human(room_name, agent_name="FeatureAgent", question="Deploy now?", options=["Yes", "Wait"], agent_token=self.feature_token))
+        call_res = json.loads(await tool_call_human(room_name, question="Deploy now?", options=["Yes", "Wait"]))
         self.assertEqual(call_res["status"], "success")
 
         # Create poll tool
-        p_res = json.loads(await tool_create_poll(room_name, agent_name="FeatureAgent", question="Is this great?", options=["Yes", "Definitely"], agent_token=self.feature_token))
+        p_res = json.loads(await tool_create_poll(room_name, question="Is this great?", options=["Yes", "Definitely"]))
         self.assertEqual(p_res["status"], "success")
         poll_id = p_res["poll"]["id"]
 
         # Vote tool
-        v_res = json.loads(await tool_cast_vote(poll_id, voter_name="FeatureAgent", option_index=0, agent_token=self.feature_token))
+        v_res = json.loads(await tool_cast_vote(poll_id, option_index=0))
         self.assertEqual(v_res["status"], "success")
 
         # Get poll tool
-        gp_res = json.loads(tool_get_poll(poll_id, agent_token=self.feature_token))
+        gp_res = json.loads(tool_get_poll(poll_id))
         self.assertEqual(gp_res["status"], "success")
         self.assertEqual(gp_res["poll"]["options"][0]["votes"], 1)
 
         # Close poll tool
-        cp_res = json.loads(await tool_close_poll(poll_id, closer_name="FeatureAgent", agent_token=self.feature_token))
+        cp_res = json.loads(await tool_close_poll(poll_id))
         self.assertEqual(cp_res["status"], "success")
 
         # Archive room tool as agent -> blocked
-        ar_res = json.loads(tool_archive_room(room_name, requester_name="FeatureAgent", requester_role="agent"))
+        ar_res = json.loads(tool_archive_room(room_name))
         self.assertEqual(ar_res["status"], "error")
         self.assertIn("utilizador humano", ar_res["error"])
+        current_auth_token.set(None)
 
     async def test_mcp_human_impersonation_blocked(self):
         """Agents must be blocked from joining or sending as Human or Rui via MCP."""
-        tool_create_room("mcp-secure-room", agent_token=self.tester_token)
+        current_auth_token.set(self.tester_token)
+        tool_create_room("mcp-secure-room")
 
         # Attempt to join as Human -> error
-        join_human = json.loads(tool_join_room("mcp-secure-room", agent_name="Human", agent_token=self.tester_token))
+        join_human = json.loads(tool_join_room("mcp-secure-room", agent_name="Human"))
         self.assertEqual(join_human["status"], "error")
         self.assertIn("impersonation", join_human["error"].lower())
 
         # Attempt to join as Rui -> error
-        join_rui = json.loads(tool_join_room("mcp-secure-room", agent_name="Rui", agent_token=self.tester_token))
+        join_rui = json.loads(tool_join_room("mcp-secure-room", agent_name="Rui"))
         self.assertEqual(join_rui["status"], "error")
         self.assertIn("impersonation", join_rui["error"].lower())
 
-        # Attempt to send as Human -> error
-        send_human = json.loads(await tool_send_message("mcp-secure-room", sender_name="Human", content="I am human", agent_token=self.tester_token))
-        self.assertEqual(send_human["status"], "error")
-        self.assertIn("impersonation", send_human["error"].lower())
+        # Attempt to send as Human / Rui via hub -> error
+        with self.assertRaises(PermissionError):
+            await hub.send_message("mcp-secure-room", sender="Human", content="I am human", member_token=self.tester_token)
 
-        # Attempt to send as Rui -> error
-        send_rui = json.loads(await tool_send_message("mcp-secure-room", sender_name="Rui", content="I am Rui", agent_token=self.tester_token))
-        self.assertEqual(send_rui["status"], "error")
-        self.assertIn("impersonation", send_rui["error"].lower())
+        with self.assertRaises(PermissionError):
+            await hub.send_message("mcp-secure-room", sender="Rui", content="I am Rui", member_token=self.tester_token)
+        current_auth_token.set(None)
 
     async def test_reactions_wakes_wait_for_new_messages(self):
         """wait_for_new_messages must wake up and return when an emoji reaction is added."""
-        tool_create_room("mcp-react-room", agent_token=self.worker_token)
-        join_res = json.loads(tool_join_room("mcp-react-room", agent_name="WorkerAgent", agent_token=self.worker_token))
+        current_auth_token.set(self.worker_token)
+        tool_create_room("mcp-react-room")
+        join_res = json.loads(tool_join_room("mcp-react-room"))
         token = join_res["member_token"]
 
         # Worker sends a proposal message
-        msg_res = json.loads(await tool_send_message("mcp-react-room", sender_name="WorkerAgent", content="Proposal ready for approval", agent_token=self.worker_token))
+        msg_res = json.loads(await tool_send_message("mcp-react-room", content="Proposal ready for approval"))
         msg_id = msg_res["message_id"]
 
         # Worker waits for feedback
@@ -1451,25 +1460,27 @@ class TestMCPTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["reactions"][0]["message_id"], msg_id)
 
         # Check non-blocking check_new_messages also detects reactions
-        chk_res = json.loads(tool_check_new_messages("mcp-react-room", agent_name="WorkerAgent", since_id=msg_id, agent_token=self.worker_token))
+        chk_res = json.loads(tool_check_new_messages("mcp-react-room", since_id=msg_id))
         self.assertTrue(chk_res["has_new_reactions"])
 
         # Check reading specific message returns reactions
-        read_single = json.loads(tool_read_messages("mcp-react-room", message_id=msg_id, agent_token=self.worker_token))
+        read_single = json.loads(tool_read_messages("mcp-react-room", message_id=msg_id))
         self.assertEqual(read_single["status"], "success")
         self.assertEqual(len(read_single["messages"]), 1)
         self.assertEqual(read_single["messages"][0]["id"], msg_id)
         self.assertTrue(any(r["emoji"] == "👍" for r in read_single["messages"][0]["reactions"]))
+        current_auth_token.set(None)
 
     async def test_mcp_task_tools_flow(self):
         import uuid
         room_name = f"mcp-tasks-{uuid.uuid4().hex[:6]}"
-        tool_create_room(room_name, topic="MCP Tasks", agent_token=self.task_token)
-        join_res = json.loads(tool_join_room(room_name, agent_name="TaskManagerAgent", agent_token=self.task_token))
+        current_auth_token.set(self.task_token)
+        tool_create_room(room_name, topic="MCP Tasks")
+        join_res = json.loads(tool_join_room(room_name))
         token = join_res["member_token"]
 
         # 1. who_is_listening tool
-        listen_res = json.loads(tool_who_is_listening(room_name, agent_token=self.task_token))
+        listen_res = json.loads(tool_who_is_listening(room_name))
         self.assertEqual(listen_res["status"], "success")
 
         # 2. create_task tool
@@ -1482,8 +1493,6 @@ class TestMCPTools(unittest.IsolatedAsyncioTestCase):
             status="in_progress",
             uses_gpu=True,
             gpu_est_min=5,
-            agent_name="TaskManagerAgent",
-            agent_token=self.task_token,
         ))
         self.assertEqual(ct_res["status"], "success")
         task1 = ct_res["task"]
@@ -1495,17 +1504,15 @@ class TestMCPTools(unittest.IsolatedAsyncioTestCase):
             room_name=room_name,
             title="Completed Docs",
             status="done",
-            agent_name="TaskManagerAgent",
-            agent_token=self.task_token,
         ))
         task2 = ct_res2["task"]
 
         # 3. list_tasks tool with hide_completed=False and True
-        list_all = json.loads(tool_list_tasks(room_name, hide_completed=False, agent_token=self.task_token))
+        list_all = json.loads(tool_list_tasks(room_name, hide_completed=False))
         self.assertEqual(list_all["status"], "success")
         self.assertEqual(len(list_all["tasks"]), 2)
 
-        list_hide = json.loads(tool_list_tasks(room_name, hide_completed=True, agent_token=self.task_token))
+        list_hide = json.loads(tool_list_tasks(room_name, hide_completed=True))
         self.assertEqual(list_hide["status"], "success")
         self.assertEqual(len(list_hide["tasks"]), 1)
         self.assertEqual(list_hide["tasks"][0]["id"], task1["id"])
@@ -1515,8 +1522,6 @@ class TestMCPTools(unittest.IsolatedAsyncioTestCase):
             task_id=task1["id"],
             status="waiting_agent",
             waiting_for_agent="ReviewerAgent",
-            agent_name="TaskManagerAgent",
-            agent_token=self.task_token,
         ))
         self.assertEqual(up_res["status"], "success")
         self.assertEqual(up_res["task"]["status"], "waiting_agent")
@@ -1526,31 +1531,31 @@ class TestMCPTools(unittest.IsolatedAsyncioTestCase):
         reorder_res = json.loads(await tool_reorder_tasks(
             room_name=room_name,
             task_ids=[task2["id"], task1["id"]],
-            agent_name="TaskManagerAgent",
-            agent_token=self.task_token,
         ))
         self.assertEqual(reorder_res["status"], "success")
         self.assertEqual(reorder_res["tasks"][0]["id"], task2["id"])
+        current_auth_token.set(None)
 
     async def test_mcp_security_admin_tools_flow(self):
         import uuid
         room_name = f"mcp-sec-{uuid.uuid4().hex[:6]}"
-        tool_create_room(room_name, password="oldpass", agent_token=self.admin_token)
-        join_res = json.loads(tool_join_room(room_name, agent_name="AdminAgent", password="oldpass", agent_token=self.admin_token))
-        token = join_res["member_token"]
+        current_auth_token.set(self.admin_token)
+        tool_create_room(room_name, password="oldpass")
+        join_res = json.loads(tool_join_room(room_name, password="oldpass"))
+        token = join_res.get("member_token") or self.admin_token
 
         # 1. rotate_member_token (agent rejected, supervisor allowed)
-        agent_rot = json.loads(tool_rotate_member_token(room_name, agent_name="AdminAgent", current_token=token, agent_token=self.admin_token))
+        agent_rot = json.loads(tool_rotate_member_token(room_name, member_name="AdminAgent", current_token=token))
         self.assertEqual(agent_rot["status"], "error")
         self.assertIn("Apenas o supervisor humano Rui", agent_rot["error"])
 
-        sup_rot = json.loads(tool_rotate_member_token(room_name, agent_name="AdminAgent", supervisor_token=hub.human_token))
+        sup_rot = json.loads(tool_rotate_member_token(room_name, member_name="AdminAgent", supervisor_token=hub.human_token))
         self.assertEqual(sup_rot["status"], "success")
         new_token = sup_rot["member_token"]
         self.assertNotEqual(token, new_token)
 
         # 2. change_room_password (agent rejected, supervisor allowed)
-        agent_ch = json.loads(tool_change_room_password(room_name, old_password="oldpass", new_password="newpass", agent_name="AdminAgent", agent_token=new_token))
+        agent_ch = json.loads(tool_change_room_password(room_name, old_password="oldpass", new_password="newpass"))
         self.assertEqual(agent_ch["status"], "error")
         self.assertIn("Apenas o supervisor humano Rui", agent_ch["error"])
 
@@ -1558,13 +1563,16 @@ class TestMCPTools(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sup_ch["status"], "success")
 
         # 3. kick_member
-        kick_res = json.loads(tool_kick_member(room_name, member_to_kick="AdminAgent", requester_name="Rui", agent_token=hub.human_token))
+        current_auth_token.set(hub.human_token)
+        kick_res = json.loads(tool_kick_member(room_name, member_to_kick="AdminAgent", requester_name="Rui"))
         self.assertEqual(kick_res["status"], "success")
 
         # 4. get_room_audit_log
-        audit_res = json.loads(tool_get_room_audit_log(room_name, password="newpass", agent_token=new_token))
+        current_auth_token.set(new_token)
+        audit_res = json.loads(tool_get_room_audit_log(room_name, password="newpass"))
         self.assertEqual(audit_res["status"], "success")
         self.assertGreaterEqual(len(audit_res["events"]), 3)
+        current_auth_token.set(None)
 
 
 class TestWakeUpCall(unittest.IsolatedAsyncioTestCase):
@@ -2198,65 +2206,64 @@ class TestCalendarMCP(unittest.IsolatedAsyncioTestCase):
         self.agent_token = agent["token"]
 
     async def asyncTearDown(self):
+        current_auth_token.set(None)
         self.storage.close()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     async def test_mcp_calendar_tools(self):
-        # 1. Check availability on free resource
-        avail = json.loads(tool_check_resource_availability(
-            resource="RTX_3080",
-            start_at="2026-09-27T10:00:00",
-            end_at="2026-09-27T11:00:00",
-            agent_token=self.agent_token,
-        ))
-        self.assertEqual(avail["status"], "success")
-        self.assertTrue(avail["available"])
+        current_auth_token.set(self.agent_token)
+        try:
+            # 1. Check availability on free resource
+            avail = json.loads(tool_check_resource_availability(
+                resource="RTX_3080",
+                start_at="2026-09-27T10:00:00",
+                end_at="2026-09-27T11:00:00",
+            ))
+            self.assertEqual(avail["status"], "success")
+            self.assertTrue(avail["available"])
 
-        # 2. Schedule event via tool_create_calendar_event
-        created = json.loads(await tool_create_calendar_event(
-            room_name=self.room_name,
-            title="MCP Training",
-            start_at="2026-09-27T10:00:00",
-            end_at="2026-09-27T11:00:00",
-            resource="RTX_3080",
-            agent_token=self.agent_token,
-        ))
-        self.assertEqual(created["status"], "success")
-        ev_id = created["event"]["id"]
+            # 2. Schedule event via tool_create_calendar_event
+            created = json.loads(await tool_create_calendar_event(
+                room_name=self.room_name,
+                title="MCP Training",
+                start_at="2026-09-27T10:00:00",
+                end_at="2026-09-27T11:00:00",
+                resource="RTX_3080",
+            ))
+            self.assertEqual(created["status"], "success")
+            ev_id = created["event"]["id"]
 
-        # 3. Check availability now shows occupied
-        avail_now = json.loads(tool_check_resource_availability(
-            resource="RTX_3080",
-            start_at="2026-09-27T10:30:00",
-            end_at="2026-09-27T11:30:00",
-            agent_token=self.agent_token,
-        ))
-        self.assertFalse(avail_now["available"])
-        self.assertEqual(avail_now["conflicts_count"], 1)
+            # 3. Check availability now shows occupied
+            avail_now = json.loads(tool_check_resource_availability(
+                resource="RTX_3080",
+                start_at="2026-09-27T10:30:00",
+                end_at="2026-09-27T11:30:00",
+            ))
+            self.assertFalse(avail_now["available"])
+            self.assertEqual(avail_now["conflicts_count"], 1)
 
-        # 4. List calendar events
-        listed = json.loads(tool_list_calendar_events(
-            room_name=self.room_name,
-            agent_token=self.agent_token,
-        ))
-        self.assertEqual(listed["status"], "success")
-        self.assertEqual(len(listed["events"]), 1)
+            # 4. List calendar events
+            listed = json.loads(tool_list_calendar_events(
+                room_name=self.room_name,
+            ))
+            self.assertEqual(listed["status"], "success")
+            self.assertEqual(len(listed["events"]), 1)
 
-        # 5. Update calendar event
-        updated = json.loads(await tool_update_calendar_event(
-            event_id=ev_id,
-            status="completed",
-            agent_token=self.agent_token,
-        ))
-        self.assertEqual(updated["status"], "success")
-        self.assertEqual(updated["event"]["status"], "completed")
+            # 5. Update calendar event
+            updated = json.loads(await tool_update_calendar_event(
+                event_id=ev_id,
+                status="completed",
+            ))
+            self.assertEqual(updated["status"], "success")
+            self.assertEqual(updated["event"]["status"], "completed")
 
-        # 6. Delete calendar event
-        deleted = json.loads(await tool_delete_calendar_event(
-            event_id=ev_id,
-            agent_token=self.agent_token,
-        ))
-        self.assertEqual(deleted["status"], "success")
+            # 6. Delete calendar event
+            deleted = json.loads(await tool_delete_calendar_event(
+                event_id=ev_id,
+            ))
+            self.assertEqual(deleted["status"], "success")
+        finally:
+            current_auth_token.set(None)
 
 
 if __name__ == "__main__":

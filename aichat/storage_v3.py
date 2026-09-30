@@ -44,6 +44,8 @@ class StorageV3:
         self.db_path = Path(db_path)
         self.logs_dir = Path(logs_dir)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self._active_listeners: dict[int, int] = {}
+        self._listeners_lock = threading.Lock()
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -122,6 +124,7 @@ class StorageV3:
             ("last_listen_at", "TEXT"),
             ("last_activity_at", "TEXT"),
             ("unconfirmed_batch_ids", "TEXT NOT NULL DEFAULT ''"),
+            ("unconfirmed_batch_id", "TEXT NOT NULL DEFAULT ''"),
             ("unconfirmed_delivered_at", "TEXT"),
             ("stalled_alert_count", "INTEGER NOT NULL DEFAULT 0"),
             ("last_stalled_alert_at", "TEXT"),
@@ -130,6 +133,8 @@ class StorageV3:
             for col_name, col_def in v31_cols:
                 if col_name not in cols:
                     conn.execute(f"ALTER TABLE agents ADD COLUMN {col_name} {col_def};")
+            # In-memory counter reset: any lingering listening_now from server crash is reset to 0
+            conn.execute("UPDATE agents SET listening_now = 0;")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS system_settings (
@@ -705,7 +710,13 @@ class StorageV3:
         )
         return pid, raw_token
 
-    def self_register_agent(self, callsign: str) -> dict[str, Any]:
+    def count_pending_agents(self) -> int:
+        """Returns the count of agent principals currently in 'pending' status."""
+        conn = self._get_connection()
+        row = conn.execute("SELECT count(*) as cnt FROM principals WHERE kind = 'agent' AND status = 'pending';").fetchone()
+        return row["cnt"] if row else 0
+
+    def self_register_agent(self, callsign: str, description: str = "") -> dict[str, Any]:
         """
         Submits an agent self-registration request.
         Creates a principal with status 'pending' WITHOUT credentials.
@@ -716,14 +727,17 @@ class StorageV3:
         existing = self.get_principal_by_name(clean_callsign)
         if existing:
             raise ValueError(f"Agente ou utilizador com o nome '{clean_callsign}' já existe.")
+        if self.count_pending_agents() >= 5:
+            raise ValueError("Limite de pedidos de registo pendentes atingido (máximo 5). Aguarde pela aprovação de um administrador em /admin antes de submeter novos pedidos.")
         pid, _ = self.create_agent(
             callsign=clean_callsign,
+            display_name=description or clean_callsign,
             status="pending",
             create_credential=False,
             actor_name="agent_self_register",
         )
         return {
-            "status": "registered_pending_token",
+            "status": "pending",
             "principal_id": pid,
             "callsign": clean_callsign,
             "message": f"Pedido de registo submetido para o agente '{clean_callsign}'. O estado está pendente de aprovação por um administrador em /admin. O token será emitido aquando da aprovação.",
@@ -861,30 +875,77 @@ class StorageV3:
             "max_wake_timeout": max_wake,
         }
 
-    def set_agent_listening(self, principal_id: int, listening: bool) -> None:
-        """Sets listening_now flag and last_listen_at for an agent."""
+    def is_agent_listening(self, principal_id: int | str) -> bool:
+        """Returns True if agent currently has at least one active listening connection in-memory."""
+        pid = principal_id
+        if isinstance(principal_id, str):
+            p = self.get_principal_by_name(principal_id)
+            if not p:
+                return False
+            pid = p["id"]
+        try:
+            pid_int = int(pid)
+        except (ValueError, TypeError):
+            return False
+        with self._listeners_lock:
+            return self._active_listeners.get(pid_int, 0) > 0
+
+    def set_agent_listening(self, principal_id: int | str, listening: bool) -> None:
+        """Sets listening_now flag and last_listen_at for an agent using in-memory counter."""
+        pid = principal_id
+        if isinstance(principal_id, str):
+            p = self.get_principal_by_name(principal_id)
+            if not p:
+                return
+            pid = p["id"]
+        try:
+            pid_int = int(pid)
+        except (ValueError, TypeError):
+            return
+
+        with self._listeners_lock:
+            if listening:
+                self._active_listeners[pid_int] = self._active_listeners.get(pid_int, 0) + 1
+            else:
+                curr = self._active_listeners.get(pid_int, 0)
+                if curr > 1:
+                    self._active_listeners[pid_int] = curr - 1
+                else:
+                    self._active_listeners.pop(pid_int, None)
+            is_active = self._active_listeners.get(pid_int, 0) > 0
+
         conn = self._get_connection()
         now_str = utc_now()
         with conn:
-            if listening:
+            if is_active:
                 conn.execute(
                     "UPDATE agents SET listening_now = 1, last_listen_at = ? WHERE principal_id = ?;",
-                    (now_str, principal_id),
+                    (now_str, pid_int),
                 )
             else:
                 conn.execute(
                     "UPDATE agents SET listening_now = 0 WHERE principal_id = ?;",
-                    (principal_id,),
+                    (pid_int,),
                 )
 
-    def record_agent_activity(self, principal_id: int) -> None:
+    def record_agent_activity(self, principal_id: int | str) -> None:
         """Records authenticated activity timestamp for an agent."""
+        pid = principal_id
+        if isinstance(principal_id, str):
+            p = self.get_principal_by_name(principal_id)
+            if not p:
+                return
+            pid = p["id"]
+        try:
+            pid_int = int(pid)
+        except (ValueError, TypeError):
+            return
         conn = self._get_connection()
         now_str = utc_now()
         with conn:
             conn.execute(
                 "UPDATE agents SET last_activity_at = ? WHERE principal_id = ?;",
-                (now_str, principal_id),
+                (now_str, pid_int),
             )
 
     def get_unread_directed_messages_for_agent(
@@ -925,24 +986,32 @@ class StorageV3:
         rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
-    def get_agent_liveliness(self, principal_id: int) -> dict[str, Any]:
+    def get_agent_liveliness(self, principal_id: int | str) -> dict[str, Any]:
         """
         Computes the 5 liveliness states for an agent:
-        🟢 a escutar (listening_now == 1)
-        🔵 a trabalhar (listening_now == 0 && last_activity <= T_idle)
-        💤 sem trabalho (listening_now == 0 && unread_directed_count == 0)
-        🔴 parado (listening_now == 0 && unread_directed_count > 0 && unread_age >= T_unread && idle_age >= T_idle)
-        ⚫ offline (listening_now == 0 && unread_directed_count == 0 && (last_activity is None or idle_age > 24h))
+        🟢 a escutar (is_agent_listening == True)
+        🔵 a trabalhar (not listening && (last_activity <= T_idle OR has recent in_progress task <= 30m))
+        💤 sem trabalho (not listening && unread_directed_count == 0)
+        🔴 parado (not listening && unread_directed_count > 0 && unread_age >= T_unread && idle_age >= T_idle && no recent in_progress task)
+        ⚫ offline (not listening && unread_directed_count == 0 && (last_activity is None or idle_age > 24h))
         """
-        agent = self.get_principal_by_id(principal_id)
-        if not agent or agent.get("kind") != "agent":
-            return {"state": "offline", "state_icon": "⚫", "state_label": "offline"}
+        if isinstance(principal_id, int):
+            agent = self.get_principal_by_id(principal_id)
+        else:
+            agent = self.get_principal_by_name(str(principal_id))
+            if agent:
+                principal_id = agent["id"]
 
+        if not agent or agent.get("kind") != "agent":
+            return {"state": "offline", "state_icon": "⚫", "state_label": "offline", "state_badge": "⚫ offline"}
+
+        pid = agent["id"]
         thresholds = self.get_system_thresholds()
         t_idle = thresholds["t_idle_seconds"]
         t_unread = thresholds["t_unread_seconds"]
 
-        listening_now = bool(agent.get("listening_now"))
+        # 🟢 a escutar: check in-memory counter
+        listening_now = self.is_agent_listening(pid)
         if listening_now:
             return {
                 "state": "listening",
@@ -968,8 +1037,35 @@ class StorageV3:
         last_act_dt = _parse_iso(agent.get("last_activity_at"))
         idle_age = (now - last_act_dt).total_seconds() if last_act_dt else float("inf")
 
-        # 🔵 a trabalhar: not listening, but had activity within T_idle
-        if last_act_dt and idle_age <= t_idle:
+        # Check if agent has an active in_progress task updated recently (<= 1800s / 30m)
+        conn = self._get_connection()
+        task_row = conn.execute(
+            """
+            SELECT id, title, updated_at FROM tasks
+            WHERE assignee_id = ? AND status = 'in_progress'
+            ORDER BY updated_at DESC LIMIT 1;
+            """,
+            (pid,),
+        ).fetchone()
+
+        has_recent_task = False
+        task_info: dict[str, Any] = {}
+        if task_row:
+            t_updated_dt = _parse_iso(task_row["updated_at"])
+            task_age = (now - t_updated_dt).total_seconds() if t_updated_dt else float("inf")
+            if task_age <= 1800:
+                has_recent_task = True
+                task_info = {
+                    "active_task_id": task_row["id"],
+                    "active_task_title": task_row["title"],
+                    "task_age_seconds": int(task_age),
+                }
+
+        unread_msgs = self.get_unread_directed_messages_for_agent(pid)
+        unread_count = len(unread_msgs)
+
+        # 🔵 a trabalhar: not listening, but had activity within T_idle OR has recent in_progress task
+        if (last_act_dt and idle_age <= t_idle) or has_recent_task:
             return {
                 "state": "working",
                 "state_icon": "🔵",
@@ -978,13 +1074,12 @@ class StorageV3:
                 "listening_now": 0,
                 "last_listen_at": agent.get("last_listen_at"),
                 "last_activity_at": agent.get("last_activity_at"),
-                "idle_seconds": int(idle_age),
-                "unread_directed_count": 0,
+                "idle_seconds": int(idle_age) if last_act_dt else None,
+                "unread_directed_count": unread_count,
+                **task_info,
             }
 
-        # Check unread directed messages
-        unread_msgs = self.get_unread_directed_messages_for_agent(principal_id)
-        unread_count = len(unread_msgs)
+        # Check unread directed messages (only stalled if NOT working on a recent task)
         if unread_count > 0:
             oldest_unread_dt = _parse_iso(unread_msgs[0]["created_at"])
             unread_age = (now - oldest_unread_dt).total_seconds() if oldest_unread_dt else 0
@@ -1036,6 +1131,7 @@ class StorageV3:
             "last_listen_at": agent.get("last_listen_at"),
             "last_activity_at": agent.get("last_activity_at"),
             "unread_directed_count": 0,
+            "idle_seconds": int(idle_age) if last_act_dt else None,
         }
 
     def get_room_team_status(self, room_name_or_id: str | int) -> list[dict[str, Any]]:
@@ -1100,21 +1196,34 @@ class StorageV3:
                 })
         return result
 
-    def get_unconfirmed_batch(self, principal_id: int) -> list[int]:
-        """Returns message IDs for unconfirmed delivered batch, if any."""
+    def get_unconfirmed_batch_info(self, principal_id: int) -> dict[str, Any]:
+        """Returns details about unconfirmed delivered batch."""
         conn = self._get_connection()
-        row = conn.execute("SELECT unconfirmed_batch_ids FROM agents WHERE principal_id = ?;", (principal_id,)).fetchone()
+        row = conn.execute(
+            "SELECT unconfirmed_batch_ids, unconfirmed_batch_id, unconfirmed_delivered_at FROM agents WHERE principal_id = ?;",
+            (principal_id,),
+        ).fetchone()
         if not row or not row["unconfirmed_batch_ids"]:
-            return []
+            return {"batch_id": "", "message_ids": [], "delivered_at": None}
         raw = str(row["unconfirmed_batch_ids"]).strip()
         if not raw:
-            return []
+            return {"batch_id": "", "message_ids": [], "delivered_at": None}
         try:
-            return [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
+            ids = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
         except Exception:
-            return []
+            ids = []
+        return {
+            "batch_id": str(row["unconfirmed_batch_id"] or ""),
+            "message_ids": ids,
+            "delivered_at": row["unconfirmed_delivered_at"],
+        }
 
-    def set_unconfirmed_batch(self, principal_id: int, message_ids: list[int]) -> None:
+    def get_unconfirmed_batch(self, principal_id: int) -> list[int]:
+        """Returns message IDs for unconfirmed delivered batch, if any."""
+        info = self.get_unconfirmed_batch_info(principal_id)
+        return info["message_ids"]
+
+    def set_unconfirmed_batch(self, principal_id: int, message_ids: list[int], batch_id: str = "") -> None:
         """Records an unconfirmed delivery batch for reliable at-least-once delivery."""
         conn = self._get_connection()
         val = ",".join(str(i) for i in message_ids) if message_ids else ""
@@ -1123,25 +1232,33 @@ class StorageV3:
             conn.execute(
                 """
                 UPDATE agents
-                SET unconfirmed_batch_ids = ?, unconfirmed_delivered_at = ?
+                SET unconfirmed_batch_ids = ?, unconfirmed_batch_id = ?, unconfirmed_delivered_at = ?
                 WHERE principal_id = ?;
                 """,
-                (val, now_str, principal_id),
+                (val, str(batch_id or ""), now_str, principal_id),
             )
 
-    def confirm_batch(self, principal_id: int, ack_id: int | None = None) -> None:
+    def confirm_batch(self, principal_id: int, ack_id: int | str | None = None) -> None:
         """
         Confirms delivery batch. Clears unconfirmed batch and advances read cursor.
         """
         conn = self._get_connection()
-        unconfirmed = self.get_unconfirmed_batch(principal_id)
-        effective_ack = ack_id if (ack_id and ack_id > 0) else (max(unconfirmed) if unconfirmed else 0)
+        info = self.get_unconfirmed_batch_info(principal_id)
+        unconfirmed = info["message_ids"]
+        max_unconfirmed = max(unconfirmed) if unconfirmed else 0
+        effective_ack = 0
+        if isinstance(ack_id, int) and ack_id > 0:
+            effective_ack = max(ack_id, max_unconfirmed)
+        elif isinstance(ack_id, str) and ack_id.isdigit():
+            effective_ack = max(int(ack_id), max_unconfirmed)
+        else:
+            effective_ack = max_unconfirmed
 
         with conn:
             conn.execute(
                 """
                 UPDATE agents
-                SET unconfirmed_batch_ids = '', unconfirmed_delivered_at = NULL
+                SET unconfirmed_batch_ids = '', unconfirmed_batch_id = '', unconfirmed_delivered_at = NULL
                 WHERE principal_id = ?;
                 """,
                 (principal_id,),
@@ -1172,11 +1289,11 @@ class StorageV3:
         agents = conn.execute(
             """
             SELECT p.id as principal_id, p.name, p.status,
-                   a.listening_now, a.last_listen_at, a.last_activity_at,
-                   a.stalled_alert_count, a.last_stalled_alert_at, p.created_at as registered_at
+                    a.listening_now, a.last_listen_at, a.last_activity_at,
+                    a.stalled_alert_count, a.last_stalled_alert_at, p.created_at as registered_at
             FROM principals p
             JOIN agents a ON p.id = a.principal_id
-            WHERE p.status = 'active' AND a.listening_now = 0;
+            WHERE p.status = 'active';
             """
         ).fetchall()
 
@@ -1192,6 +1309,23 @@ class StorageV3:
         candidates = []
         for ag in agents:
             pid = ag["principal_id"]
+            if self.is_agent_listening(pid):
+                continue
+
+            # If agent is working on an in_progress task updated recently (<= 1800s), not stalled
+            t_row = conn.execute(
+                """
+                SELECT updated_at FROM tasks
+                WHERE assignee_id = ? AND status = 'in_progress'
+                ORDER BY updated_at DESC LIMIT 1;
+                """,
+                (pid,),
+            ).fetchone()
+            if t_row:
+                t_dt = _parse_iso(t_row["updated_at"])
+                if t_dt and (now - t_dt).total_seconds() <= 1800:
+                    continue
+
             unread_msgs = self.get_unread_directed_messages_for_agent(pid)
             if not unread_msgs:
                 continue

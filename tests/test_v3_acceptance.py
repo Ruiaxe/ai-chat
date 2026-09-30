@@ -37,6 +37,8 @@ from aichat.mcp_server import (
     read_messages as tool_read_messages,
     send_message as tool_send_message,
     create_room as tool_create_room,
+    register_agent as tool_register_agent,
+    reset_register_rate_limits,
 )
 
 
@@ -433,29 +435,52 @@ class TestV3Phase1Acceptance(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res_locked.status_code, 429)
         self.assertIn("temporariamente bloqueada", res_locked.json()["error"].lower())
 
-    def test_09_server_env_token_isolation(self):
-        """Verifies that AICHAT_AGENT_TOKEN on the server does NOT authenticate HTTP or MCP callers."""
+    async def test_09_server_env_token_isolation(self):
+        """Verifies that AICHAT_AGENT_TOKEN on the server does NOT authenticate HTTP or MCP callers,
+        and that anonymous MCP sessions can only call register_agent while all other tools are rejected."""
         sentinel_tok = self.agent_tokens["Sentinel"]
         os.environ["AICHAT_AGENT_TOKEN"] = sentinel_tok
+        current_auth_token.set(None)
+        current_principal.set(None)
 
         try:
             # 1. Unauthenticated HTTP request to REST API must return 401
             res_rest = self.client.get("/api/rooms")
             self.assertEqual(res_rest.status_code, 401)
 
-            # 2. Unauthenticated HTTP request to MCP /sse must return 401
-            res_sse = self.client.get("/sse")
-            self.assertEqual(res_sse.status_code, 401)
-
-            # 3. Direct MCP _authenticate in HTTP context without contextvar must fail
+            # 2. Direct MCP _authenticate without contextvar must fail (does NOT inherit server env var)
             ident, err = _authenticate()
             self.assertIsNone(ident)
             self.assertIsNotNone(err)
             err_data = json.loads(err)
             self.assertEqual(err_data["status"], "error")
             self.assertIn("Missing Authorization header", err_data["error"])
+
+            # 4. Anonymous MCP caller is rejected across protected tools
+            res_my_rooms = json.loads(tool_list_my_rooms())
+            self.assertEqual(res_my_rooms["status"], "error")
+            self.assertIn("Access denied", res_my_rooms["error"])
+
+            res_send = json.loads(await tool_send_message("geral", "Tentativa de envio anónimo"))
+            self.assertEqual(res_send["status"], "error")
+            self.assertIn("Access denied", res_send["error"])
+
+            res_read = json.loads(tool_read_messages("geral"))
+            self.assertEqual(res_read["status"], "error")
+            self.assertIn("Access denied", res_read["error"])
+
+            res_create = json.loads(tool_create_room("sala_anonima"))
+            self.assertEqual(res_create["status"], "error")
+
+            # 5. Anonymous registration tool is the ONLY allowed tool for unauthenticated callers
+            reset_register_rate_limits()
+            res_reg = json.loads(tool_register_agent("AnonTestCandidate", "Registo anónimo válido"))
+            self.assertEqual(res_reg["status"], "pending")
+            self.assertEqual(res_reg["callsign"], "AnonTestCandidate")
         finally:
             os.environ.pop("AICHAT_AGENT_TOKEN", None)
+            current_auth_token.set(None)
+            current_principal.set(None)
 
     def test_10_rejection_of_deprecated_identity_arguments(self):
         """Verifies that passing identity arguments in MCP tool calls is strictly rejected in v3."""

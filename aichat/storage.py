@@ -212,6 +212,13 @@ class ChatStorage:
     def self_register_agent(self, *args, **kwargs):
         return self.v3.self_register_agent(*args, **kwargs)
 
+    def count_pending_agents(self) -> int:
+        if self.is_v3():
+            return self.v3.count_pending_agents()
+        conn = self._get_connection()
+        row = conn.execute("SELECT count(*) as cnt FROM member_identities WHERE status = 'pending';").fetchone()
+        return row["cnt"] if row else 0
+
     def approve_agent(self, *args, **kwargs):
         return self.v3.approve_agent(*args, **kwargs)
 
@@ -227,6 +234,9 @@ class ChatStorage:
     def get_system_thresholds(self, *args, **kwargs):
         return self.v3.get_system_thresholds(*args, **kwargs)
 
+    def is_agent_listening(self, *args, **kwargs):
+        return self.v3.is_agent_listening(*args, **kwargs)
+
     def set_agent_listening(self, *args, **kwargs):
         return self.v3.set_agent_listening(*args, **kwargs)
 
@@ -241,6 +251,9 @@ class ChatStorage:
 
     def get_room_team_status(self, *args, **kwargs):
         return self.v3.get_room_team_status(*args, **kwargs)
+
+    def get_unconfirmed_batch_info(self, *args, **kwargs):
+        return self.v3.get_unconfirmed_batch_info(*args, **kwargs)
 
     def get_unconfirmed_batch(self, *args, **kwargs):
         return self.v3.get_unconfirmed_batch(*args, **kwargs)
@@ -1104,6 +1117,9 @@ class ChatStorage:
             raise ValueError("Callsign do agente não pode estar vazio.")
         if len(clean_callsign) > 40:
             raise ValueError("Callsign do agente não pode exceder 40 caracteres.")
+
+        if is_self_registration and self.count_pending_agents() >= 5:
+            raise ValueError("Limite de pedidos de registo pendentes atingido (máximo 5). Aguarde pela aprovação de um administrador.")
 
         if self.is_v3():
             existing = self.v3.get_principal_by_name(clean_callsign)

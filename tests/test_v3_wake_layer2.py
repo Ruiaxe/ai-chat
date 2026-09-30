@@ -54,7 +54,11 @@ class MockUrlopenBridge:
         if parsed.query:
             path = f"{path}?{parsed.query}"
 
-        res = self.client.get(path, headers=headers)
+        method = req.get_method() if hasattr(req, "get_method") else "GET"
+        if method == "POST" or (hasattr(req, "data") and req.data is not None):
+            res = self.client.post(path, content=req.data, headers=headers)
+        else:
+            res = self.client.get(path, headers=headers)
         if res.status_code >= 400:
             fp = io.BytesIO(res.content)
             reason = getattr(res, "reason_phrase", str(res.status_code))
@@ -147,11 +151,8 @@ class TestV3WakeLayer2(unittest.IsolatedAsyncioTestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def test_01_script_file_exists_and_served_by_endpoint(self):
-        """Verifies aichat-wait.py is in tools/, static/tools/ and served at GET /tools/aichat-wait.py."""
+        """Verifies aichat-wait.py is in tools/ and served at GET /tools/aichat-wait.py."""
         self.assertTrue(TOOLS_SCRIPT.exists(), f"{TOOLS_SCRIPT} does not exist")
-        static_script = ROOT / "aichat" / "static" / "tools" / "aichat-wait.py"
-        self.assertTrue(static_script.exists(), f"{static_script} does not exist")
-
         res = self.client.get("/tools/aichat-wait.py")
         self.assertEqual(res.status_code, 200)
         self.assertIn("text/x-python", res.headers.get("content-type", ""))
@@ -167,72 +168,74 @@ class TestV3WakeLayer2(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(proc.returncode, 0)
         self.assertIn("ai-chat Universal Wake-up Client", proc.stdout)
         self.assertIn("--url", proc.stdout)
-        self.assertIn("--token", proc.stdout)
+        self.assertNotIn("--token", proc.stdout)  # Hardening: token removed from CLI arguments
+        self.assertIn("--agent", proc.stdout)
+        self.assertIn("--register", proc.stdout)
         self.assertIn("--selftest", proc.stdout)
         self.assertIn("--hook", proc.stdout)
 
     def test_03_missing_token_exit_4(self):
         """Verifies exit code 4 when token is missing."""
         err_buf = io.StringIO()
-        with patch("sys.stderr", err_buf):
-            code = aichat_wait.main(["--url", "http://testserver", "--token", ""])
+        with patch.dict(os.environ, {"AICHAT_AGENT_TOKEN": "", "AICHAT_TOKEN": "", "AI_CHAT_TOKEN": ""}), patch("sys.stderr", err_buf):
+            code = aichat_wait.main(["--url", "http://testserver"])
         self.assertEqual(code, aichat_wait.EXIT_AUTH_ERROR)
         self.assertIn("Token do agente em falta", err_buf.getvalue())
 
     def test_04_connection_error_exit_2(self):
         """Verifies exit code 2 when ai-chat server is unreachable."""
-        # Test directly via subprocess against an unused port
+        env = os.environ.copy()
+        env["AICHAT_AGENT_TOKEN"] = "aic_test_token"
         proc = subprocess.run(
             [
                 sys.executable,
                 str(TOOLS_SCRIPT),
                 "--url", "http://127.0.0.1:59998",
-                "--token", "aic_test_token",
                 "--timeout", "1",
             ],
             capture_output=True,
             text=True,
+            env=env,
         )
         self.assertEqual(proc.returncode, aichat_wait.EXIT_CONNECTION_ERROR)
         self.assertIn("ERRO", proc.stderr)
 
     def test_05_selftest_success_and_failure(self):
         """Verifies --selftest behavior for valid tokens, bad tokens, and connection failures."""
-        # 1. Success case with valid token
+        # 1. Success case with valid token via environment
         err_buf = io.StringIO()
-        with patch("urllib.request.urlopen", self.bridge), patch("sys.stderr", err_buf):
+        with patch.dict(os.environ, {"AICHAT_AGENT_TOKEN": self.ana_token}), \
+             patch("urllib.request.urlopen", self.bridge), patch("sys.stderr", err_buf):
             code = aichat_wait.main([
                 "--url", "http://testserver",
-                "--token", self.ana_token,
                 "--room", "geral",
                 "--selftest",
             ])
         self.assertEqual(code, aichat_wait.EXIT_SUCCESS)
         out = err_buf.getvalue()
-        self.assertIn("[OK] Ligação ao servidor bem sucedida", out)
-        self.assertIn("[OK] Token de agente válido e autenticado", out)
-        self.assertIn("[OK] Todos os testes passaram com sucesso!", out)
+        self.assertIn("[PASS] Ligação e autenticação com sucesso.", out)
+        self.assertIn("=== Self-Test Concluído com Sucesso ===", out)
 
         # 2. Failure with invalid token -> Exit 4
         err_buf_bad = io.StringIO()
-        with patch("urllib.request.urlopen", self.bridge), patch("sys.stderr", err_buf_bad):
+        with patch.dict(os.environ, {"AICHAT_AGENT_TOKEN": "aic_invalid_tok_xyz"}), \
+             patch("urllib.request.urlopen", self.bridge), patch("sys.stderr", err_buf_bad):
             code_bad = aichat_wait.main([
                 "--url", "http://testserver",
-                "--token", "aic_invalid_tok_xyz",
                 "--room", "geral",
                 "--selftest",
             ])
         self.assertEqual(code_bad, aichat_wait.EXIT_AUTH_ERROR)
-        self.assertIn("[FAIL] Autenticação rejeitada", err_buf_bad.getvalue())
+        self.assertIn("[FAIL] Autenticação falhou", err_buf_bad.getvalue())
 
     def test_06_timeout_no_work_exit_3(self):
         """Verifies exit code 3 when polling completes without work."""
         out_buf = io.StringIO()
         err_buf = io.StringIO()
-        with patch("urllib.request.urlopen", self.bridge), patch("sys.stdout", out_buf), patch("sys.stderr", err_buf):
+        with patch.dict(os.environ, {"AICHAT_AGENT_TOKEN": self.carlos_token}), \
+             patch("urllib.request.urlopen", self.bridge), patch("sys.stdout", out_buf), patch("sys.stderr", err_buf):
             code = aichat_wait.main([
                 "--url", "http://testserver",
-                "--token", self.carlos_token,
                 "--room", "geral",
                 "--timeout", "0",
             ])
@@ -251,10 +254,10 @@ class TestV3WakeLayer2(unittest.IsolatedAsyncioTestCase):
 
         # 1. Test text format output
         text_out = io.StringIO()
-        with patch("urllib.request.urlopen", self.bridge), patch("sys.stdout", text_out):
+        with patch.dict(os.environ, {"AICHAT_AGENT_TOKEN": self.carlos_token}), \
+             patch("urllib.request.urlopen", self.bridge), patch("sys.stdout", text_out):
             code_text = aichat_wait.main([
                 "--url", "http://testserver",
-                "--token", self.carlos_token,
                 "--room", "geral",
                 "--timeout", "0",
                 "--format", "text",
@@ -264,12 +267,21 @@ class TestV3WakeLayer2(unittest.IsolatedAsyncioTestCase):
         self.assertTrue("ana" in text_val.lower() or "Ana Researcher" in text_val)
         self.assertIn("preparar testes para entrega da camada 2", text_val)
 
-        # 2. Test JSON format output (redelivered batch)
+        # Ana sends a second message for JSON test
+        res_m2 = await hub.send_message(
+            room_name="geral",
+            sender="ana",
+            content="@carlos preparar segundo teste json.",
+            member_token=self.ana_token,
+        )
+        msg_id2 = res_m2["id"]
+
+        # 2. Test JSON format output
         json_out = io.StringIO()
-        with patch("urllib.request.urlopen", self.bridge), patch("sys.stdout", json_out):
+        with patch.dict(os.environ, {"AICHAT_AGENT_TOKEN": self.carlos_token}), \
+             patch("urllib.request.urlopen", self.bridge), patch("sys.stdout", json_out):
             code_json = aichat_wait.main([
                 "--url", "http://testserver",
-                "--token", self.carlos_token,
                 "--room", "geral",
                 "--timeout", "0",
                 "--format", "json",
@@ -278,9 +290,9 @@ class TestV3WakeLayer2(unittest.IsolatedAsyncioTestCase):
         parsed = json.loads(json_out.getvalue())
         self.assertIn(parsed.get("status"), ("new_work", "new_messages"))
         self.assertTrue(len(parsed.get("messages", [])) >= 1)
-        self.assertEqual(parsed["messages"][0]["id"], msg_id)
+        self.assertEqual(parsed["messages"][0]["id"], msg_id2)
 
-    def test_08_hook_formats_claude_code_and_opencode(self):
+    async def test_08_hook_formats_claude_code_and_opencode(self):
         """Verifies hook format output for claude-code and opencode."""
         mock_data = {
             "status": "new_work",
@@ -306,12 +318,19 @@ class TestV3WakeLayer2(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[ai-chat:opencode] #geral @ana:", oc_out)
         self.assertIn("Por favor reveja o PR de wake-up universal.", oc_out)
 
-        # Main with --hook claude-code
+        # Send a message to Carlos and verify main with --hook claude-code
+        await hub.send_message(
+            room_name="geral",
+            sender="ana",
+            content="@carlos testar hook claude code via main.",
+            member_token=self.ana_token,
+        )
+
         out_buf = io.StringIO()
-        with patch("urllib.request.urlopen", self.bridge), patch("sys.stdout", out_buf):
+        with patch.dict(os.environ, {"AICHAT_AGENT_TOKEN": self.carlos_token}), \
+             patch("urllib.request.urlopen", self.bridge), patch("sys.stdout", out_buf):
             code_hook = aichat_wait.main([
                 "--url", "http://testserver",
-                "--token", self.carlos_token,
                 "--room", "geral",
                 "--timeout", "0",
                 "--hook", "claude-code",
@@ -320,7 +339,7 @@ class TestV3WakeLayer2(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Nova atividade no ai-chat", out_buf.getvalue())
 
     async def test_09_ack_and_redelivery_in_wait_script(self):
-        """Verifies batch confirmation using --ack <id> in aichat-wait.py."""
+        """Verifies batch confirmation and implicit ACK in aichat-wait.py."""
         # Ana sends a message to Carlos
         res_m = await hub.send_message(
             room_name="geral",
@@ -330,32 +349,73 @@ class TestV3WakeLayer2(unittest.IsolatedAsyncioTestCase):
         )
         msg_id = res_m["id"]
 
-        # Call with ack=0 -> unconfirmed batch is recorded
-        with patch("urllib.request.urlopen", self.bridge), patch("sys.stdout", io.StringIO()):
+        # 1. Carlos waits and receives work
+        out1 = io.StringIO()
+        with patch.dict(os.environ, {"AICHAT_AGENT_TOKEN": self.carlos_token}), \
+             patch("urllib.request.urlopen", self.bridge), patch("sys.stdout", out1):
             code1 = aichat_wait.main([
                 "--url", "http://testserver",
-                "--token", self.carlos_token,
                 "--room", "geral",
                 "--timeout", "0",
-                "--ack", "0",
+                "--format", "json",
             ])
         self.assertEqual(code1, aichat_wait.EXIT_SUCCESS)
-        carlos_row = hub.storage.v3.get_principal_by_id(self.carlos_id)
-        self.assertTrue(carlos_row.get("unconfirmed_batch_ids"))
+        parsed1 = json.loads(out1.getvalue())
+        batch_id = parsed1.get("batch_id")
+        self.assertTrue(batch_id)
 
-        # Call with ack=msg_id -> unconfirmed batch is cleared
-        with patch("urllib.request.urlopen", self.bridge), patch("sys.stdout", io.StringIO()):
+        # 2. Subsequent call by Carlos implicitly confirms the previous batch (within 30m window)
+        # Because batch is confirmed and no newer work exists, returns EXIT_TIMEOUT_NO_WORK (3)
+        out2 = io.StringIO()
+        with patch.dict(os.environ, {"AICHAT_AGENT_TOKEN": self.carlos_token}), \
+             patch("urllib.request.urlopen", self.bridge), patch("sys.stdout", out2):
             code2 = aichat_wait.main([
                 "--url", "http://testserver",
-                "--token", self.carlos_token,
                 "--room", "geral",
                 "--timeout", "0",
-                "--ack", str(msg_id),
+                "--format", "json",
             ])
-        # carlos batch is cleared; since there is no new work, returns EXIT_TIMEOUT_NO_WORK (3)
         self.assertEqual(code2, aichat_wait.EXIT_TIMEOUT_NO_WORK)
-        carlos_cleared = hub.storage.v3.get_principal_by_id(self.carlos_id)
-        self.assertFalse(carlos_cleared.get("unconfirmed_batch_ids"))
+        carlos_row = hub.storage.v3.get_principal_by_id(self.carlos_id)
+        self.assertFalse(carlos_row.get("unconfirmed_batch_ids"))
+
+    def test_10_registration_and_agent_profile_flow(self):
+        """Verifies --register <callsign> flow and loading via --agent <callsign>."""
+        mock_aichat_dir = self.tmp / ".aichat"
+        mock_aichat_dir.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(aichat_wait, "get_aichat_dir", return_value=mock_aichat_dir), \
+             patch("urllib.request.urlopen", self.bridge):
+            # 1. Register a new agent
+            code_reg = aichat_wait.main([
+                "--url", "http://testserver",
+                "--register", "agente_novo_test",
+            ])
+            self.assertEqual(code_reg, aichat_wait.EXIT_SUCCESS)
+            prof_path = mock_aichat_dir / "agente_novo_test.json"
+            self.assertTrue(prof_path.exists())
+            prof = json.loads(prof_path.read_text(encoding="utf-8"))
+            self.assertEqual(prof["callsign"], "agente_novo_test")
+            self.assertEqual(prof["status"], "pending")
+
+            # 2. Create an approved agent profile and test --agent
+            ana_prof = mock_aichat_dir / "ana_profile.json"
+            ana_prof.write_text(json.dumps({
+                "callsign": "ana",
+                "token": self.ana_token,
+                "url": "http://testserver",
+            }), encoding="utf-8")
+
+            err_buf = io.StringIO()
+            with patch.dict(os.environ, {"AICHAT_AGENT_TOKEN": "", "AICHAT_TOKEN": "", "AI_CHAT_TOKEN": ""}), \
+                 patch.object(aichat_wait, "get_aichat_dir", return_value=mock_aichat_dir), \
+                 patch("sys.stderr", err_buf):
+                code_agent = aichat_wait.main([
+                    "--agent", "ana_profile",
+                    "--selftest",
+                ])
+            self.assertEqual(code_agent, aichat_wait.EXIT_SUCCESS)
+            self.assertIn("[PASS] Ligação e autenticação com sucesso.", err_buf.getvalue())
 
 
 if __name__ == "__main__":

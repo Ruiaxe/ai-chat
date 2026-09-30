@@ -348,31 +348,67 @@ class TestV3WakeLayer1(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(work1.get("redelivered", False))
         delivered_ids = [m["id"] for m in work1.get("messages", [])]
         self.assertIn(msg_id, delivered_ids)
+        batch1_id = work1.get("batch_id")
+        self.assertTrue(batch1_id)
 
-        # Batch is unconfirmed in DB
+        # Batch is recorded as unconfirmed in DB
         agent_row = hub.storage.v3.get_principal_by_id(self.carlos_id)
         self.assertTrue(agent_row.get("unconfirmed_batch_ids"))
 
-        # Carlos calls again without ACK -> redelivered = True
+        # Carlos calls again within 30m without ACK -> implicit confirmation!
+        # Previous batch is automatically confirmed and NOT redelivered
         work2 = await hub.wait_for_work(
             room_name="geral",
             agent_name="carlos",
             timeout_seconds=0,
             ack=0,
         )
-        self.assertIn(work2.get("status"), ("new_work", "new_messages"))
-        self.assertTrue(work2.get("redelivered"))
+        self.assertEqual(work2.get("status"), "timeout")
+        agent_row_cleared = hub.storage.v3.get_principal_by_id(self.carlos_id)
+        self.assertFalse(agent_row_cleared.get("unconfirmed_batch_ids"))
 
-        # Carlos confirms with ACK = msg_id
+        # Test redelivery when agent did NOT return within 30 minutes:
+        # Ana sends a second message to Carlos
+        res_m2 = await hub.send_message(
+            room_name="geral",
+            sender="ana",
+            content="@carlos segunda tarefa.",
+            member_token=self.ana_token,
+        )
         work3 = await hub.wait_for_work(
             room_name="geral",
             agent_name="carlos",
             timeout_seconds=0,
-            ack=msg_id,
+            ack=0,
         )
-        # Batch should now be confirmed and cleared
-        agent_row_ack = hub.storage.v3.get_principal_by_id(self.carlos_id)
-        self.assertFalse(agent_row_ack.get("unconfirmed_batch_ids"))
+        self.assertIn(work3.get("status"), ("new_work", "new_messages"))
+        batch3_id = work3.get("batch_id")
+
+        # Simulate agent abandoned wait for > 30 minutes (delivered 1850s ago)
+        conn = hub.storage.v3._get_connection()
+        past_deliv = (datetime.now(timezone.utc) - timedelta(seconds=1850)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with conn:
+            conn.execute("UPDATE agents SET unconfirmed_delivered_at = ? WHERE principal_id = ?;", (past_deliv, self.carlos_id))
+
+        # Reconnection after 30 min -> redelivery of unconfirmed batch!
+        work4 = await hub.wait_for_work(
+            room_name="geral",
+            agent_name="carlos",
+            timeout_seconds=0,
+            ack=0,
+        )
+        self.assertIn(work4.get("status"), ("new_work", "new_messages"))
+        self.assertTrue(work4.get("redelivered"))
+
+        # Carlos confirms with ACK = batch_id
+        await hub.wait_for_work(
+            room_name="geral",
+            agent_name="carlos",
+            timeout_seconds=0,
+            ack=batch3_id,
+        )
+        agent_row_final = hub.storage.v3.get_principal_by_id(self.carlos_id)
+        self.assertFalse(agent_row_final.get("unconfirmed_batch_ids"))
 
     def test_07_team_status_and_read_receipts(self):
         """Verifies team_status tool and read receipts (✓ / ✓✓)."""

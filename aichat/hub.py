@@ -3,7 +3,8 @@ import hashlib
 import os
 import secrets
 import time
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from aichat.storage import ChatStorage
@@ -428,7 +429,7 @@ class ChatHub:
         self.storage.log_audit_event("system", "Rui", "agent_register", "success", f"Registered agent '{callsign}'")
         return res
 
-    def self_register_agent(self, callsign: str) -> dict[str, Any]:
+    def self_register_agent(self, callsign: str, description: str = "") -> dict[str, Any]:
         """Allows an agent to self-register a unique callsign. The access token is withheld for supervisor delivery."""
         clean_callsign = (callsign or "").strip()
         if not clean_callsign:
@@ -437,7 +438,7 @@ class ChatHub:
             raise ValueError(f"O nome '{clean_callsign}' está reservado para o utilizador humano. Agentes devem usar outro nome.")
 
         if hasattr(self.storage, "is_v3") and self.storage.is_v3():
-            return self.storage.v3.self_register_agent(clean_callsign)
+            return self.storage.v3.self_register_agent(clean_callsign, description=description)
 
         res = self.storage.register_agent_admin(callsign=clean_callsign, role="agent", is_system=False, is_self_registration=True)
         self.storage.log_audit_event("system", clean_callsign, "agent_self_register", "success", f"Self-registered agent '{clean_callsign}' (token held for supervisor delivery)")
@@ -1084,7 +1085,7 @@ class ChatHub:
             if not self.storage.v3.authorize(closer_p, "manage_poll", {"creator_id": p_current.get("creator_id")}):
                 raise PermissionError("Apenas o criador da votação ou um administrador pode encerrá-la.")
             role_to_use = closer_p.get("kind", "human")
-            tok_to_use = ""
+            tok_to_use = member_token if role_to_use == "agent" else ""
             ht_to_use = self.human_token if role_to_use == "human" else ""
             poll = self.storage.v3.close_poll(poll_id, closer_name_or_id=closer_p["id"])
         else:
@@ -1116,7 +1117,7 @@ class ChatHub:
         else:
             results_str = "\n".join(f"- {opt['text']}: **{opt['votes']} votos ({opt['percentage']}%)**" for opt in poll["options"])
 
-        sender_to_use = (closer_p.get("display_name") or closer_p.get("name")) if is_v3 and closer_p else closer
+        sender_to_use = (closer_p.get("name") or closer) if is_v3 and closer_p else closer
 
         await self.send_message(
             room_name=poll["room_name"],
@@ -1484,7 +1485,7 @@ class ChatHub:
         self,
         principal_or_agent: dict[str, Any] | int | str = "",
         timeout_seconds: float = 600.0,
-        ack: int = 0,
+        ack: int | str | None = None,
         format: str = "json",
         room: str = "",
         on_progress: Any = None,
@@ -1495,9 +1496,10 @@ class ChatHub:
         - Manages liveliness (listening_now = 1 while waiting, 0 when leaving).
         - If previously stalled, emits recovery message '✅ @{callsign} voltou a escutar.'
         - Handles reliable delivery via ACK confirmation.
-        - If unconfirmed batch exists and not acked, redelivers with redelivered=True.
+        - Implicit confirmation: subsequent wait confirms previously delivered batch within 30 min.
+        - Redelivers unconfirmed batch only if agent failed to wait within 30 minutes.
         - If timeout_seconds=0, performs immediate check without suspending.
-        - Formats payload as JSON or plaintext.
+        - Formats payload as JSON or plaintext with opaque batch_id.
         """
         if not principal_or_agent:
             principal_or_agent = kwargs.get("agent_name", "") or kwargs.get("agent", "")
@@ -1553,11 +1555,14 @@ class ChatHub:
                     except Exception:
                         pass
 
-        if ack > 0 and is_agent:
+        if is_agent and ack is not None and str(ack).strip() not in ("", "0"):
             self.storage.v3.confirm_batch(pid, ack_id=ack)
 
         def _build_payload(msgs: list[dict[str, Any]], redelivered: bool, is_timeout: bool = False) -> dict[str, Any] | str:
-            batch_id = max((m["id"] for m in msgs), default=0)
+            batch_id = f"batch_{callsign}_{uuid.uuid4().hex[:10]}" if msgs else ""
+            if is_agent and msgs and not redelivered:
+                self.storage.v3.set_unconfirmed_batch(pid, [m["id"] for m in msgs], batch_id=batch_id)
+
             target_room = msgs[0]["room_name"] if msgs else (room or "geral")
 
             role_reminder = None
@@ -1603,7 +1608,7 @@ class ChatHub:
             data = {
                 "status": status_str,
                 "work_status": "timeout" if is_timeout else "work_available",
-                "batch_id": batch_id,
+                "batch_id": batch_id or None,
                 "redelivered": redelivered,
                 "count": len(msgs),
                 "messages": msgs,
@@ -1632,18 +1637,35 @@ class ChatHub:
                             m_content = m_content[:117] + "..."
                         lines.append(f"- [Msg #{m['id']} de {m_sender} em #{m_room}]: {m_content}")
                 lines.append(f"Ação seguinte: {next_action}")
-                if batch_id > 0:
+                if batch_id:
                     lines.append(f"Batch ID: {batch_id} (confirma com ack={batch_id})")
                 return "\n".join(lines)
 
             return data
 
         if is_agent:
-            unconfirmed_ids = self.storage.v3.get_unconfirmed_batch(pid)
+            unconfirmed_info = self.storage.v3.get_unconfirmed_batch_info(pid)
+            unconfirmed_ids = unconfirmed_info.get("message_ids", [])
             if unconfirmed_ids:
-                re_msgs = self.storage.v3.get_messages_by_ids(unconfirmed_ids)
-                if re_msgs:
-                    return _build_payload(re_msgs, redelivered=True, is_timeout=False)
+                delivered_at = unconfirmed_info.get("delivered_at")
+                now = datetime.now(timezone.utc)
+                deliv_dt = None
+                if delivered_at:
+                    try:
+                        deliv_dt = datetime.fromisoformat(delivered_at.replace("Z", "+00:00"))
+                    except Exception:
+                        pass
+                age = (now - deliv_dt).total_seconds() if deliv_dt else 0.0
+
+                # Implicit confirmation: if agent returns to wait within 30 minutes (< 1800s),
+                # the new wait implicitly confirms the previous batch.
+                # Redelivery only occurs if the agent failed to wait within the 30m window (age >= 1800s).
+                if age < 1800.0:
+                    self.storage.v3.confirm_batch(pid)
+                else:
+                    re_msgs = self.storage.v3.get_messages_by_ids(unconfirmed_ids)
+                    if re_msgs:
+                        return _build_payload(re_msgs, redelivered=True, is_timeout=False)
 
         def _scan_work() -> list[dict[str, Any]]:
             accessible_rooms = self.storage.v3.list_rooms_for_principal(principal)
@@ -1664,8 +1686,6 @@ class ChatHub:
 
         immediate = _scan_work()
         if immediate:
-            if is_agent:
-                self.storage.v3.set_unconfirmed_batch(pid, [m["id"] for m in immediate])
             return _build_payload(immediate, redelivered=False, is_timeout=False)
 
         if effective_timeout <= 0:
@@ -1716,8 +1736,6 @@ class ChatHub:
 
                 new_work = _scan_work()
                 if new_work:
-                    if is_agent:
-                        self.storage.v3.set_unconfirmed_batch(pid, [m["id"] for m in new_work])
                     return _build_payload(new_work, redelivered=False, is_timeout=False)
 
         finally:
@@ -1752,7 +1770,12 @@ class ChatHub:
             room_name = st["room_name"]
 
             humans = self.storage.v3.get_room_humans(room_id)
-            human_targets = [f"@{h['name']}" for h in humans] if humans else []
+            if not humans:
+                all_humans = self.storage.v3.list_humans() if hasattr(self.storage.v3, "list_humans") else []
+                humans = [h for h in all_humans if h.get("kind") in (None, "human")]
+            human_targets = [f"@{h['name']}" for h in humans if h.get("name")]
+            if not human_targets:
+                continue
             msg_text = (
                 f"⚠️ @{callsign} não está a escutar e tem {unread_count} "
                 f"{'mensagem' if unread_count == 1 else 'mensagens'} por ler há {unread_m}m "
@@ -2696,6 +2719,7 @@ class ChatHub:
         member_token: str = "",
         human_token: str = "",
         password: str = "",
+        force: bool = False,
     ) -> dict[str, Any]:
         """Deletes a calendar event and broadcasts to room."""
         existing = self.storage.get_calendar_event_by_id(event_id)

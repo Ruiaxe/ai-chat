@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import secrets
 import sys
+import threading
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -23,7 +25,15 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 import edge_tts
 
 from aichat.config import STATIC_DIR
-from aichat.mcp_server import current_auth_token, current_principal, hub, mcp
+from aichat.mcp_server import (
+    current_auth_token,
+    current_principal,
+    current_client_ip,
+    check_register_rate_limit,
+    reset_register_rate_limits,
+    hub,
+    mcp,
+)
 
 INDEX_HTML = STATIC_DIR / "index.html"
 ADMIN_HTML = STATIC_DIR / "admin.html"
@@ -189,6 +199,14 @@ class V3AuthenticationMiddleware:
             return
 
         headers = Headers(scope=scope)
+        client_ip = "127.0.0.1"
+        xff = headers.get("x-forwarded-for")
+        if xff:
+            client_ip = xff.split(",")[0].strip()
+        elif scope.get("client"):
+            client_ip = scope["client"][0]
+        current_client_ip.set(client_ip)
+
         auth_header = headers.get("authorization", "").strip()
         bearer_tok = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
 
@@ -271,19 +289,6 @@ class V3AuthenticationMiddleware:
                                 "must_change_password": True,
                             },
                             status_code=403,
-                        )
-                        await response(scope, receive, send)
-                        return
-            else:
-                # In v3 HTTP mode: MCP endpoints (/sse, /messages) require authentication immediately
-                if scope["type"] == "http":
-                    path = scope.get("path", "")
-                    if path in ("/sse", "/messages") or path.startswith("/messages/"):
-                        response = JSONResponse(
-                            {
-                                "error": "Unauthorized: Missing or invalid Authorization header. Pass 'Authorization: Bearer <token>' in connection headers."
-                            },
-                            status_code=401,
                         )
                         await response(scope, receive, send)
                         return
@@ -2154,18 +2159,29 @@ async def endpoint_register_agent(request: Request) -> Response:
 
 async def endpoint_self_register_agent(request: Request) -> Response:
     """Allows an agent or client to self-register with a unique callsign and obtain an agent_token."""
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        client_ip = xff.split(",")[0].strip()
+    if not check_register_rate_limit(client_ip):
+        return JSONResponse(
+            {"status": "error", "error": "Demasiados pedidos de registo. Limite de 5 por hora atingido."},
+            status_code=429,
+        )
+
     try:
         data = await request.json()
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
-    callsign = (data.get("callsign") or "").strip()
+    callsign = (data.get("callsign") or data.get("name") or "").strip()
+    description = (data.get("description") or data.get("role") or "").strip()
     if not callsign:
         return JSONResponse({"error": "callsign is required"}, status_code=400)
 
     try:
-        res = hub.self_register_agent(callsign=callsign)
-        return JSONResponse({"status": "success", "agent": res}, status_code=201)
+        res = hub.self_register_agent(callsign=callsign, description=description)
+        return JSONResponse({"status": "success", "agent": res, **res}, status_code=201)
     except (ValueError, PermissionError) as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
@@ -2503,6 +2519,25 @@ async def endpoint_admin_revoke_agent_token(request: Request) -> Response:
         if not ok:
             return JSONResponse({"error": "Credencial não encontrada ou já revogada"}, status_code=404)
         return JSONResponse({"status": "success", "revoked": True})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+async def endpoint_admin_delete_agent(request: Request) -> Response:
+    """Deletes an agent (including pending registrations) in admin console."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    principal_id = safe_int(request.path_params.get("principal_id"))
+    try:
+        hub.storage.v3.delete_principal(
+            principal_id=principal_id,
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        return JSONResponse({"status": "success", "deleted_id": principal_id})
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=400)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -2905,10 +2940,8 @@ async def endpoint_wake(request: Request) -> Response:
     except (ValueError, TypeError):
         timeout_seconds = 600.0
 
-    try:
-        ack = int(request.query_params.get("ack", 0))
-    except (ValueError, TypeError):
-        ack = 0
+    raw_ack = request.query_params.get("ack")
+    ack = raw_ack.strip() if raw_ack is not None else None
 
     fmt = request.query_params.get("format", "json").strip().lower()
     room = request.query_params.get("room", "").strip()
@@ -3147,6 +3180,7 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
         Route("/api/rooms/{room_name}/presence", endpoint=endpoint_get_presence, methods=["GET"]),
         Route("/api/agents", endpoint=endpoint_list_agents, methods=["GET"]),
         Route("/api/agents/register", endpoint=endpoint_self_register_agent, methods=["POST"]),
+        Route("/api/register", endpoint=endpoint_self_register_agent, methods=["POST"]),
         Route("/api/agents", endpoint=endpoint_register_agent, methods=["POST"]),
         Route("/api/agents/{callsign}", endpoint=endpoint_delete_agent, methods=["DELETE"]),
         Route("/api/agents/{callsign}/rotate", endpoint=endpoint_rotate_agent_token, methods=["POST"]),
@@ -3168,6 +3202,7 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
         Route("/api/admin/agents/{id:int}/approve", endpoint=endpoint_admin_approve_agent, methods=["POST"]),
         Route("/api/admin/agents/{id:int}/wake-profile", endpoint=endpoint_admin_update_agent_wake_profile, methods=["PATCH", "POST"]),
         Route("/api/admin/agents/{principal_id:int}", endpoint=endpoint_admin_update_agent, methods=["PATCH", "PUT"]),
+        Route("/api/admin/agents/{principal_id:int}", endpoint=endpoint_admin_delete_agent, methods=["DELETE"]),
         Route("/api/admin/agents/{principal_id:int}/rotate-token", endpoint=endpoint_admin_rotate_agent_token, methods=["POST"]),
         Route("/api/admin/agents/{principal_id:int}/revoke-token", endpoint=endpoint_admin_revoke_agent_token, methods=["POST"]),
         Route("/api/admin/rooms", endpoint=endpoint_admin_list_rooms, methods=["GET"]),
