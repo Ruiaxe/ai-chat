@@ -15,10 +15,11 @@ import sys
 from pathlib import Path
 
 from aichat.config import DATA_DIR
+from aichat.crypto import hash_password
 from aichat.storage_v3 import StorageV3, DEFAULT_V3_DB
 
 
-def _get_storage(db_arg: str | None) -> StorageV3:
+def _get_storage(db_arg: str | None, require_exists: bool = True) -> StorageV3:
     if db_arg:
         p = Path(db_arg).resolve()
     else:
@@ -32,11 +33,16 @@ def _get_storage(db_arg: str | None) -> StorageV3:
             p = DATA_DIR / "chat.db"
         else:
             p = DEFAULT_V3_DB
+
+    if require_exists and (not p.exists() or p.stat().st_size == 0):
+        print(f"Erro: A base de dados não existe em '{p}'. Este comando exige uma base de dados existente.", file=sys.stderr)
+        sys.exit(1)
+
     return StorageV3(p)
 
 
 def cmd_create_admin(args: argparse.Namespace) -> int:
-    st = _get_storage(args.db)
+    st = _get_storage(args.db, require_exists=False)
     username = args.username.strip()
     if not username:
         print("Erro: O nome de utilizador (--username) não pode estar vazio.", file=sys.stderr)
@@ -278,6 +284,134 @@ def cmd_revoke_room(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_reset_password(args: argparse.Namespace) -> int:
+    st = _get_storage(args.db)
+    username = args.username.strip()
+    if not username:
+        print("Erro: O nome de utilizador (--username) não pode estar vazio.", file=sys.stderr)
+        return 1
+
+    p = st.get_principal_by_name(username)
+    if not p or p.get("kind") != "human":
+        print(f"Erro: Utilizador humano '{username}' não encontrado.", file=sys.stderr)
+        return 1
+
+    if args.password:
+        pwd = args.password
+    else:
+        def _prompt_pwd(prompt: str) -> str:
+            if not sys.stdin.isatty():
+                return sys.stdin.readline().rstrip("\r\n")
+            return getpass.getpass(prompt)
+
+        pwd1 = _prompt_pwd(f"Nova palavra-passe para o utilizador '{username}': ")
+        if not pwd1 or len(pwd1) < 8:
+            print("Erro: A palavra-passe deve conter pelo menos 8 caracteres.", file=sys.stderr)
+            return 1
+        pwd2 = _prompt_pwd("Confirme a nova palavra-passe: ")
+        if pwd1 != pwd2:
+            print("Erro: As palavras-passe não coincidem.", file=sys.stderr)
+            return 1
+        pwd = pwd1
+
+    new_hash = hash_password(pwd)
+    must_change = 1 if args.must_change else 0
+    conn = st._get_connection()
+    with conn:
+        conn.execute(
+            """
+            UPDATE humans
+            SET password_hash = ?, failed_logins = 0, locked_until = NULL, must_change_password = ?
+            WHERE principal_id = ?;
+            """,
+            (new_hash, must_change, p["id"]),
+        )
+
+    st.log_audit(
+        actor_id=None,
+        actor_name="cli",
+        action="reset_password",
+        target_type="principal",
+        target_id=p["id"],
+        details=f"Palavra-passe redefinida via CLI para {username} (must_change={bool(args.must_change)})",
+    )
+    change_note = " (alteração obrigatória no próximo login)" if must_change else ""
+    print(f"Sucesso: Palavra-passe de '{username}' redefinida com sucesso. Bloqueio por tentativas falhadas limpo{change_note}.")
+    return 0
+
+
+def cmd_list_rooms(args: argparse.Namespace) -> int:
+    st = _get_storage(args.db)
+    rooms = st.list_rooms(include_archived=True)
+    if not rooms:
+        print("Nenhuma sala encontrada.")
+        return 0
+
+    if not args.all:
+        rooms = [r for r in rooms if not r.get("is_archived")]
+
+    print(f"{'ID':<4} {'Nome':<22} {'Estado':<10} {'Membros':<8} {'Mensagens':<10} {'Tópico'}")
+    print("-" * 80)
+    for r in rooms:
+        status_str = "arquivada" if r.get("is_archived") else "ativa"
+        members = r.get("member_count", 0)
+        messages = r.get("message_count", 0)
+        topic = (r.get("topic") or "")[:35]
+        print(f"{r['id']:<4} {r['name']:<22} {status_str:<10} {members:<8} {messages:<10} {topic}")
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    st = _get_storage(args.db)
+    from aichat.storage import check_schema_version
+
+    p = st.db_path
+    size_bytes = p.stat().st_size
+    size_str = f"{size_bytes / 1024:.1f} KB" if size_bytes < 1024 * 1024 else f"{size_bytes / (1024 * 1024):.2f} MB"
+    schema_v = check_schema_version(p)
+
+    conn = st._get_connection()
+    # Humans
+    h_admins = conn.execute("SELECT COUNT(*) FROM humans WHERE access_role = 'admin';").fetchone()[0]
+    h_users = conn.execute("SELECT COUNT(*) FROM humans WHERE access_role = 'user';").fetchone()[0]
+    h_locked = conn.execute("SELECT COUNT(*) FROM humans WHERE locked_until IS NOT NULL AND locked_until > datetime('now');").fetchone()[0]
+
+    # Agents
+    a_active = conn.execute("SELECT COUNT(*) FROM principals p JOIN agents a ON p.id = a.principal_id WHERE p.status = 'active';").fetchone()[0]
+    a_inactive = conn.execute("SELECT COUNT(*) FROM principals p JOIN agents a ON p.id = a.principal_id WHERE p.status = 'inactive';").fetchone()[0]
+    a_pending = conn.execute("SELECT COUNT(*) FROM principals p JOIN agents a ON p.id = a.principal_id WHERE p.status = 'pending';").fetchone()[0]
+    a_system = conn.execute("SELECT COUNT(*) FROM principals p JOIN agents a ON p.id = a.principal_id WHERE p.is_system = 1;").fetchone()[0]
+
+    # Rooms
+    r_active = conn.execute("SELECT COUNT(*) FROM rooms WHERE is_archived = 0;").fetchone()[0]
+    r_archived = conn.execute("SELECT COUNT(*) FROM rooms WHERE is_archived = 1;").fetchone()[0]
+
+    # Messages
+    m_count = conn.execute("SELECT COUNT(*) FROM messages;").fetchone()[0]
+
+    # Tasks
+    t_count = conn.execute("SELECT COUNT(*) FROM tasks;").fetchone()[0]
+
+    # Audit log
+    audit_count = conn.execute("SELECT COUNT(*) FROM audit_log;").fetchone()[0]
+
+    print("\n" + "=" * 65)
+    print(" ESTADO DO SISTEMA & BASE DE DADOS (ai-chat v3)")
+    print("=" * 65)
+    print(f" Ficheiro SQLite:      {p}")
+    print(f" Tamanho do ficheiro:  {size_str}")
+    print(f" Versão do esquema:    v{schema_v or '?'}")
+    print("-" * 65)
+    print(f" Utilizadores Humanos: {h_admins + h_users} (Admins: {h_admins}, Normais: {h_users}, Bloqueados: {h_locked})")
+    print(f" Agentes Registados:   {a_active + a_inactive + a_pending} (Ativos: {a_active}, Inativos: {a_inactive}, Pendentes: {a_pending}, Sistema: {a_system})")
+    print(f" Salas:                {r_active + r_archived} (Ativas: {r_active}, Arquivadas: {r_archived})")
+    print(f" Mensagens Totais:     {m_count}")
+    print(f" Tarefas Totais:       {t_count}")
+    print(f" Registos Auditoria:   {audit_count}")
+    print("=" * 65 + "\n")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="python -m aichat.cli",
@@ -291,6 +425,13 @@ def main() -> int:
     p_admin.add_argument("--username", "-u", required=True, help="Nome de utilizador do administrador.")
     p_admin.add_argument("--display-name", "-d", default=None, help="Nome visível do administrador.")
     p_admin.set_defaults(func=cmd_create_admin)
+
+    # reset-password
+    p_reset_pwd = subparsers.add_parser("reset-password", help="Redefinir a palavra-passe de um utilizador humano.")
+    p_reset_pwd.add_argument("--username", "-u", required=True, help="Nome de utilizador a redefinir.")
+    p_reset_pwd.add_argument("--must-change", action="store_true", help="Forçar alteração de palavra-passe no primeiro login.")
+    p_reset_pwd.add_argument("--password", "-p", default=None, help="Nova palavra-passe (se omitida, solicita de forma interativa sem eco).")
+    p_reset_pwd.set_defaults(func=cmd_reset_password)
 
     # create-agent
     p_agent = subparsers.add_parser("create-agent", help="Registar um novo agente e gerar o seu token de API.")
@@ -316,6 +457,15 @@ def main() -> int:
     p_list = subparsers.add_parser("list-principals", help="Listar utilizadores e agentes registados.")
     p_list.add_argument("--kind", "-k", choices=["human", "agent"], default=None, help="Filtrar por tipo.")
     p_list.set_defaults(func=cmd_list_principals)
+
+    # list-rooms
+    p_rooms = subparsers.add_parser("list-rooms", help="Listar salas da base de dados com contagens.")
+    p_rooms.add_argument("--all", "-a", action="store_true", help="Incluir salas arquivadas.")
+    p_rooms.set_defaults(func=cmd_list_rooms)
+
+    # status
+    p_status = subparsers.add_parser("status", help="Consultar estado da base de dados, esquema e contagens.")
+    p_status.set_defaults(func=cmd_status)
 
     # grant-room
     p_grant = subparsers.add_parser("grant-room", help="Conceder acesso de uma sala a um humano ou agente.")

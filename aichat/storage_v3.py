@@ -1942,7 +1942,8 @@ class StorageV3:
         conn = self._get_connection()
         query = """
             SELECT r.*,
-                   (SELECT COUNT(*) FROM room_access ra WHERE ra.room_id = r.id) as member_count
+                   (SELECT COUNT(*) FROM room_access ra WHERE ra.room_id = r.id) as member_count,
+                   (SELECT COUNT(*) FROM messages m WHERE m.room_id = r.id) as message_count
             FROM rooms r WHERE 1=1
         """
         if not include_archived:

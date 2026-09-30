@@ -79,6 +79,10 @@
         <i data-lucide="settings" class="w-4 h-4"></i>
         <span>Definições</span>
       </button>
+      <button onclick="switchTab('system')" id="tab-btn-system" class="tab-btn flex items-center space-x-2.5 px-3 py-2 rounded-lg text-xs font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent">
+        <i data-lucide="server" class="w-4 h-4"></i>
+        <span>Sistema</span>
+      </button>
     </aside>
 
     <!-- Main Content Area -->
@@ -193,7 +197,23 @@
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <!-- Room List Sidebar -->
           <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col space-y-3">
-            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400">Salas Disponíveis</h3>
+            <div class="flex items-center justify-between">
+              <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400">Salas</h3>
+              <span id="rooms-count-badge" class="text-[10px] bg-slate-800 text-slate-400 font-mono px-1.5 py-0.5 rounded">0 / 0</span>
+            </div>
+
+            <!-- Search and Filter -->
+            <div class="space-y-2">
+              <div class="relative">
+                <input type="text" id="rooms-search-input" oninput="renderRoomsList()" placeholder="Pesquisar sala..." class="w-full bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500">
+                <i data-lucide="search" class="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-2.5 pointer-events-none"></i>
+              </div>
+              <label class="flex items-center space-x-2 text-xs text-slate-300 cursor-pointer select-none">
+                <input type="checkbox" id="rooms-hide-archived" checked onchange="renderRoomsList()" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0">
+                <span class="text-[11px] text-slate-400">Ocultar arquivadas</span>
+              </label>
+            </div>
+
             <div id="rooms-list-container" class="space-y-1.5 max-h-96 overflow-y-auto pr-1">
               <div class="text-xs text-slate-500 py-4 text-center">A carregar salas...</div>
             </div>
@@ -381,6 +401,95 @@
         </div>
       </section>
 
+      <!-- ================= TAB: SYSTEM ================= -->
+      <section id="tab-system" class="tab-content hidden space-y-6">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+          <div>
+            <h2 class="text-lg font-bold text-white">Estado do Sistema & Diagnóstico</h2>
+            <p class="text-xs text-slate-400">Informações detalhadas sobre a base de dados em uso, versão, tempo de atividade e agentes ligados.</p>
+          </div>
+          <button onclick="loadSystemInfo()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium flex items-center space-x-1.5 transition border border-slate-700 w-fit">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+            <span>Atualizar</span>
+          </button>
+        </div>
+
+        <!-- Warning banner if unexpected DB -->
+        <div id="sys-unexpected-db-banner" class="hidden p-4 rounded-xl bg-rose-500/20 border border-rose-500/50 text-rose-200">
+          <div class="flex items-start space-x-3">
+            <i data-lucide="alert-triangle" class="w-5 h-5 text-rose-400 shrink-0 mt-0.5"></i>
+            <div>
+              <div class="font-bold text-sm text-rose-100">⚠️ ATENÇÃO: A base de dados aberta não é a esperada!</div>
+              <div class="text-xs text-rose-300 mt-1">
+                O servidor está a utilizar a base de dados <code id="sys-warn-actual-db" class="bg-rose-950/80 px-1 py-0.5 rounded font-mono text-white"></code> quando a base de dados esperada por omissão é <code id="sys-warn-expected-db" class="bg-rose-950/80 px-1 py-0.5 rounded font-mono text-white"></code>. Verifique a configuração de arranque.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Info Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <!-- Card: Base de Dados -->
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-2">
+            <div class="flex items-center justify-between text-xs text-slate-400">
+              <span class="font-semibold uppercase tracking-wider text-[10px]">Base de Dados</span>
+              <i data-lucide="database" class="w-4 h-4 text-indigo-400"></i>
+            </div>
+            <div class="font-mono text-xs text-white truncate" id="sys-db-path" title="A carregar...">A carregar...</div>
+            <div class="flex items-center gap-2 pt-1">
+              <span id="sys-db-badge" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Produção</span>
+              <span class="text-[11px] text-slate-400 font-mono">Esquema v<span id="sys-schema-version">?</span></span>
+            </div>
+          </div>
+
+          <!-- Card: Versão & Commit -->
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-2">
+            <div class="flex items-center justify-between text-xs text-slate-400">
+              <span class="font-semibold uppercase tracking-wider text-[10px]">Versão da Aplicação</span>
+              <i data-lucide="git-branch" class="w-4 h-4 text-purple-400"></i>
+            </div>
+            <div class="text-sm font-bold text-white flex items-center gap-2">
+              <span id="sys-version">v3.1</span>
+              <span id="sys-commit" class="font-mono text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300">...</span>
+            </div>
+            <div class="text-[11px] text-slate-400">AI Chat MCP Hub & Web</div>
+          </div>
+
+          <!-- Card: Uptime -->
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-2">
+            <div class="flex items-center justify-between text-xs text-slate-400">
+              <span class="font-semibold uppercase tracking-wider text-[10px]">Tempo de Atividade (Uptime)</span>
+              <i data-lucide="clock" class="w-4 h-4 text-emerald-400"></i>
+            </div>
+            <div class="text-sm font-bold text-white" id="sys-uptime">A carregar...</div>
+            <div class="text-[11px] text-slate-400">Iniciado em <span id="sys-started-at" class="font-mono">--</span></div>
+          </div>
+
+          <!-- Card: Rede & Proxy -->
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-2">
+            <div class="flex items-center justify-between text-xs text-slate-400">
+              <span class="font-semibold uppercase tracking-wider text-[10px]">Rede & Proxy</span>
+              <i data-lucide="shield" class="w-4 h-4 text-cyan-400"></i>
+            </div>
+            <div class="flex items-center gap-2">
+              <span id="sys-proxy-badge" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-300">--</span>
+            </div>
+            <div class="text-[11px] text-slate-400">Conexões ativas / listeners: <strong id="sys-listeners-count" class="text-white font-mono">0</strong></div>
+          </div>
+
+          <!-- Card: Agentes Ligados Agora -->
+          <div class="md:col-span-2 bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-2">
+            <div class="flex items-center justify-between text-xs text-slate-400">
+              <span class="font-semibold uppercase tracking-wider text-[10px]">Agentes Ligados Agora (<span id="sys-connected-agents-count">0</span>)</span>
+              <i data-lucide="bot" class="w-4 h-4 text-emerald-400"></i>
+            </div>
+            <div id="sys-connected-agents-list" class="flex flex-wrap gap-2 pt-1">
+              <span class="text-xs text-slate-500">Nenhum agente ligado neste momento.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
     </main>
   </div>
 
@@ -491,15 +600,15 @@
     </div>
   </div>
 
-  <!-- Modal: Exibir Token Gerado (UMA SÓ VEZ) -->
+  <!-- Modal: Exibir Token Gerado (UMA SÓ VEZ COM SNIPPETS E DESCARTE) -->
   <div id="modal-token-display" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-slate-900 border border-amber-500/40 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-4">
+    <div class="bg-slate-900 border border-amber-500/40 rounded-2xl w-full max-w-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
       <div class="flex items-center space-x-2 text-amber-400">
-        <i data-lucide="alert-triangle" class="w-6 h-6"></i>
+        <i data-lucide="key" class="w-6 h-6"></i>
         <h3 class="text-base font-bold text-white">Token de Agente Gerado</h3>
       </div>
       <p class="text-xs text-slate-300">
-        Copie o token agora. <span class="text-rose-400 font-bold">Por razões de segurança, este token não voltará a ser mostrado</span> nem fica guardado em texto simples na base de dados.
+        Copie o token e os blocos de configuração agora. <span class="text-rose-400 font-bold">Por razões de segurança, este token não voltará a ser mostrado</span> nem fica guardado em texto simples na base de dados. Ao fechar este modal, o token é descartado da memória.
       </p>
       
       <div class="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-2">
@@ -512,41 +621,147 @@
 
       <div class="text-[11px] text-slate-400 bg-slate-800/40 p-3 rounded-lg border border-slate-800">
         <p><strong>Identificador (Hint):</strong> <span id="td-token-hint" class="font-mono text-slate-200"></span></p>
-        <p class="mt-1">Use nos cabeçalhos: <code class="text-indigo-300">Authorization: Bearer &lt;token&gt;</code></p>
+        <p class="mt-1">Use nos cabeçalhos HTTP: <code class="text-indigo-300">Authorization: Bearer &lt;token&gt;</code></p>
+      </div>
+
+      <!-- Config Snippets Tabs -->
+      <div class="space-y-2 pt-2 border-t border-slate-800">
+        <div class="text-xs font-bold text-slate-300">Configuração Pronta para o seu Cliente MCP:</div>
+        <div class="flex space-x-1 border-b border-slate-800 pb-1">
+          <button type="button" onclick="switchTokenSnippetTab('claude')" id="ts-tab-claude" class="px-2.5 py-1 text-xs rounded font-medium bg-indigo-600/20 text-indigo-300 border border-indigo-500/30">Claude Desktop</button>
+          <button type="button" onclick="switchTokenSnippetTab('cline')" id="ts-tab-cline" class="px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800">Cursor / Cline</button>
+          <button type="button" onclick="switchTokenSnippetTab('cli')" id="ts-tab-cli" class="px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800">FastMCP / Terminal</button>
+        </div>
+
+        <div id="ts-content-claude" class="ts-content relative bg-slate-950 border border-slate-800 rounded-xl p-3">
+          <pre id="td-snippet-claude" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
+          <button onclick="copySnippetText('td-snippet-claude', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
+        </div>
+        <div id="ts-content-cline" class="ts-content hidden relative bg-slate-950 border border-slate-800 rounded-xl p-3">
+          <pre id="td-snippet-cline" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
+          <button onclick="copySnippetText('td-snippet-cline', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
+        </div>
+        <div id="ts-content-cli" class="ts-content hidden relative bg-slate-950 border border-slate-800 rounded-xl p-3">
+          <pre id="td-snippet-cli" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
+          <button onclick="copySnippetText('td-snippet-cli', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
+        </div>
       </div>
 
       <div class="flex justify-end pt-2">
-        <button onclick="closeModal('modal-token-display')" class="px-5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold transition">
-          Compreendi e guardei o token
+        <button onclick="closeTokenModal()" class="px-5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold transition">
+          Fechar e Descartar Token da Memória
         </button>
       </div>
     </div>
   </div>
 
-  <!-- Modal: Snippet de Wake-up Universal -->
+  <!-- Modal: Snippet de Wake-up & Configuração do Agente -->
   <div id="modal-wake-snippet" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-slate-900 border border-indigo-500/40 rounded-2xl w-full max-w-xl p-6 shadow-2xl space-y-4">
+    <div class="bg-slate-900 border border-indigo-500/40 rounded-2xl w-full max-w-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
       <div class="flex items-center justify-between">
         <h3 class="text-base font-bold text-white flex items-center gap-2">
           <i data-lucide="code-2" class="w-5 h-5 text-indigo-400"></i>
-          <span id="ws-modal-title">Configuração de Wake-up Universal</span>
+          <span id="ws-modal-title">Configuração do Agente</span>
         </h3>
         <button onclick="closeModal('modal-wake-snippet')" class="text-slate-400 hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
       </div>
       <p class="text-xs text-slate-300">
-        Configuração e comandos recomendados para o agente <strong id="ws-agent-name" class="text-white"></strong>:
+        Configuração recomendada para o agente <strong id="ws-agent-name" class="text-indigo-300"></strong>.
+        <span class="text-slate-400 block mt-0.5">Nota: O token de acesso completo apenas é visível no momento de criação ou rotação. Substitua <code class="text-indigo-300">&lt;SEU_TOKEN_AQUI&gt;</code> pelo token emitido.</span>
       </p>
-      
-      <div class="bg-slate-950 border border-slate-800 rounded-xl p-3.5 overflow-x-auto">
-        <pre id="ws-snippet-code" class="text-xs font-mono text-emerald-400 whitespace-pre-wrap break-all select-all"></pre>
+
+      <div class="space-y-2">
+        <div class="flex space-x-1 border-b border-slate-800 pb-1">
+          <button type="button" onclick="switchWakeTab('claude')" id="ws-tab-claude" class="px-2.5 py-1 text-xs rounded font-medium bg-indigo-600/20 text-indigo-300 border border-indigo-500/30">Claude Desktop</button>
+          <button type="button" onclick="switchWakeTab('cline')" id="ws-tab-cline" class="px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800">Cursor / Cline</button>
+          <button type="button" onclick="switchWakeTab('cli')" id="ws-tab-cli" class="px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800">Terminal / Bridge</button>
+          <button type="button" onclick="switchWakeTab('script')" id="ws-tab-script" class="px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800">Script Wake-up</button>
+        </div>
+
+        <div id="ws-content-claude" class="ws-content relative bg-slate-950 border border-slate-800 rounded-xl p-3">
+          <pre id="ws-code-claude" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
+          <button onclick="copySnippetText('ws-code-claude', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
+        </div>
+        <div id="ws-content-cline" class="ws-content hidden relative bg-slate-950 border border-slate-800 rounded-xl p-3">
+          <pre id="ws-code-cline" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
+          <button onclick="copySnippetText('ws-code-cline', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
+        </div>
+        <div id="ws-content-cli" class="ws-content hidden relative bg-slate-950 border border-slate-800 rounded-xl p-3">
+          <pre id="ws-code-cli" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
+          <button onclick="copySnippetText('ws-code-cli', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
+        </div>
+        <div id="ws-content-script" class="ws-content hidden relative bg-slate-950 border border-slate-800 rounded-xl p-3">
+          <pre id="ws-code-script" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
+          <button onclick="copySnippetText('ws-code-script', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
+        </div>
       </div>
 
-      <div class="flex justify-end space-x-2 pt-1">
+      <div class="flex justify-end pt-1">
         <button type="button" onclick="closeModal('modal-wake-snippet')" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition">Fechar</button>
-        <button onclick="copyWakeSnippet()" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition">
-          <i data-lucide="copy" class="w-3.5 h-3.5"></i>
-          <span id="ws-copy-btn-text">Copiar</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Salas do Agente (Vista por Agente) -->
+  <div id="modal-agent-rooms" class="fixed inset-0 bg-black/70 backdrop-blur-xs z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl p-6 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
+      <div class="flex items-center justify-between pb-2 border-b border-slate-800">
+        <div>
+          <h3 class="text-base font-bold text-white flex items-center gap-2">
+            <i data-lucide="door-open" class="w-5 h-5 text-indigo-400"></i>
+            <span>Salas do Agente: <span id="ar-agent-name" class="text-indigo-300"></span></span>
+          </h3>
+          <p class="text-xs text-slate-400">Gira todas as salas a que este agente tem acesso, os seus papéis específicos e permissões.</p>
+        </div>
+        <button onclick="closeModal('modal-agent-rooms')" class="text-slate-400 hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+      </div>
+
+      <!-- Add to new room section -->
+      <div class="bg-slate-950/60 border border-slate-800 rounded-xl p-3 flex flex-col sm:flex-row items-stretch sm:items-end gap-2 text-xs">
+        <input type="hidden" id="ar-agent-id">
+        <div class="flex-1">
+          <label class="block text-[10px] uppercase font-semibold text-slate-400 mb-1">Adicionar a Nova Sala</label>
+          <select id="ar-add-room-select" class="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-indigo-500">
+            <option value="">A carregar salas disponíveis...</option>
+          </select>
+        </div>
+        <div class="w-full sm:w-44">
+          <label class="block text-[10px] uppercase font-semibold text-slate-400 mb-1">Papel na Sala</label>
+          <select id="ar-add-role-select" class="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-indigo-500">
+            <option value="">Papel por defeito</option>
+          </select>
+        </div>
+        <div class="w-full sm:w-36">
+          <label class="block text-[10px] uppercase font-semibold text-slate-400 mb-1">Permissão</label>
+          <select id="ar-add-perm-select" class="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-white focus:outline-none focus:border-indigo-500">
+            <option value="1">Leitura e Escrita</option>
+            <option value="0">Observador</option>
+          </select>
+        </div>
+        <button onclick="handleAddAgentToRoom()" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition shrink-0">
+          Adicionar
         </button>
+      </div>
+
+      <!-- Agent's Rooms Table -->
+      <div class="flex-1 overflow-y-auto">
+        <table class="w-full text-left text-xs text-slate-300">
+          <thead class="bg-slate-800/40 text-slate-400 uppercase font-semibold text-[10px] tracking-wider border-b border-slate-800">
+            <tr>
+              <th class="py-2.5 px-3">Sala</th>
+              <th class="py-2.5 px-3">Papel na Sala</th>
+              <th class="py-2.5 px-3">Permissão</th>
+              <th class="py-2.5 px-3 text-right">Ações</th>
+            </tr>
+          </thead>
+          <tbody id="agent-rooms-table-body" class="divide-y divide-slate-800/60">
+            <tr><td colspan="4" class="py-6 text-center text-slate-500">A carregar salas do agente...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="flex justify-end pt-2 border-t border-slate-800">
+        <button type="button" onclick="closeModal('modal-agent-rooms')" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition text-xs">Fechar</button>
       </div>
     </div>
   </div>
@@ -770,6 +985,26 @@
       if (tabId === 'roles') loadRoles();
       if (tabId === 'audit') loadAuditLog();
       if (tabId === 'settings') loadSettings();
+      if (tabId === 'system') loadSystemInfo();
+    }
+
+    function formatRelativeTime(isoStr) {
+      if (!isoStr) return 'nunca';
+      try {
+        const d = new Date(isoStr.replace(' ', 'T'));
+        const now = new Date();
+        const diffSec = Math.floor((now - d) / 1000);
+        if (isNaN(diffSec) || diffSec < 0) return 'agora';
+        if (diffSec < 60) return `há ${diffSec}s`;
+        const diffMin = Math.floor(diffSec / 60);
+        if (diffMin < 60) return `há ${diffMin}m`;
+        const diffHours = Math.floor(diffMin / 60);
+        if (diffHours < 24) return `há ${diffHours}h`;
+        const diffDays = Math.floor(diffHours / 24);
+        return `há ${diffDays}d`;
+      } catch (e) {
+        return 'nunca';
+      }
     }
 
     // --- Alerts ---
@@ -1042,6 +1277,8 @@
             : `<span class="px-2 py-0.5 rounded text-[10px] font-medium ${isActive ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}">${isActive ? 'Ativo' : 'Inativo'}</span>`;
 
           const livBadge = a.liveliness?.state_badge || '⚫ offline';
+          const unreadCount = a.liveliness?.unread_directed_count || 0;
+          const lastAct = formatRelativeTime(a.last_activity_at || a.liveliness?.last_activity_at);
           const curHarness = a.harness || 'claude-code';
           const curWakeMode = a.wake_mode || 'hook';
 
@@ -1060,8 +1297,12 @@
               </span>
             </td>
             <td class="py-3 px-4">
-              <div>${statusBadge}</div>
-              <div class="text-[10px] font-mono text-slate-400 mt-1">${escapeHtml(livBadge)}</div>
+              <div class="flex items-center gap-1.5 flex-wrap">
+                ${statusBadge}
+                ${unreadCount > 0 ? `<span class="bg-amber-500/20 text-amber-300 font-mono text-[10px] px-1.5 py-0.5 rounded font-bold">${unreadCount} por ler</span>` : ''}
+              </div>
+              <div class="text-[10px] font-mono text-slate-300 mt-1">${escapeHtml(livBadge)}</div>
+              <div class="text-[10px] text-slate-400 mt-0.5">Atividade: <span class="text-slate-300">${lastAct}</span></div>
             </td>
             <td class="py-3 px-4">
               <div class="flex items-center gap-1.5 flex-wrap">
@@ -1094,8 +1335,11 @@
                   Rejeitar
                 </button>
               ` : `
-                <button onclick="rotateAgentToken(${a.id})" title="Rodar Token" class="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-medium transition">
-                  Rodar Token
+                <button onclick="openAgentRoomsModal(${a.id}, '${escapeHtml(a.name)}')" title="Gerir Salas do Agente" class="px-2 py-1 rounded bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 text-[10px] font-medium transition">
+                  Salas
+                </button>
+                <button onclick="rotateAgentToken(${a.id}, '${escapeHtml(a.name)}')" title="Rodar Token" class="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-medium transition">
+                  Rodar
                 </button>
                 ${activeCreds.length > 0 ? `
                   <button onclick="revokeAgentToken(${a.id}, '${activeCreds[0].token_hint}')" title="Revogar Token Atual" class="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
@@ -1139,7 +1383,7 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro ao aprovar agente');
         showAlert(`Agente '${name}' aprovado com sucesso!`);
-        showGeneratedToken(data.token, data.token_hint);
+        showGeneratedToken(data.token, data.token_hint, name);
         loadAgents();
       } catch (err) {
         showAlert(err.message, true);
@@ -1164,56 +1408,56 @@
 
     function openWakeSnippetModal(agentName, harness, wakeMode) {
       const nameEl = document.getElementById('ws-agent-name');
-      const codeEl = document.getElementById('ws-snippet-code');
-      const copyBtn = document.getElementById('ws-copy-btn-text');
       if (nameEl) nameEl.textContent = `@${agentName} (${harness} / ${wakeMode})`;
-      if (copyBtn) copyBtn.textContent = 'Copiar';
 
-      let snippet = '';
+      const snippets = buildMcpSnippets('<SEU_TOKEN_AQUI>', agentName);
+      const codeClaude = document.getElementById('ws-code-claude');
+      if (codeClaude) codeClaude.textContent = snippets.claudeConfig;
+
+      const codeCline = document.getElementById('ws-code-cline');
+      if (codeCline) codeCline.textContent = snippets.clineConfig;
+
+      const codeCli = document.getElementById('ws-code-cli');
+      if (codeCli) codeCli.textContent = snippets.cliCmd;
+
+      let wakeScript = '';
       if (harness === 'claude-code') {
         if (wakeMode === 'hook') {
-          snippet = `# Configurar no Claude Code (.claude.json ou terminal):
-export AICHAT_AGENT_TOKEN="<COPIAR_TOKEN_DO_AGENTE>"
+          wakeScript = `# Configurar no Claude Code (.claude.json ou terminal):
+export AICHAT_AGENT_TOKEN="<SEU_TOKEN_AQUI>"
 export AICHAT_ROOM="geral"
 
 # Script cliente universal como hook de paragem:
 python tools/aichat-wait.py --hook claude-code --room geral`;
         } else if (wakeMode === 'background') {
-          snippet = `# Em segundo plano (background daemon):
-export AICHAT_AGENT_TOKEN="<COPIAR_TOKEN_DO_AGENTE>"
+          wakeScript = `# Em segundo plano (background daemon):
+export AICHAT_AGENT_TOKEN="<SEU_TOKEN_AQUI>"
 python tools/aichat-wait.py --room geral --format json`;
         } else {
-          snippet = `# Chamada MCP direta:
+          wakeScript = `# Chamada MCP direta:
 wait_for_work(timeout_seconds=600, ack=0)`;
         }
       } else if (harness === 'antigravity') {
-        if (wakeMode === 'tool') {
-          snippet = `# No Antigravity, chamar MCP:
-wait_for_work(timeout_seconds=600, ack=0)`;
-        } else {
-          snippet = `# No Antigravity via script universal:
+        wakeScript = `# No Antigravity via MCP:
+wait_for_work(timeout_seconds=600, ack=0)
+
+# Ou script universal:
 python tools/aichat-wait.py --room geral --timeout 600`;
-        }
       } else if (harness === 'opencode') {
-        snippet = `# No OpenCode:
-export AICHAT_AGENT_TOKEN="<COPIAR_TOKEN_DO_AGENTE>"
+        wakeScript = `# No OpenCode:
+export AICHAT_AGENT_TOKEN="<SEU_TOKEN_AQUI>"
 python tools/aichat-wait.py --hook opencode --room geral`;
       } else {
-        snippet = `# Cliente universal para qualquer harness:
-python tools/aichat-wait.py --url "http://localhost:8000" --token "<TOKEN>" --room geral --timeout 600`;
+        wakeScript = `# Cliente universal para qualquer harness:
+python tools/aichat-wait.py --url "${window.location.origin}" --token "<SEU_TOKEN_AQUI>" --room geral --timeout 600`;
       }
 
-      if (codeEl) codeEl.textContent = snippet;
+      const codeScript = document.getElementById('ws-code-script');
+      if (codeScript) codeScript.textContent = wakeScript;
+
+      switchWakeTab('claude');
       openModal('modal-wake-snippet');
     }
-
-    function copyWakeSnippet() {
-      const codeEl = document.getElementById('ws-snippet-code');
-      if (!codeEl) return;
-      navigator.clipboard.writeText(codeEl.textContent).then(() => {
-        const copyBtn = document.getElementById('ws-copy-btn-text');
-        if (copyBtn) {
-          copyBtn.textContent = 'Copiado!';
           setTimeout(() => { copyBtn.textContent = 'Copiar'; }, 2500);
         }
       });
@@ -1290,15 +1534,15 @@ python tools/aichat-wait.py --url "http://localhost:8000" --token "<TOKEN>" --ro
         if (!res.ok) throw new Error(data.error || 'Erro ao criar agente');
         closeModal('modal-create-agent');
         
-        // Show plain token ONCE
-        showGeneratedToken(data.token, data.token_hint);
+        // Show plain token ONCE with copyable client snippets
+        showGeneratedToken(data.token, data.token_hint, callsign);
         loadAgents();
       } catch (err) {
         showAlert(err.message, true);
       }
     }
 
-    async function rotateAgentToken(agentId) {
+    async function rotateAgentToken(agentId, agentName = '') {
       if (!confirm('Deseja gerar um novo token para este agente? O token anterior será revogado.')) return;
       try {
         const res = await fetch(`/api/admin/agents/${agentId}/rotate-token`, {
@@ -1308,7 +1552,7 @@ python tools/aichat-wait.py --url "http://localhost:8000" --token "<TOKEN>" --ro
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro ao rodar token');
-        showGeneratedToken(data.token, data.token_hint);
+        showGeneratedToken(data.token, data.token_hint, agentName);
         loadAgents();
       } catch (err) {
         showAlert(err.message, true);
@@ -1348,49 +1592,462 @@ python tools/aichat-wait.py --url "http://localhost:8000" --token "<TOKEN>" --ro
       }
     }
 
-    function showGeneratedToken(token, hint) {
+    // --- Snippets & Token Disposal (Security Rule: Discard immediately on close) ---
+    function buildMcpSnippets(token, agentName = 'agente') {
+      const origin = window.location.origin;
+      const sseUrl = `${origin}/sse`;
+      const tokenVal = token || '<SEU_TOKEN_AQUI>';
+
+      const claudeConfig = JSON.stringify({
+        "mcpServers": {
+          "aichat": {
+            "command": "python",
+            "args": ["bridge_stdio.py"],
+            "env": {
+              "AICHAT_AGENT_TOKEN": tokenVal,
+              "AICHAT_ROOM": "geral"
+            }
+          }
+        }
+      }, null, 2);
+
+      const clineConfig = JSON.stringify({
+        "mcpServers": {
+          "aichat": {
+            "url": sseUrl,
+            "headers": {
+              "Authorization": `Bearer ${tokenVal}`
+            }
+          }
+        }
+      }, null, 2);
+
+      const cliCmd = `# FastMCP CLI:
+fastmcp run "${sseUrl}" --header "Authorization: Bearer ${tokenVal}"
+
+# Ou via linha de comandos com aichat-wait:
+export AICHAT_AGENT_TOKEN="${tokenVal}"
+export AICHAT_ROOM="geral"
+python tools/aichat-wait.py --room geral`;
+
+      return { claudeConfig, clineConfig, cliCmd };
+    }
+
+    function showGeneratedToken(token, hint, agentName = '') {
       document.getElementById('td-token-value').textContent = token;
-      document.getElementById('td-token-hint').textContent = hint;
-      document.getElementById('td-copy-btn-text').textContent = 'Copiar';
+      document.getElementById('td-token-hint').textContent = hint || (token ? token.slice(-4) : '');
+      const copyBtn = document.getElementById('td-copy-btn-text');
+      if (copyBtn) copyBtn.textContent = 'Copiar';
+
+      const snippets = buildMcpSnippets(token, agentName);
+      const sClaude = document.getElementById('td-snippet-claude');
+      if (sClaude) sClaude.textContent = snippets.claudeConfig;
+      const sCline = document.getElementById('td-snippet-cline');
+      if (sCline) sCline.textContent = snippets.clineConfig;
+      const sCli = document.getElementById('td-snippet-cli');
+      if (sCli) sCli.textContent = snippets.cliCmd;
+
+      switchTokenSnippetTab('claude');
       openModal('modal-token-display');
+    }
+
+    function closeTokenModal() {
+      // Secure discard: clear token and snippet content completely from DOM and memory
+      const tv = document.getElementById('td-token-value');
+      if (tv) tv.textContent = '';
+      const sc = document.getElementById('td-snippet-claude');
+      if (sc) sc.textContent = '';
+      const scline = document.getElementById('td-snippet-cline');
+      if (scline) scline.textContent = '';
+      const scli = document.getElementById('td-snippet-cli');
+      if (scli) scli.textContent = '';
+      const hint = document.getElementById('td-token-hint');
+      if (hint) hint.textContent = '';
+
+      closeModal('modal-token-display');
     }
 
     function copyGeneratedToken() {
       const val = document.getElementById('td-token-value').textContent;
+      if (!val) return;
       navigator.clipboard.writeText(val).then(() => {
-        document.getElementById('td-copy-btn-text').textContent = 'Copiado!';
-        setTimeout(() => document.getElementById('td-copy-btn-text').textContent = 'Copiar', 2500);
+        const copyBtn = document.getElementById('td-copy-btn-text');
+        if (copyBtn) {
+          copyBtn.textContent = 'Copiado!';
+          setTimeout(() => { copyBtn.textContent = 'Copiar'; }, 2500);
+        }
       });
     }
 
+    function switchTokenSnippetTab(tab) {
+      ['claude', 'cline', 'cli'].forEach(t => {
+        const btn = document.getElementById(`ts-tab-${t}`);
+        const content = document.getElementById(`ts-content-${t}`);
+        if (btn) {
+          btn.className = (t === tab)
+            ? 'px-2.5 py-1 text-xs rounded font-medium bg-indigo-600/20 text-indigo-300 border border-indigo-500/30'
+            : 'px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800';
+        }
+        if (content) {
+          if (t === tab) content.classList.remove('hidden');
+          else content.classList.add('hidden');
+        }
+      });
+    }
+
+    function switchWakeTab(tab) {
+      ['claude', 'cline', 'cli', 'script'].forEach(t => {
+        const btn = document.getElementById(`ws-tab-${t}`);
+        const content = document.getElementById(`ws-content-${t}`);
+        if (btn) {
+          btn.className = (t === tab)
+            ? 'px-2.5 py-1 text-xs rounded font-medium bg-indigo-600/20 text-indigo-300 border border-indigo-500/30'
+            : 'px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800';
+        }
+        if (content) {
+          if (t === tab) content.classList.remove('hidden');
+          else content.classList.add('hidden');
+        }
+      });
+    }
+
+    function copySnippetText(elId, btnEl) {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      navigator.clipboard.writeText(el.textContent).then(() => {
+        const origText = btnEl ? btnEl.textContent : 'Copiar';
+        if (btnEl) btnEl.textContent = 'Copiado!';
+        setTimeout(() => { if (btnEl) btnEl.textContent = origText; }, 2500);
+      });
+    }
+
+    // ================= AGENT ROOMS LOGIC (Vista por Agente) =================
+    async function openAgentRoomsModal(agentId, agentName) {
+      document.getElementById('ar-agent-id').value = agentId;
+      document.getElementById('ar-agent-name').textContent = `@${agentName}`;
+      await loadAgentRooms(agentId);
+      openModal('modal-agent-rooms');
+    }
+
+    async function loadAgentRooms(agentId) {
+      try {
+        const res = await fetch(`/api/admin/agents/${agentId}/rooms`);
+        if (!res.ok) throw new Error('Falha ao carregar salas do agente');
+        const data = await res.json();
+        
+        const tbody = document.getElementById('agent-rooms-table-body');
+        if (tbody) {
+          tbody.innerHTML = '';
+          const rooms = data.rooms || [];
+          if (rooms.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-slate-500">Este agente não pertence a nenhuma sala.</td></tr>';
+          } else {
+            rooms.forEach(r => {
+              const tr = document.createElement('tr');
+              tr.className = 'hover:bg-slate-800/30 transition';
+
+              let roleOptions = `<option value="">Usar padrão (${escapeHtml(data.agent?.default_role_name || data.agent?.default_role_key || 'nenhum')})</option>`;
+              (data.roles || []).forEach(role => {
+                roleOptions += `<option value="${role.id}" ${r.role_id === role.id ? 'selected' : ''}>${escapeHtml(role.display_name)} (${role.role_key})</option>`;
+              });
+
+              tr.innerHTML = `
+                <td class="py-2.5 px-3">
+                  <div class="font-bold text-white">${escapeHtml(r.name)}</div>
+                  ${r.is_archived ? '<span class="text-[10px] text-amber-400 font-normal">(arquivada)</span>' : ''}
+                  <div class="text-[10px] text-slate-400 truncate max-w-xs">${escapeHtml(r.topic || 'Sem tópico')}</div>
+                </td>
+                <td class="py-2.5 px-3">
+                  <select onchange="updateAgentRoomRole(${agentId}, ${r.id}, this.value)" class="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-slate-300 focus:outline-none focus:border-indigo-500">
+                    ${roleOptions}
+                  </select>
+                </td>
+                <td class="py-2.5 px-3">
+                  <select onchange="updateAgentRoomPerm(${agentId}, ${r.id}, this.value)" class="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs ${r.can_write ? 'text-emerald-400' : 'text-amber-400'} focus:outline-none focus:border-indigo-500">
+                    <option value="1" ${r.can_write ? 'selected' : ''}>Leitura e Escrita</option>
+                    <option value="0" ${!r.can_write ? 'selected' : ''}>Observador (Só Leitura)</option>
+                  </select>
+                </td>
+                <td class="py-2.5 px-3 text-right">
+                  <button onclick="removeAgentFromRoom(${agentId}, ${r.id}, '${escapeHtml(r.name)}')" class="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
+                    Remover
+                  </button>
+                </td>
+              `;
+              tbody.appendChild(tr);
+            });
+          }
+        }
+
+        // Populate Add to Room selectors
+        const addRoomSel = document.getElementById('ar-add-room-select');
+        if (addRoomSel) {
+          const avail = data.available_rooms || [];
+          if (avail.length === 0) {
+            addRoomSel.innerHTML = '<option value="" disabled selected>O agente já tem acesso a todas as salas ativas.</option>';
+          } else {
+            addRoomSel.innerHTML = '<option value="">Selecione uma sala...</option>';
+            avail.forEach(r => {
+              addRoomSel.innerHTML += `<option value="${r.id}">${escapeHtml(r.name)}</option>`;
+            });
+          }
+        }
+
+        const addRoleSel = document.getElementById('ar-add-role-select');
+        if (addRoleSel) {
+          const defRoleName = data.agent?.default_role_name || data.agent?.default_role_key || 'nenhum';
+          addRoleSel.innerHTML = `<option value="">Papel por defeito (${escapeHtml(defRoleName)})</option>`;
+          (data.roles || []).forEach(role => {
+            addRoleSel.innerHTML += `<option value="${role.id}">${escapeHtml(role.display_name)} (${role.role_key})</option>`;
+          });
+        }
+
+        lucide.createIcons();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function updateAgentRoomRole(agentId, roomId, roleIdVal) {
+      try {
+        const payload = { role_id: roleIdVal ? parseInt(roleIdVal) : null };
+        const res = await fetch(`/api/admin/rooms/${roomId}/access/${agentId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao atualizar papel do agente na sala');
+        showAlert('Papel do agente na sala atualizado.');
+        loadAgentRooms(agentId);
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function updateAgentRoomPerm(agentId, roomId, canWriteVal) {
+      try {
+        const payload = { can_write: parseInt(canWriteVal) };
+        const res = await fetch(`/api/admin/rooms/${roomId}/access/${agentId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao atualizar permissão do agente na sala');
+        showAlert('Permissão do agente na sala atualizada.');
+        loadAgentRooms(agentId);
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function handleAddAgentToRoom() {
+      const agentId = parseInt(document.getElementById('ar-agent-id').value);
+      const roomSelect = document.getElementById('ar-add-room-select');
+      const roomId = roomSelect ? parseInt(roomSelect.value) : null;
+      if (!roomId) {
+        showAlert('Selecione uma sala válida para adicionar o agente.', true);
+        return;
+      }
+      const roleIdVal = document.getElementById('ar-add-role-select')?.value;
+      const roleId = roleIdVal ? parseInt(roleIdVal) : null;
+      const canWrite = parseInt(document.getElementById('ar-add-perm-select')?.value || '1');
+
+      try {
+        const res = await fetch(`/api/admin/rooms/${roomId}/access`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ principal_id: agentId, role_id: roleId, can_write: canWrite })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao atribuir agente à sala');
+        showAlert('Agente adicionado à sala com sucesso.');
+        loadAgentRooms(agentId);
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function removeAgentFromRoom(agentId, roomId, roomName) {
+      if (!confirm(`Remover acesso do agente à sala '${roomName}'?`)) return;
+      try {
+        const res = await fetch(`/api/admin/rooms/${roomId}/access/${agentId}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao revogar acesso');
+        showAlert(`Acesso à sala '${roomName}' revogado.`);
+        loadAgentRooms(agentId);
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    // ================= SYSTEM INFO & DIAGNOSTICS =================
+    async function loadSystemInfo() {
+      try {
+        const res = await fetch('/api/admin/system');
+        if (!res.ok) throw new Error('Falha ao carregar estado do sistema');
+        const data = await res.json();
+
+        // Warning banner
+        const warnBanner = document.getElementById('sys-unexpected-db-banner');
+        if (warnBanner) {
+          if (data.is_unexpected_db) {
+            warnBanner.classList.remove('hidden');
+            const act = document.getElementById('sys-warn-actual-db');
+            const exp = document.getElementById('sys-warn-expected-db');
+            if (act) act.textContent = data.db_path;
+            if (exp) exp.textContent = data.expected_db_path;
+          } else {
+            warnBanner.classList.add('hidden');
+          }
+        }
+
+        // DB card
+        const dbPathEl = document.getElementById('sys-db-path');
+        if (dbPathEl) {
+          dbPathEl.textContent = data.db_path;
+          dbPathEl.title = data.db_path;
+        }
+        const schemaEl = document.getElementById('sys-schema-version');
+        if (schemaEl) schemaEl.textContent = data.schema_version ?? '?';
+        const dbBadge = document.getElementById('sys-db-badge');
+        if (dbBadge) {
+          if (data.is_unexpected_db) {
+            dbBadge.className = 'px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20';
+            dbBadge.textContent = 'BD Alternativa / Não Padrão';
+          } else {
+            dbBadge.className = 'px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+            dbBadge.textContent = 'Base de Produção Padrão';
+          }
+        }
+
+        // Version & Commit
+        const verEl = document.getElementById('sys-version');
+        if (verEl) verEl.textContent = data.version || 'v3.1';
+        const comEl = document.getElementById('sys-commit');
+        if (comEl) comEl.textContent = data.commit || 'desconhecido';
+
+        // Uptime
+        const upEl = document.getElementById('sys-uptime');
+        if (upEl) {
+          const s = data.uptime_seconds || 0;
+          const d = Math.floor(s / 86400);
+          const h = Math.floor((s % 86400) / 3600);
+          const m = Math.floor((s % 3600) / 60);
+          const sec = s % 60;
+          let upStr = '';
+          if (d > 0) upStr += `${d}d `;
+          if (h > 0 || d > 0) upStr += `${h}h `;
+          upStr += `${m}m ${sec}s`;
+          upEl.textContent = upStr;
+        }
+        const startEl = document.getElementById('sys-started-at');
+        if (startEl) startEl.textContent = data.started_at || '--';
+
+        // Proxy
+        const proxyBadge = document.getElementById('sys-proxy-badge');
+        if (proxyBadge) {
+          if (data.trust_proxy) {
+            proxyBadge.className = 'px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+            proxyBadge.textContent = 'Ativo (--trust-proxy)';
+          } else {
+            proxyBadge.className = 'px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-400';
+            proxyBadge.textContent = 'Inativo (ignora cabeçalhos)';
+          }
+        }
+        const listEl = document.getElementById('sys-listeners-count');
+        if (listEl) listEl.textContent = data.active_listeners_count || 0;
+
+        // Connected agents
+        const agentsCount = document.getElementById('sys-connected-agents-count');
+        if (agentsCount) agentsCount.textContent = data.connected_agents_count || 0;
+        const agentsList = document.getElementById('sys-connected-agents-list');
+        if (agentsList) {
+          agentsList.innerHTML = '';
+          const agents = data.connected_agents || [];
+          if (agents.length === 0) {
+            agentsList.innerHTML = '<span class="text-xs text-slate-500">Nenhum agente ligado neste momento.</span>';
+          } else {
+            agents.forEach(a => {
+              const chip = document.createElement('span');
+              chip.className = 'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 font-mono text-xs';
+              chip.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span><strong>@${escapeHtml(a.name)}</strong>`;
+              agentsList.appendChild(chip);
+            });
+          }
+        }
+
+        lucide.createIcons();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
     // ================= ROOMS & ACCESS LOGIC =================
+    function renderRoomsList() {
+      const container = document.getElementById('rooms-list-container');
+      if (!container) return;
+
+      const searchInput = document.getElementById('rooms-search-input');
+      const hideArchivedCheck = document.getElementById('rooms-hide-archived');
+      const query = (searchInput?.value || '').trim().toLowerCase();
+      const hideArchived = hideArchivedCheck ? hideArchivedCheck.checked : true;
+
+      const filtered = roomsCache.filter(r => {
+        if (hideArchived && r.is_archived) return false;
+        if (query) {
+          const matchName = (r.name || '').toLowerCase().includes(query);
+          const matchTopic = (r.topic || '').toLowerCase().includes(query);
+          if (!matchName && !matchTopic) return false;
+        }
+        return true;
+      });
+
+      const countBadge = document.getElementById('rooms-count-badge');
+      if (countBadge) {
+        countBadge.textContent = `${filtered.length} / ${roomsCache.length}`;
+      }
+
+      container.innerHTML = '';
+      if (filtered.length === 0) {
+        container.innerHTML = '<div class="text-xs text-slate-500 py-4 text-center">Nenhuma sala encontrada.</div>';
+        return;
+      }
+
+      filtered.forEach(r => {
+        const btn = document.createElement('button');
+        btn.className = `w-full text-left px-3 py-2 rounded-lg text-xs transition flex items-center justify-between ${selectedRoomId === r.id ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30' : 'hover:bg-slate-800/60 text-slate-300'}`;
+        btn.onclick = () => selectRoom(r.id);
+        btn.innerHTML = `
+          <div class="truncate">
+            <span class="font-bold">${escapeHtml(r.name)}</span>
+            ${r.is_archived ? '<span class="ml-1 text-[10px] text-amber-400 font-normal">(arquivada)</span>' : ''}
+            <div class="text-[10px] text-slate-500 truncate">${escapeHtml(r.topic || 'Sem tópico')}</div>
+          </div>
+          <span class="text-[10px] bg-slate-800 px-1.5 py-0.5 rounded text-slate-400 font-mono">${r.member_count || 0}</span>
+        `;
+        container.appendChild(btn);
+      });
+
+      if (filtered.length > 0 && !filtered.some(r => r.id === selectedRoomId)) {
+        selectRoom(filtered[0].id);
+      }
+    }
+
     async function loadRooms() {
       try {
         const res = await fetch('/api/admin/rooms');
         if (!res.ok) throw new Error('Falha ao carregar salas');
         const data = await res.json();
         roomsCache = data.rooms || [];
-        const container = document.getElementById('rooms-list-container');
-        if (!container) return;
-        container.innerHTML = '';
-        roomsCache.forEach(r => {
-          const btn = document.createElement('button');
-          btn.className = `w-full text-left px-3 py-2 rounded-lg text-xs transition flex items-center justify-between ${selectedRoomId === r.id ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30' : 'hover:bg-slate-800/60 text-slate-300'}`;
-          btn.onclick = () => selectRoom(r.id);
-          btn.innerHTML = `
-            <div class="truncate">
-              <span class="font-bold">${escapeHtml(r.name)}</span>
-              ${r.is_archived ? '<span class="ml-1 text-[10px] text-amber-400">(arquivada)</span>' : ''}
-              <div class="text-[10px] text-slate-500 truncate">${escapeHtml(r.topic || 'Sem tópico')}</div>
-            </div>
-            <span class="text-[10px] bg-slate-800 px-1.5 py-0.5 rounded text-slate-400 font-mono">${r.member_count || 0}</span>
-          `;
-          container.appendChild(btn);
-        });
+        renderRoomsList();
 
         if (!selectedRoomId && roomsCache.length > 0) {
-          selectRoom(roomsCache[0].id);
+          const firstNonArchived = roomsCache.find(r => !r.is_archived) || roomsCache[0];
+          selectRoom(firstNonArchived.id);
         }
+        lucide.createIcons();
       } catch (err) {
         showAlert(err.message, true);
       }
@@ -1411,7 +2068,7 @@ python tools/aichat-wait.py --url "http://localhost:8000" --token "<TOKEN>" --ro
       }
 
       await loadRoomMembers(roomId);
-      loadRooms(); // refresh selection styles
+      renderRoomsList(); // refresh selection styles
     }
 
     async function loadRoomMembers(roomId) {

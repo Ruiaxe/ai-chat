@@ -66,3 +66,22 @@ def get_server_info() -> dict | None:
         except Exception:
             return None
     return None
+
+
+def get_git_commit() -> str:
+    """Returns the current git short commit hash or fallback string."""
+    try:
+        import subprocess
+        res = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(BASE_DIR),
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return "desconhecido"
+

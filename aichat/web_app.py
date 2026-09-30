@@ -24,7 +24,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 import edge_tts
 
-from aichat.config import STATIC_DIR
+from aichat.config import STATIC_DIR, DATA_DIR, get_git_commit
 from aichat.mcp_server import (
     current_auth_token,
     current_principal,
@@ -37,6 +37,7 @@ from aichat.mcp_server import (
 
 INDEX_HTML = STATIC_DIR / "index.html"
 ADMIN_HTML = STATIC_DIR / "admin.html"
+SERVER_START_TIME = time.time()
 
 
 def safe_int(val: Any, default: int = 0, min_val: int | None = None, max_val: int | None = None) -> int:
@@ -2980,6 +2981,87 @@ async def endpoint_admin_patch_settings(request: Request) -> Response:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=400)
 
 
+async def endpoint_admin_system(request: Request) -> Response:
+    """Returns system, database, uptime, and connected agents status for admins."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+
+    from datetime import timezone
+    from aichat.storage import check_schema_version
+
+    current_db = hub.storage.db_path.resolve()
+    expected_db = (DATA_DIR / "chat_v3.db").resolve()
+    schema_v = check_schema_version(current_db)
+    uptime_sec = int(time.time() - SERVER_START_TIME)
+
+    connected_agents = []
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        agents = hub.storage.v3.list_agents()
+        connected_agents = [
+            {
+                "id": a["id"],
+                "name": a["name"],
+                "display_name": a.get("display_name") or a["name"],
+                "last_activity_at": a.get("last_activity_at"),
+            }
+            for a in agents
+            if a.get("listening_now") == 1
+        ]
+
+    active_listeners_count = sum(len(l) for l in getattr(hub, "_room_listeners", {}).values())
+
+    return JSONResponse({
+        "status": "success",
+        "version": "v3.1",
+        "commit": get_git_commit(),
+        "db_path": str(current_db),
+        "expected_db_path": str(expected_db),
+        "is_unexpected_db": bool(current_db != expected_db and not os.environ.get("AICHAT_ALLOW_CUSTOM_DB")),
+        "schema_version": schema_v,
+        "uptime_seconds": uptime_sec,
+        "started_at": datetime.fromtimestamp(SERVER_START_TIME, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ"),
+        "connected_agents": connected_agents,
+        "connected_agents_count": len(connected_agents),
+        "active_listeners_count": active_listeners_count,
+        "trust_proxy": is_trust_proxy_enabled(),
+    })
+
+
+async def endpoint_admin_get_agent_rooms(request: Request) -> Response:
+    """Lists all rooms accessible to a given agent, along with available rooms."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+
+    principal_id = safe_int(request.path_params.get("principal_id"))
+    agent = hub.storage.v3.get_principal_by_id(principal_id)
+    if not agent or agent.get("kind") != "agent":
+        return JSONResponse({"error": "Agente não encontrado"}, status_code=404)
+
+    agent_info = None
+    all_agents = hub.storage.v3.list_agents()
+    for a in all_agents:
+        if a["id"] == principal_id:
+            agent_info = a
+            break
+
+    agent_rooms = hub.storage.v3.list_rooms_for_principal(agent, include_archived=True)
+    member_room_ids = {r["id"] for r in agent_rooms}
+
+    all_rooms = hub.storage.v3.list_rooms(include_archived=False)
+    available_rooms = [r for r in all_rooms if r["id"] not in member_room_ids]
+    roles = hub.storage.v3.list_roles()
+
+    return JSONResponse({
+        "status": "success",
+        "agent": agent_info or agent,
+        "rooms": agent_rooms,
+        "available_rooms": available_rooms,
+        "roles": roles,
+    })
+
+
 async def endpoint_wake(request: Request) -> Response:
     """
     Universal wake-up endpoint (GET /api/wake):
@@ -3288,6 +3370,8 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
         Route("/api/admin/roles/{role_id:int}", endpoint=endpoint_admin_update_role, methods=["PATCH", "PUT"]),
         Route("/api/admin/roles/{role_id:int}", endpoint=endpoint_admin_delete_role, methods=["DELETE"]),
         Route("/api/admin/audit", endpoint=endpoint_admin_list_audit_log, methods=["GET"]),
+        Route("/api/admin/system", endpoint=endpoint_admin_system, methods=["GET"]),
+        Route("/api/admin/agents/{principal_id:int}/rooms", endpoint=endpoint_admin_get_agent_rooms, methods=["GET"]),
 
         Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_get_tasks, methods=["GET"]),
         Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_create_task, methods=["POST"]),
