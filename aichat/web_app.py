@@ -52,6 +52,46 @@ def safe_int(val: Any, default: int = 0, min_val: int | None = None, max_val: in
     return res
 
 
+def is_trust_proxy_enabled() -> bool:
+    """Returns True if the server is configured to trust reverse proxy headers like X-Forwarded-For."""
+    return os.environ.get("AICHAT_TRUST_PROXY", "").lower() in ("1", "true", "yes")
+
+
+def extract_client_ip(
+    request: Request | None = None,
+    scope: Scope | None = None,
+    headers: Headers | None = None,
+) -> str:
+    """
+    Extracts the client IP address safely across middleware, login, and registration.
+    Only trusts X-Forwarded-For if AICHAT_TRUST_PROXY is explicitly enabled.
+    Otherwise, strictly uses the direct connection socket IP (client host).
+    """
+    direct_ip = "127.0.0.1"
+    raw_headers = headers
+
+    if request is not None:
+        if request.client and request.client.host:
+            direct_ip = request.client.host
+        if raw_headers is None:
+            raw_headers = request.headers
+    elif scope is not None:
+        client = scope.get("client")
+        if client and len(client) > 0 and client[0]:
+            direct_ip = client[0]
+        if raw_headers is None:
+            raw_headers = Headers(scope=scope)
+
+    if is_trust_proxy_enabled() and raw_headers is not None:
+        xff = raw_headers.get("x-forwarded-for")
+        if xff:
+            first_ip = xff.split(",")[0].strip()
+            if first_ip:
+                return first_ip
+
+    return direct_ip
+
+
 def is_same_origin_scope(origin_str: str, scope: Scope) -> bool:
     """Verifies that the origin header matches the server's own origin."""
     if not origin_str:
@@ -199,12 +239,7 @@ class V3AuthenticationMiddleware:
             return
 
         headers = Headers(scope=scope)
-        client_ip = "127.0.0.1"
-        xff = headers.get("x-forwarded-for")
-        if xff:
-            client_ip = xff.split(",")[0].strip()
-        elif scope.get("client"):
-            client_ip = scope["client"][0]
+        client_ip = extract_client_ip(scope=scope, headers=headers)
         current_client_ip.set(client_ip)
 
         auth_header = headers.get("authorization", "").strip()
@@ -506,12 +541,7 @@ async def endpoint_auth_login(request: Request) -> Response:
         if not username or not token:
             return JSONResponse({"error": "Credenciais inválidas"}, status_code=401)
 
-        client_ip = "127.0.0.1"
-        if request.client:
-            client_ip = request.client.host
-        x_forwarded_for = request.headers.get("x-forwarded-for")
-        if x_forwarded_for:
-            client_ip = x_forwarded_for.split(",")[0].strip()
+        client_ip = extract_client_ip(request=request)
 
         principal, err = hub.storage.v3.authenticate_human(username, token, client_ip=client_ip)
         if not principal:
@@ -2159,10 +2189,7 @@ async def endpoint_register_agent(request: Request) -> Response:
 
 async def endpoint_self_register_agent(request: Request) -> Response:
     """Allows an agent or client to self-register with a unique callsign and obtain an agent_token."""
-    client_ip = request.client.host if request.client else "127.0.0.1"
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        client_ip = xff.split(",")[0].strip()
+    client_ip = extract_client_ip(request=request)
     if not check_register_rate_limit(client_ip):
         return JSONResponse(
             {"status": "error", "error": "Demasiados pedidos de registo. Limite de 5 por hora atingido."},
@@ -2695,6 +2722,48 @@ async def endpoint_admin_revoke_room_access(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+async def endpoint_admin_patch_room_access(request: Request) -> Response:
+    """Updates role and/or write permission for an existing member of a room."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    room_spec = request.path_params.get("room_id") or request.path_params.get("room_name")
+    if str(room_spec).isdigit():
+        room_spec = int(room_spec)
+    room = hub.storage.v3.get_room(room_spec)
+    if not room:
+        return JSONResponse({"error": "Sala não encontrada"}, status_code=404)
+    principal_id = safe_int(request.path_params.get("principal_id"))
+
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            return JSONResponse({"error": "JSON deve ser um objeto"}, status_code=400)
+    except Exception:
+        return JSONResponse({"error": "JSON inválido"}, status_code=400)
+
+    from aichat.storage_v3 import _UNSET
+    role_id = data["role_id"] if "role_id" in data else _UNSET
+    can_write = data["can_write"] if "can_write" in data else _UNSET
+
+    try:
+        res = hub.storage.v3.update_room_access(
+            room_id=room["id"],
+            principal_id=principal_id,
+            role_id=role_id,
+            can_write=can_write,
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        return JSONResponse({"status": "success", **res})
+    except KeyError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 async def endpoint_admin_bulk_grant_room_access(request: Request) -> Response:
     """Bulk updates room access matrix."""
     principal, err = require_admin(request)
@@ -3212,6 +3281,7 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
         Route("/api/admin/rooms/{room_id}/members", endpoint=endpoint_admin_list_room_members, methods=["GET"]),
         Route("/api/admin/rooms/{room_id}/access", endpoint=endpoint_admin_grant_room_access, methods=["POST"]),
         Route("/api/admin/rooms/{room_id}/access/{principal_id:int}", endpoint=endpoint_admin_revoke_room_access, methods=["DELETE"]),
+        Route("/api/admin/rooms/{room_id}/access/{principal_id:int}", endpoint=endpoint_admin_patch_room_access, methods=["PATCH"]),
         Route("/api/admin/rooms/bulk-grant", endpoint=endpoint_admin_bulk_grant_room_access, methods=["POST"]),
         Route("/api/admin/roles", endpoint=endpoint_admin_list_roles, methods=["GET"]),
         Route("/api/admin/roles", endpoint=endpoint_admin_create_role, methods=["POST"]),

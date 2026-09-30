@@ -100,8 +100,12 @@ def main():
     parser.add_argument("--port", type=int, default=None, help="Port to bind (default: automatic free port starting at 8765)")
     parser.add_argument("--allow-remote", action="store_true", help="Allow binding to non-loopback host (WARNING: exposes chat to network)")
     parser.add_argument("--allowed-hosts", nargs="*", default=None, help="Explicit allowed hostnames/IPs for Host header validation when remote is allowed")
+    parser.add_argument("--trust-proxy", action="store_true", help="Trust X-Forwarded-For header for client IP (use only behind a trusted reverse proxy)")
     parser.add_argument("--no-browser", action="store_true", help="Do not automatically open the web browser")
     args = parser.parse_args()
+
+    if args.trust_proxy:
+        os.environ["AICHAT_TRUST_PROXY"] = "1"
 
     host = args.host
     is_loopback = host in ("127.0.0.1", "localhost", "::1")

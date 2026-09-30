@@ -215,6 +215,9 @@ class ChatStorage:
     def grant_room_access(self, *args, **kwargs):
         return self.v3.grant_room_access(*args, **kwargs)
 
+    def update_room_access(self, *args, **kwargs):
+        return self.v3.update_room_access(*args, **kwargs)
+
     def revoke_room_access(self, *args, **kwargs):
         return self.v3.revoke_room_access(*args, **kwargs)
 
@@ -369,6 +372,8 @@ class ChatStorage:
 
     def close(self) -> None:
         """Closes the connection for this database path on current thread."""
+        if getattr(self, "_v3_storage", None) is not None:
+            self._v3_storage.close()
         if hasattr(self._local, "conns"):
             path_key = str(self.db_path.resolve())
             conn = self._local.conns.pop(path_key, None)
@@ -377,6 +382,11 @@ class ChatStorage:
                     conn.close()
                 except Exception:
                     pass
+
+    def reset_ip_lockouts(self) -> None:
+        """Resets all IP-based failure lockouts for underlying v3 storage."""
+        if getattr(self, "_v3_storage", None) is not None:
+            self._v3_storage.reset_ip_lockouts()
 
     def _init_db(self, schema_version: int | None = None) -> None:
         """Initializes database schema with tables and indexes."""

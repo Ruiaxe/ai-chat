@@ -32,13 +32,13 @@ from aichat.crypto import (
 SCHEMA_FILE = Path(__file__).resolve().parent.parent / "migrations" / "v3" / "schema_v3.sql"
 DEFAULT_V3_DB = DATA_DIR / "chat_v3.db"
 
+_UNSET = object()
+
 
 class StorageV3:
     """Complete SQLite storage layer for ai-chat v3 according to schema_v3.sql."""
 
     _local = threading.local()
-    _failed_ip_attempts: dict[str, list[float]] = {}  # IP -> list of failure timestamps
-    _ip_lock = threading.Lock()
 
     def __init__(self, db_path: Path | str | None = None, logs_dir: Path = LOGS_DIR):
         from aichat.storage import validate_db_path
@@ -47,6 +47,8 @@ class StorageV3:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self._active_listeners: dict[int, int] = {}
         self._listeners_lock = threading.Lock()
+        self._failed_ip_attempts: dict[str, list[float]] = {}
+        self._ip_lock = threading.Lock()
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -68,6 +70,9 @@ class StorageV3:
 
     def close(self) -> None:
         """Closes the connection for this database path on current thread."""
+        if hasattr(self, "_ip_lock"):
+            with self._ip_lock:
+                self._failed_ip_attempts.clear()
         if hasattr(self._local, "conns"):
             path_key = str(self.db_path.resolve())
             conn = self._local.conns.pop(path_key, None)
@@ -76,6 +81,12 @@ class StorageV3:
                     conn.close()
                 except Exception:
                     pass
+
+    def reset_ip_lockouts(self) -> None:
+        """Resets all IP-based failure lockouts for this storage instance."""
+        if hasattr(self, "_ip_lock"):
+            with self._ip_lock:
+                self._failed_ip_attempts.clear()
 
     @property
     def v3(self) -> "StorageV3":
@@ -2082,6 +2093,109 @@ class StorageV3:
             )
         return revoked
 
+    def update_room_access(
+        self,
+        room_id: int | str | dict[str, Any],
+        principal_id: int | str | dict[str, Any],
+        role_id: Any = _UNSET,
+        can_write: Any = _UNSET,
+        actor_id: int | None = None,
+        actor_name: str = "admin",
+    ) -> dict[str, Any]:
+        """
+        Updates role and/or write permission for an existing member of a room.
+        Distinguishes role_id=_UNSET (field omitted, do not change) from role_id=None (clear room-specific role, fallback to default).
+        Distinguishes can_write=_UNSET (field omitted, do not change) from can_write=0/1.
+        Raises KeyError if the principal is not an existing member of the room.
+        Records previous and new values in the audit log (e.g. 'role: — → project_manager').
+        """
+        room = self._resolve_room(room_id)
+        if not room:
+            raise ValueError(f"Sala '{room_id}' não encontrada.")
+        principal = self._resolve_principal(principal_id)
+        if not principal:
+            raise ValueError(f"Principal '{principal_id}' não encontrado.")
+
+        conn = self._get_connection()
+        row = conn.execute(
+            """
+            SELECT ra.*, r.role_key, r.display_name as role_display_name
+            FROM room_access ra
+            LEFT JOIN agent_roles r ON ra.role_id = r.id
+            WHERE ra.room_id = ? AND ra.principal_id = ?;
+            """,
+            (room["id"], principal["id"]),
+        ).fetchone()
+
+        if not row:
+            raise KeyError(f"O principal '{principal['name']}' não é membro da sala '{room['name']}'.")
+
+        old_role_id = row["role_id"]
+        old_role_name = row["role_display_name"] or row["role_key"] or "—"
+        old_can_write = row["can_write"]
+
+        # Calculate new role_id
+        if role_id is not _UNSET:
+            if role_id is None or role_id == 0 or role_id == "":
+                target_role_id = None
+                new_role_name = "—"
+            else:
+                target_role_id = int(role_id)
+                r_row = conn.execute("SELECT role_key, display_name FROM agent_roles WHERE id = ?;", (target_role_id,)).fetchone()
+                if not r_row:
+                    raise ValueError(f"Papel ID {target_role_id} não encontrado.")
+                new_role_name = r_row["display_name"] or r_row["role_key"]
+        else:
+            target_role_id = old_role_id
+            new_role_name = old_role_name
+
+        # Calculate new can_write
+        if can_write is not _UNSET:
+            target_can_write = 1 if can_write else 0
+        else:
+            target_can_write = old_can_write
+
+        with conn:
+            conn.execute(
+                """
+                UPDATE room_access
+                SET role_id = ?, can_write = ?
+                WHERE room_id = ? AND principal_id = ?;
+                """,
+                (target_role_id, target_can_write, room["id"], principal["id"]),
+            )
+
+        changes = []
+        if role_id is not _UNSET and old_role_id != target_role_id:
+            changes.append(f"role: {old_role_name} → {new_role_name}")
+        if can_write is not _UNSET and old_can_write != target_can_write:
+            old_perm = "leitura e escrita" if old_can_write else "observador"
+            new_perm = "leitura e escrita" if target_can_write else "observador"
+            changes.append(f"permissão: {old_perm} → {new_perm}")
+
+        details = f"Atualizou acesso de '{principal['name']}' na sala '{room['name']}'"
+        if changes:
+            details += f": {', '.join(changes)}"
+        else:
+            details += " (sem alterações)"
+
+        self.log_audit(
+            actor_id=actor_id,
+            actor_name=actor_name,
+            action="update_room_access",
+            target_type="room_access",
+            target_id=principal["id"],
+            room_id=room["id"],
+            details=details,
+        )
+
+        return {
+            "room_id": room["id"],
+            "principal_id": principal["id"],
+            "role_id": target_role_id,
+            "can_write": target_can_write,
+        }
+
     def bulk_grant_room_access(
         self,
         grants: list[dict[str, Any]],
@@ -2169,15 +2283,18 @@ class StorageV3:
         return dict(row) if row else None
 
     def list_room_members(self, room_id: int) -> list[dict[str, Any]]:
-        """Lists all principals granted access to a room with their roles and write permissions."""
+        """Lists all principals granted access to a room with their roles, default roles, and write permissions."""
         conn = self._get_connection()
         rows = conn.execute(
             """
             SELECT ra.*, p.kind, p.name, p.display_name, p.status, p.is_system,
-                   r.role_key, r.display_name as role_display_name, r.reminder_text
+                   r.role_key, r.display_name as role_display_name, r.reminder_text,
+                   a.default_role_id, def_r.role_key as default_role_key, def_r.display_name as default_role_display_name
             FROM room_access ra
             JOIN principals p ON ra.principal_id = p.id
+            LEFT JOIN agents a ON p.id = a.principal_id
             LEFT JOIN agent_roles r ON ra.role_id = r.id
+            LEFT JOIN agent_roles def_r ON a.default_role_id = def_r.id
             WHERE ra.room_id = ?
             ORDER BY p.name ASC;
             """,

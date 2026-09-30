@@ -578,6 +578,43 @@
     </div>
   </div>
 
+  <!-- Modal: Editar Membro da Sala -->
+  <div id="modal-edit-member" class="fixed inset-0 bg-black/70 backdrop-blur-xs z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i data-lucide="edit-3" class="w-5 h-5 text-indigo-400"></i>
+          <span>Editar Membro da Sala</span>
+        </h3>
+        <button onclick="closeModal('modal-edit-member')" class="text-slate-400 hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+      </div>
+      <form onsubmit="handleEditMember(event)" class="space-y-3 text-xs">
+        <input type="hidden" id="em-principal-id">
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Nome do Membro (só leitura)</label>
+          <input type="text" id="em-name" readonly class="w-full bg-slate-950/60 border border-slate-800 rounded-lg px-3 py-2 text-slate-400 font-semibold cursor-not-allowed focus:outline-none">
+        </div>
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Papel na Sala</label>
+          <select id="em-role-id" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+            <option value="">A carregar...</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-slate-400 font-medium mb-1">Permissão</label>
+          <select id="em-can-write" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+            <option value="1">Leitura e Escrita</option>
+            <option value="0">Observador (Só Leitura)</option>
+          </select>
+        </div>
+        <div class="flex justify-end space-x-2 pt-2">
+          <button type="button" onclick="closeModal('modal-edit-member')" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition">Cancelar</button>
+          <button type="submit" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition">Guardar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- Modal: Adicionar Membro à Sala -->
   <div id="modal-add-member" class="fixed inset-0 bg-black/70 backdrop-blur-xs z-50 hidden flex items-center justify-center p-4">
     <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
@@ -708,6 +745,7 @@
     let rolesCache = [];
     let roomsCache = [];
     let principalsCache = [];
+    let currentRoomMembers = [];
     let selectedRoomId = null;
     let auditOffset = 0;
     const auditLimit = 30;
@@ -1381,19 +1419,28 @@ python tools/aichat-wait.py --url "http://localhost:8000" --token "<TOKEN>" --ro
         const res = await fetch(`/api/admin/rooms/${roomId}/members`);
         if (!res.ok) throw new Error('Falha ao carregar membros da sala');
         const data = await res.json();
+        currentRoomMembers = data.members || [];
         const tbody = document.getElementById('room-members-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
 
-        if (!data.members || data.members.length === 0) {
+        if (!currentRoomMembers || currentRoomMembers.length === 0) {
           tbody.innerHTML = '<tr><td colspan="5" class="py-6 text-center text-slate-500">Nenhum membro atribuído a esta sala.</td></tr>';
           return;
         }
 
-        data.members.forEach(m => {
+        currentRoomMembers.forEach(m => {
           const tr = document.createElement('tr');
           tr.className = 'hover:bg-slate-800/30 transition';
           const isObserver = !m.can_write;
+
+          let roleHtml = '<span class="text-slate-600">—</span>';
+          if (m.role_id && (m.role_display_name || m.role_key)) {
+            roleHtml = `<span class="text-slate-200">${escapeHtml(m.role_display_name || m.role_key)}</span>`;
+          } else if (m.default_role_display_name || m.default_role_key) {
+            roleHtml = `<span class="text-slate-500">${escapeHtml(m.default_role_display_name || m.default_role_key)} (por defeito)</span>`;
+          }
+
           tr.innerHTML = `
             <td class="py-2.5 px-3">
               <span class="font-semibold text-white">${escapeHtml(m.name)}</span>
@@ -1405,14 +1452,17 @@ python tools/aichat-wait.py --url "http://localhost:8000" --token "<TOKEN>" --ro
               </span>
             </td>
             <td class="py-2.5 px-3 text-slate-400">
-              ${escapeHtml(m.role_display_name || m.role_key || '—')}
+              ${roleHtml}
             </td>
             <td class="py-2.5 px-3">
               <button onclick="toggleMemberWritePermission(${roomId}, ${m.principal_id}, ${isObserver ? 1 : 0}, ${m.role_id || 'null'})" class="px-2 py-0.5 rounded text-[10px] font-medium transition ${isObserver ? 'bg-amber-500/10 text-amber-300 border border-amber-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}">
                 ${isObserver ? '👁️ Observador (Só Leitura)' : '✏️ Leitura e Escrita'}
               </button>
             </td>
-            <td class="py-2.5 px-3 text-right">
+            <td class="py-2.5 px-3 text-right space-x-1.5 whitespace-nowrap">
+              <button onclick="openEditMemberModal(${m.principal_id})" class="px-2 py-1 rounded bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 text-[10px] font-medium transition">
+                Editar
+              </button>
               <button onclick="revokeRoomAccess(${roomId}, ${m.principal_id})" class="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
                 Remover
               </button>
@@ -1495,14 +1545,90 @@ python tools/aichat-wait.py --url "http://localhost:8000" --token "<TOKEN>" --ro
       }
     }
 
+    async function openEditMemberModal(principalId) {
+      await refreshRolesList();
+      const m = (currentRoomMembers || []).find(x => x.principal_id === principalId);
+      if (!m) return;
+
+      document.getElementById('em-principal-id').value = m.principal_id;
+      document.getElementById('em-name').value = m.name + (m.display_name && m.display_name !== m.name ? ` (${m.display_name})` : '');
+
+      const rSel = document.getElementById('em-role-id');
+      if (rSel) {
+        let defaultLabel = 'Sem papel específico na sala';
+        if (m.default_role_display_name || m.default_role_key) {
+          defaultLabel = `Usar o papel por defeito do agente (${m.default_role_display_name || m.default_role_key})`;
+        } else if (m.kind === 'agent') {
+          defaultLabel = 'Usar o papel por defeito do agente (nenhum)';
+        }
+        rSel.innerHTML = `<option value="">${escapeHtml(defaultLabel)}</option>`;
+        rolesCache.forEach(r => {
+          rSel.innerHTML += `<option value="${r.id}">${escapeHtml(r.display_name)} (${r.role_key})</option>`;
+        });
+        rSel.value = m.role_id ? String(m.role_id) : '';
+        rSel.dataset.initial = rSel.value;
+      }
+
+      const pSel = document.getElementById('em-can-write');
+      if (pSel) {
+        pSel.value = m.can_write ? '1' : '0';
+        pSel.dataset.initial = pSel.value;
+      }
+
+      openModal('modal-edit-member');
+    }
+
+    async function handleEditMember(e) {
+      e.preventDefault();
+      const principalId = parseInt(document.getElementById('em-principal-id').value);
+      const rSel = document.getElementById('em-role-id');
+      const pSel = document.getElementById('em-can-write');
+
+      const payload = {};
+      if (rSel.value !== rSel.dataset.initial) {
+        payload.role_id = rSel.value ? parseInt(rSel.value) : null;
+      }
+      if (pSel.value !== pSel.dataset.initial) {
+        payload.can_write = parseInt(pSel.value);
+      }
+
+      if (Object.keys(payload).length === 0) {
+        closeModal('modal-edit-member');
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/admin/rooms/${selectedRoomId}/access/${principalId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Falha ao editar membro');
+        closeModal('modal-edit-member');
+        showAlert('Membro atualizado com sucesso.');
+        loadRoomMembers(selectedRoomId);
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
     async function openAddMemberModal() {
       await refreshPrincipalsList();
+      await refreshRolesList();
       const pSel = document.getElementById('am-principal-id');
       if (pSel) {
-        pSel.innerHTML = '<option value="">Selecione um principal...</option>';
-        principalsCache.forEach(p => {
-          pSel.innerHTML += `<option value="${p.id}">${escapeHtml(p.name)} (${p.kind})</option>`;
-        });
+        const existingIds = new Set((currentRoomMembers || []).map(m => m.principal_id));
+        const available = principalsCache.filter(p => !existingIds.has(p.id));
+
+        if (available.length === 0) {
+          pSel.innerHTML = '<option value="" disabled selected>Todos os utilizadores e agentes já são membros desta sala.</option>';
+        } else {
+          pSel.innerHTML = '<option value="">Selecione um principal...</option>';
+          available.forEach(p => {
+            pSel.innerHTML += `<option value="${p.id}">${escapeHtml(p.name)} (${p.kind})</option>`;
+          });
+        }
       }
       const rSel = document.getElementById('am-role-id');
       if (rSel) {
