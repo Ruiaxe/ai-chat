@@ -2885,8 +2885,16 @@ async def endpoint_wake(request: Request) -> Response:
     - format (json | text, default json)
     - room (optional room filter)
     """
-    actor = get_authenticated_actor(request)
-    if not actor:
+    auth = get_request_auth(request)
+    if not auth:
+        auth_header = request.headers.get("Authorization", "").strip()
+        bearer_tok = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
+        header_tok = request.headers.get("x-agent-token", "") or request.headers.get("x-member-token", "")
+        if bearer_tok or header_tok:
+            return JSONResponse(
+                {"status": "error", "error": "Acesso negado: Token inválido, revogado ou agente desativado."},
+                status_code=403,
+            )
         return JSONResponse(
             {"status": "error", "error": "Autenticação obrigatória. Forneça cabeçalho Authorization: Bearer <token>."},
             status_code=401,
@@ -2907,7 +2915,7 @@ async def endpoint_wake(request: Request) -> Response:
 
     try:
         result = await hub.wait_for_work(
-            principal_or_agent=actor["principal"] or actor["name"],
+            principal_or_agent=auth.get("principal") or auth.get("name"),
             timeout_seconds=timeout_seconds,
             ack=ack,
             format=fmt,
