@@ -433,7 +433,8 @@ class TestSecurityAuditVulnerabilities(unittest.IsolatedAsyncioTestCase):
         with patch("aichat.storage.is_test_environment", return_value=False):
             with patch.dict(os.environ, {"AICHAT_ALLOW_DEFAULT_DB": "1"}):
                 res = validate_db_path(None, caller="ChatStorage")
-                self.assertEqual(res.resolve(), (DATA_DIR / "chat.db").resolve())
+                from aichat.storage import get_default_db_path
+                self.assertEqual(res.resolve(), get_default_db_path().resolve())
 
 
 if __name__ == "__main__":

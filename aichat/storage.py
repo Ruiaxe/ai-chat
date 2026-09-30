@@ -10,7 +10,54 @@ from typing import Any
 
 from aichat.config import DATA_DIR, LOGS_DIR
 
-DB_PATH = DATA_DIR / os.environ.get("AICHAT_DB_NAME", "chat.db")
+def get_default_db_path() -> Path:
+    """
+    Resolves the default database path using:
+    AICHAT_DB_NAME > AICHAT_DB_PATH > data/chat_v3.db.
+    """
+    env_name = os.environ.get("AICHAT_DB_NAME")
+    if env_name:
+        return (DATA_DIR / env_name).resolve()
+    env_path = os.environ.get("AICHAT_DB_PATH")
+    if env_path:
+        return Path(env_path).resolve()
+    return (DATA_DIR / "chat_v3.db").resolve()
+
+
+def resolve_db_target(cli_db: str | None = None) -> tuple[Path, str]:
+    """
+    Resolves the database target path and its origin following the precedence:
+    1. CLI argument (--db)
+    2. AICHAT_DB_NAME environment variable (relative to DATA_DIR)
+    3. AICHAT_DB_PATH environment variable (absolute or relative)
+    4. Default production database (data/chat_v3.db)
+    """
+    if cli_db:
+        return Path(cli_db).resolve(), "Parâmetro CLI (--db)"
+
+    env_name = os.environ.get("AICHAT_DB_NAME")
+    if env_name:
+        return (DATA_DIR / env_name).resolve(), f"Variável de ambiente (AICHAT_DB_NAME={env_name})"
+
+    env_path = os.environ.get("AICHAT_DB_PATH")
+    if env_path:
+        return Path(env_path).resolve(), "Variável de ambiente (AICHAT_DB_PATH)"
+
+    default_db = (DATA_DIR / "chat_v3.db").resolve()
+    return default_db, "Omissão de produção (data/chat_v3.db)"
+
+
+def get_db_origin(db_path: Path | None = None) -> str:
+    """Returns a human-readable description of how the database path was resolved."""
+    if os.environ.get("AICHAT_DB_ORIGIN"):
+        return os.environ["AICHAT_DB_ORIGIN"]
+    target, origin = resolve_db_target()
+    if db_path is not None and db_path.resolve() != target.resolve():
+        return f"Caminho customizado ({db_path})"
+    return origin
+
+
+DB_PATH = get_default_db_path()
 
 
 def is_test_environment() -> bool:
@@ -25,7 +72,7 @@ def is_test_environment() -> bool:
 def validate_db_path(
     db_path: Path | str | None,
     caller: str = "ChatStorage",
-    default_path: Path = DB_PATH,
+    default_path: Path | None = None,
 ) -> Path:
     """
     Validates and resolves db_path according to data protection rules:
@@ -35,20 +82,21 @@ def validate_db_path(
     2. In ad-hoc commands (outside run_server.py and bridge_stdio.py):
        - If db_path is None and AICHAT_ALLOW_DEFAULT_DB is not set, refuse and require an explicit path.
     """
+    actual_default = default_path if default_path is not None else get_default_db_path()
     production_db_resolves = {
         (DATA_DIR / "chat.db").resolve(),
         (DATA_DIR / "chat_v3.db").resolve(),
-        DB_PATH.resolve(),
+        actual_default.resolve(),
     }
 
     if db_path is None:
         if is_test_environment():
             raise RuntimeError(
-                f"{caller}: O uso da base de dados por defeito ('data/chat.db') é estritamente proibido "
+                f"{caller}: O uso da base de dados por defeito ('{actual_default}') é estritamente proibido "
                 "em modo de teste (pytest ou AICHAT_TESTING=1). Forneça um caminho explícito temporário."
             )
         if os.environ.get("AICHAT_ALLOW_DEFAULT_DB") == "1":
-            return default_path
+            return actual_default
         raise ValueError(
             f"{caller}: Comandos avulsos exigem um caminho explícito de base de dados. "
             f"Passe db_path explicitamente (ex: {caller}(db_path=...)) ou inicie o servidor via run_server.py."

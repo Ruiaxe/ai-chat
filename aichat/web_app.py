@@ -2988,12 +2988,13 @@ async def endpoint_admin_system(request: Request) -> Response:
         return err
 
     from datetime import timezone
-    from aichat.storage import check_schema_version
+    from aichat.storage import check_schema_version, get_db_origin
 
     current_db = hub.storage.db_path.resolve()
     expected_db = (DATA_DIR / "chat_v3.db").resolve()
     schema_v = check_schema_version(current_db)
     uptime_sec = int(time.time() - SERVER_START_TIME)
+    db_origin = get_db_origin(current_db)
 
     connected_agents = []
     if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
@@ -3016,6 +3017,7 @@ async def endpoint_admin_system(request: Request) -> Response:
         "version": "v3.1",
         "commit": get_git_commit(),
         "db_path": str(current_db),
+        "db_origin": db_origin,
         "expected_db_path": str(expected_db),
         "is_unexpected_db": bool(current_db != expected_db and not os.environ.get("AICHAT_ALLOW_CUSTOM_DB")),
         "schema_version": schema_v,

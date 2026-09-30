@@ -436,6 +436,7 @@
               <i data-lucide="database" class="w-4 h-4 text-indigo-400"></i>
             </div>
             <div class="font-mono text-xs text-white truncate" id="sys-db-path" title="A carregar...">A carregar...</div>
+            <div class="text-[11px] text-slate-400">Origem: <span id="sys-db-origin" class="font-mono text-slate-300">...</span></div>
             <div class="flex items-center gap-2 pt-1">
               <span id="sys-db-badge" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Produção</span>
               <span class="text-[11px] text-slate-400 font-mono">Esquema v<span id="sys-schema-version">?</span></span>
@@ -628,22 +629,27 @@
       <div class="space-y-2 pt-2 border-t border-slate-800">
         <div class="text-xs font-bold text-slate-300">Configuração Pronta para o seu Cliente MCP:</div>
         <div class="flex space-x-1 border-b border-slate-800 pb-1">
-          <button type="button" onclick="switchTokenSnippetTab('claude')" id="ts-tab-claude" class="px-2.5 py-1 text-xs rounded font-medium bg-indigo-600/20 text-indigo-300 border border-indigo-500/30">Claude Desktop</button>
-          <button type="button" onclick="switchTokenSnippetTab('cline')" id="ts-tab-cline" class="px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800">Cursor / Cline</button>
-          <button type="button" onclick="switchTokenSnippetTab('cli')" id="ts-tab-cli" class="px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800">FastMCP / Terminal</button>
+          <button type="button" onclick="switchTokenSnippetTab('claude')" id="ts-tab-claude" class="px-2.5 py-1 text-xs rounded font-medium bg-indigo-600/20 text-indigo-300 border border-indigo-500/30">Claude Code</button>
+          <button type="button" onclick="switchTokenSnippetTab('antigravity')" id="ts-tab-antigravity" class="px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800">Antigravity</button>
+          <button type="button" onclick="switchTokenSnippetTab('opencode')" id="ts-tab-opencode" class="px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800">OpenCode</button>
+          <button type="button" onclick="switchTokenSnippetTab('wait')" id="ts-tab-wait" class="px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800">aichat-wait</button>
         </div>
 
         <div id="ts-content-claude" class="ts-content relative bg-slate-950 border border-slate-800 rounded-xl p-3">
           <pre id="td-snippet-claude" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
           <button onclick="copySnippetText('td-snippet-claude', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
         </div>
-        <div id="ts-content-cline" class="ts-content hidden relative bg-slate-950 border border-slate-800 rounded-xl p-3">
-          <pre id="td-snippet-cline" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
-          <button onclick="copySnippetText('td-snippet-cline', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
+        <div id="ts-content-antigravity" class="ts-content hidden relative bg-slate-950 border border-slate-800 rounded-xl p-3">
+          <pre id="td-snippet-antigravity" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
+          <button onclick="copySnippetText('td-snippet-antigravity', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
         </div>
-        <div id="ts-content-cli" class="ts-content hidden relative bg-slate-950 border border-slate-800 rounded-xl p-3">
-          <pre id="td-snippet-cli" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
-          <button onclick="copySnippetText('td-snippet-cli', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
+        <div id="ts-content-opencode" class="ts-content hidden relative bg-slate-950 border border-slate-800 rounded-xl p-3">
+          <pre id="td-snippet-opencode" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
+          <button onclick="copySnippetText('td-snippet-opencode', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
+        </div>
+        <div id="ts-content-wait" class="ts-content hidden relative bg-slate-950 border border-slate-800 rounded-xl p-3">
+          <pre id="td-snippet-wait" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
+          <button onclick="copySnippetText('td-snippet-wait', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
         </div>
       </div>
 
@@ -672,27 +678,27 @@
 
       <div class="space-y-2">
         <div class="flex space-x-1 border-b border-slate-800 pb-1">
-          <button type="button" onclick="switchWakeTab('claude')" id="ws-tab-claude" class="px-2.5 py-1 text-xs rounded font-medium bg-indigo-600/20 text-indigo-300 border border-indigo-500/30">Claude Desktop</button>
-          <button type="button" onclick="switchWakeTab('cline')" id="ws-tab-cline" class="px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800">Cursor / Cline</button>
-          <button type="button" onclick="switchWakeTab('cli')" id="ws-tab-cli" class="px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800">Terminal / Bridge</button>
-          <button type="button" onclick="switchWakeTab('script')" id="ws-tab-script" class="px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800">Script Wake-up</button>
+          <button type="button" onclick="switchWakeTab('claude')" id="ws-tab-claude" class="px-2.5 py-1 text-xs rounded font-medium bg-indigo-600/20 text-indigo-300 border border-indigo-500/30">Claude Code</button>
+          <button type="button" onclick="switchWakeTab('antigravity')" id="ws-tab-antigravity" class="px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800">Antigravity</button>
+          <button type="button" onclick="switchWakeTab('opencode')" id="ws-tab-opencode" class="px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800">OpenCode</button>
+          <button type="button" onclick="switchWakeTab('wait')" id="ws-tab-wait" class="px-2.5 py-1 text-xs rounded font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800">aichat-wait</button>
         </div>
 
         <div id="ws-content-claude" class="ws-content relative bg-slate-950 border border-slate-800 rounded-xl p-3">
           <pre id="ws-code-claude" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
           <button onclick="copySnippetText('ws-code-claude', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
         </div>
-        <div id="ws-content-cline" class="ws-content hidden relative bg-slate-950 border border-slate-800 rounded-xl p-3">
-          <pre id="ws-code-cline" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
-          <button onclick="copySnippetText('ws-code-cline', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
+        <div id="ws-content-antigravity" class="ws-content hidden relative bg-slate-950 border border-slate-800 rounded-xl p-3">
+          <pre id="ws-code-antigravity" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
+          <button onclick="copySnippetText('ws-code-antigravity', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
         </div>
-        <div id="ws-content-cli" class="ws-content hidden relative bg-slate-950 border border-slate-800 rounded-xl p-3">
-          <pre id="ws-code-cli" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
-          <button onclick="copySnippetText('ws-code-cli', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
+        <div id="ws-content-opencode" class="ws-content hidden relative bg-slate-950 border border-slate-800 rounded-xl p-3">
+          <pre id="ws-code-opencode" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
+          <button onclick="copySnippetText('ws-code-opencode', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
         </div>
-        <div id="ws-content-script" class="ws-content hidden relative bg-slate-950 border border-slate-800 rounded-xl p-3">
-          <pre id="ws-code-script" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
-          <button onclick="copySnippetText('ws-code-script', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
+        <div id="ws-content-wait" class="ws-content hidden relative bg-slate-950 border border-slate-800 rounded-xl p-3">
+          <pre id="ws-code-wait" class="text-[11px] font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap select-all"></pre>
+          <button onclick="copySnippetText('ws-code-wait', this)" class="absolute top-2 right-2 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">Copiar</button>
         </div>
       </div>
 
@@ -1383,7 +1389,8 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro ao aprovar agente');
         showAlert(`Agente '${name}' aprovado com sucesso!`);
-        showGeneratedToken(data.token, data.token_hint, name);
+        const ag = (agentsCache || []).find(a => a.id === agentId);
+        showGeneratedToken(data.token, data.token_hint, name, ag ? ag.harness : 'claude-code', ag ? ag.wake_mode : 'background');
         loadAgents();
       } catch (err) {
         showAlert(err.message, true);
@@ -1406,61 +1413,23 @@
       }
     }
 
-    function openWakeSnippetModal(agentName, harness, wakeMode) {
+    function openWakeSnippetModal(agentName, harness = 'claude-code', wakeMode = 'background') {
       const nameEl = document.getElementById('ws-agent-name');
       if (nameEl) nameEl.textContent = `@${agentName} (${harness} / ${wakeMode})`;
 
-      const snippets = buildMcpSnippets('<SEU_TOKEN_AQUI>', agentName);
-      const codeClaude = document.getElementById('ws-code-claude');
-      if (codeClaude) codeClaude.textContent = snippets.claudeConfig;
-
-      const codeCline = document.getElementById('ws-code-cline');
-      if (codeCline) codeCline.textContent = snippets.clineConfig;
-
-      const codeCli = document.getElementById('ws-code-cli');
-      if (codeCli) codeCli.textContent = snippets.cliCmd;
-
-      let wakeScript = '';
-      if (harness === 'claude-code') {
-        if (wakeMode === 'hook') {
-          wakeScript = `# Configurar no Claude Code (.claude.json ou terminal):
-export AICHAT_AGENT_TOKEN="<SEU_TOKEN_AQUI>"
-export AICHAT_ROOM="geral"
-
-# Script cliente universal como hook de paragem:
-python tools/aichat-wait.py --hook claude-code --room geral`;
-        } else if (wakeMode === 'background') {
-          wakeScript = `# Em segundo plano (background daemon):
-export AICHAT_AGENT_TOKEN="<SEU_TOKEN_AQUI>"
-python tools/aichat-wait.py --room geral --format json`;
-        } else {
-          wakeScript = `# Chamada MCP direta:
-wait_for_work(timeout_seconds=600, ack=0)`;
-        }
-      } else if (harness === 'antigravity') {
-        wakeScript = `# No Antigravity via MCP:
-wait_for_work(timeout_seconds=600, ack=0)
-
-# Ou script universal:
-python tools/aichat-wait.py --room geral --timeout 600`;
-      } else if (harness === 'opencode') {
-        wakeScript = `# No OpenCode:
-export AICHAT_AGENT_TOKEN="<SEU_TOKEN_AQUI>"
-python tools/aichat-wait.py --hook opencode --room geral`;
-      } else {
-        wakeScript = `# Cliente universal para qualquer harness:
-python tools/aichat-wait.py --url "${window.location.origin}" --token "<SEU_TOKEN_AQUI>" --room geral --timeout 600`;
-      }
-
-      const codeScript = document.getElementById('ws-code-script');
-      if (codeScript) codeScript.textContent = wakeScript;
-
-      switchWakeTab('claude');
-      openModal('modal-wake-snippet');
-    }
-          setTimeout(() => { copyBtn.textContent = 'Copiar'; }, 2500);
-        }
+      const snippets = buildMcpSnippets('<SEU_TOKEN_AQUI>', agentName, harness, wakeMode);
+      ['claude', 'antigravity', 'opencode', 'wait'].forEach(t => {
+        const el = document.getElementById(`ws-code-${t}`);
+        if (el && snippets[t]) el.textContent = snippets[t];
       });
+
+      let targetTab = 'claude';
+      if (harness === 'antigravity') targetTab = 'antigravity';
+      else if (harness === 'opencode') targetTab = 'opencode';
+      else if (wakeMode === 'background' || wakeMode === 'hook') targetTab = (harness === 'claude-code' ? 'claude' : 'wait');
+
+      switchWakeTab(targetTab);
+      openModal('modal-wake-snippet');
     }
 
     // ================= SYSTEM SETTINGS LOGIC =================
@@ -1552,7 +1521,8 @@ python tools/aichat-wait.py --url "${window.location.origin}" --token "<SEU_TOKE
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro ao rodar token');
-        showGeneratedToken(data.token, data.token_hint, agentName);
+        const ag = (agentsCache || []).find(a => a.id === agentId);
+        showGeneratedToken(data.token, data.token_hint, agentName, ag ? ag.harness : 'claude-code', ag ? ag.wake_mode : 'background');
         loadAgents();
       } catch (err) {
         showAlert(err.message, true);
@@ -1593,61 +1563,116 @@ python tools/aichat-wait.py --url "${window.location.origin}" --token "<SEU_TOKE
     }
 
     // --- Snippets & Token Disposal (Security Rule: Discard immediately on close) ---
-    function buildMcpSnippets(token, agentName = 'agente') {
+    function buildMcpSnippets(token, agentName = 'agente', harness = 'claude-code', wakeMode = 'background') {
       const origin = window.location.origin;
       const sseUrl = `${origin}/sse`;
       const tokenVal = token || '<SEU_TOKEN_AQUI>';
+      const nameVal = agentName || 'agente';
 
-      const claudeConfig = JSON.stringify({
-        "mcpServers": {
-          "aichat": {
-            "command": "python",
-            "args": ["bridge_stdio.py"],
-            "env": {
-              "AICHAT_AGENT_TOKEN": tokenVal,
-              "AICHAT_ROOM": "geral"
-            }
-          }
-        }
-      }, null, 2);
+      // 1. Claude Code
+      let claude = `# 1. Registar o servidor MCP SSE no Claude Code (âmbito utilizador):
+claude mcp add --transport sse aichat ${sseUrl} -H "Authorization: Bearer ${tokenVal}" -s user\n`;
+      if (wakeMode === 'tool') {
+        claude += `\n# 2. Modo tool: Invoque a ferramenta MCP de espera:
+wait_for_work(timeout_seconds=55)`;
+      } else {
+        claude += `\n# 2. Autorização de execução no Claude Code:
+Bash(python *aichat-wait.py*)
 
-      const clineConfig = JSON.stringify({
-        "mcpServers": {
-          "aichat": {
-            "url": sseUrl,
-            "headers": {
-              "Authorization": `Bearer ${tokenVal}`
-            }
-          }
-        }
-      }, null, 2);
+# 3. Execução com aichat-wait (perfil seguro ~/.aichat/${nameVal}.json, permissões 600):
+curl -o aichat-wait.py ${origin}/tools/aichat-wait.py
+# Ficheiro ~/.aichat/${nameVal}.json: {"url": "${origin}", "token": "${tokenVal}"}
+python aichat-wait.py --agent ${nameVal}${wakeMode === 'hook' ? ' --hook claude-code' : ''}`;
+      }
 
-      const cliCmd = `# FastMCP CLI:
-fastmcp run "${sseUrl}" --header "Authorization: Bearer ${tokenVal}"
+      // 2. Antigravity
+      let antigravity = `// Configuração MCP em .gemini/antigravity/mcp_config.json:
+{
+  "mcpServers": {
+    "aichat": {
+      "url": "${sseUrl}",
+      "headers": {
+        "Authorization": "Bearer ${tokenVal}"
+      }
+    }
+  }
+}\n`;
+      if (wakeMode === 'tool') {
+        antigravity += `\n// Chamada da ferramenta MCP (timeout abaixo do limite do harness):
+wait_for_work(timeout_seconds=55)`;
+      } else {
+        antigravity += `\n# Recomendação Antigravity: usar modo background via aichat-wait.py
+curl -o aichat-wait.py ${origin}/tools/aichat-wait.py
+# Perfil ~/.aichat/${nameVal}.json (permissões 600): {"url": "${origin}", "token": "${tokenVal}"}
+python aichat-wait.py --agent ${nameVal}`;
+      }
 
-# Ou via linha de comandos com aichat-wait:
-export AICHAT_AGENT_TOKEN="${tokenVal}"
-export AICHAT_ROOM="geral"
-python tools/aichat-wait.py --room geral`;
+      // 3. OpenCode
+      let opencode = `// ~/.config/opencode/opencode.json (ou opencode.json):
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "aichat": {
+      "type": "remote",
+      "url": "${sseUrl}",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer ${tokenVal}"
+      }
+    }
+  }
+}\n`;
+      if (wakeMode === 'tool') {
+        opencode += `\n// Chamada da ferramenta MCP:
+wait_for_work(timeout_seconds=55)`;
+      } else {
+        opencode += `\n# Execução via aichat-wait.py:
+curl -o aichat-wait.py ${origin}/tools/aichat-wait.py
+# Perfil ~/.aichat/${nameVal}.json (permissões 600): {"url": "${origin}", "token": "${tokenVal}"}
+python aichat-wait.py --agent ${nameVal}${wakeMode === 'hook' ? ' --hook opencode' : ''}`;
+      }
 
-      return { claudeConfig, clineConfig, cliCmd };
+      // 4. aichat-wait
+      let wait = `# 1. Descarregar o script cliente universal:
+curl -o aichat-wait.py ${origin}/tools/aichat-wait.py
+
+# 2. Criar perfil seguro em ~/.aichat/${nameVal}.json (permissões 600):
+mkdir -p ~/.aichat && chmod 700 ~/.aichat
+cat << 'EOF' > ~/.aichat/${nameVal}.json
+{
+  "url": "${origin}",
+  "token": "${tokenVal}"
+}
+EOF
+chmod 600 ~/.aichat/${nameVal}.json
+
+# 3. Execução contínua em segundo plano:
+python aichat-wait.py --agent ${nameVal}`;
+      if (wakeMode === 'hook') {
+        wait += `\n\n# Ou como hook no fecho do turno:
+python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'}`;
+      }
+
+      return { claude, antigravity, opencode, wait };
     }
 
-    function showGeneratedToken(token, hint, agentName = '') {
+    function showGeneratedToken(token, hint, agentName = '', harness = 'claude-code', wakeMode = 'background') {
       document.getElementById('td-token-value').textContent = token;
       document.getElementById('td-token-hint').textContent = hint || (token ? token.slice(-4) : '');
       const copyBtn = document.getElementById('td-copy-btn-text');
       if (copyBtn) copyBtn.textContent = 'Copiar';
 
-      const snippets = buildMcpSnippets(token, agentName);
-      const sClaude = document.getElementById('td-snippet-claude');
-      if (sClaude) sClaude.textContent = snippets.claudeConfig;
-      const sCline = document.getElementById('td-snippet-cline');
-      if (sCline) sCline.textContent = snippets.clineConfig;
-      const sCli = document.getElementById('td-snippet-cli');
-      if (sCli) sCli.textContent = snippets.cliCmd;
+      const snippets = buildMcpSnippets(token, agentName, harness, wakeMode);
+      ['claude', 'antigravity', 'opencode', 'wait'].forEach(t => {
+        const el = document.getElementById(`td-snippet-${t}`);
+        if (el && snippets[t]) el.textContent = snippets[t];
+      });
 
-      switchTokenSnippetTab('claude');
+      let targetTab = 'claude';
+      if (harness === 'antigravity') targetTab = 'antigravity';
+      else if (harness === 'opencode') targetTab = 'opencode';
+
+      switchTokenSnippetTab(targetTab);
       openModal('modal-token-display');
     }
 
@@ -1655,12 +1680,10 @@ python tools/aichat-wait.py --room geral`;
       // Secure discard: clear token and snippet content completely from DOM and memory
       const tv = document.getElementById('td-token-value');
       if (tv) tv.textContent = '';
-      const sc = document.getElementById('td-snippet-claude');
-      if (sc) sc.textContent = '';
-      const scline = document.getElementById('td-snippet-cline');
-      if (scline) scline.textContent = '';
-      const scli = document.getElementById('td-snippet-cli');
-      if (scli) scli.textContent = '';
+      ['claude', 'antigravity', 'opencode', 'wait'].forEach(t => {
+        const el = document.getElementById(`td-snippet-${t}`);
+        if (el) el.textContent = '';
+      });
       const hint = document.getElementById('td-token-hint');
       if (hint) hint.textContent = '';
 
@@ -1680,7 +1703,7 @@ python tools/aichat-wait.py --room geral`;
     }
 
     function switchTokenSnippetTab(tab) {
-      ['claude', 'cline', 'cli'].forEach(t => {
+      ['claude', 'antigravity', 'opencode', 'wait'].forEach(t => {
         const btn = document.getElementById(`ts-tab-${t}`);
         const content = document.getElementById(`ts-content-${t}`);
         if (btn) {
@@ -1696,7 +1719,7 @@ python tools/aichat-wait.py --room geral`;
     }
 
     function switchWakeTab(tab) {
-      ['claude', 'cline', 'cli', 'script'].forEach(t => {
+      ['claude', 'antigravity', 'opencode', 'wait'].forEach(t => {
         const btn = document.getElementById(`ws-tab-${t}`);
         const content = document.getElementById(`ws-content-${t}`);
         if (btn) {
@@ -1911,6 +1934,8 @@ python tools/aichat-wait.py --room geral`;
         }
         const schemaEl = document.getElementById('sys-schema-version');
         if (schemaEl) schemaEl.textContent = data.schema_version ?? '?';
+        const dbOriginEl = document.getElementById('sys-db-origin');
+        if (dbOriginEl) dbOriginEl.textContent = data.db_origin || 'Desconhecida';
         const dbBadge = document.getElementById('sys-db-badge');
         if (dbBadge) {
           if (data.is_unexpected_db) {

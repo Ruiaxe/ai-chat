@@ -85,6 +85,7 @@ class TestV3Phase2QoL(unittest.TestCase):
         self.assertEqual(data["version"], "v3.1")
         self.assertIn("commit", data)
         self.assertIn("db_path", data)
+        self.assertIn("db_origin", data)
         self.assertIn("expected_db_path", data)
         self.assertIn("is_unexpected_db", data)
         self.assertEqual(data["schema_version"], 3)
@@ -269,11 +270,86 @@ class TestV3Phase2QoL(unittest.TestCase):
         self.assertIn('id="ar-add-room-select"', html)
         self.assertIn('id="agent-rooms-table-body"', html)
 
-        # 4. Token Snippets and secure discard
+        # 4. Token Snippets and secure discard (Claude Code, Antigravity, OpenCode, aichat-wait)
         self.assertIn('id="ts-tab-claude"', html)
-        self.assertIn('id="ts-tab-cline"', html)
-        self.assertIn('id="ts-tab-cli"', html)
+        self.assertIn('id="ts-tab-antigravity"', html)
+        self.assertIn('id="ts-tab-opencode"', html)
+        self.assertIn('id="ts-tab-wait"', html)
+        self.assertIn('id="ws-tab-claude"', html)
+        self.assertIn('id="ws-tab-antigravity"', html)
+        self.assertIn('id="ws-tab-opencode"', html)
+        self.assertIn('id="ws-tab-wait"', html)
+        self.assertIn('id="sys-db-origin"', html)
         self.assertIn('closeTokenModal()', html)
+
+        # Removed legacy/unwanted harnesses
+        self.assertNotIn('Claude Desktop', html)
+        self.assertNotIn('bridge_stdio.py', html)
+        self.assertNotIn('Cursor / Cline', html)
+        self.assertNotIn('fastmcp run', html)
+        self.assertNotIn('AICHAT_ROOM="geral"', html)
+
+    # --- 6. Import Safety & DB Resolution Precedence ---
+
+    def test_13_import_mcp_server_does_not_create_db(self):
+        """Importing aichat.mcp_server alone MUST NOT create any database file or directory on disk."""
+        with tempfile.TemporaryDirectory() as empty_dir:
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(BASE_DIR)
+            env.pop("AICHAT_ALLOW_DEFAULT_DB", None)
+            env.pop("AICHAT_TESTING", None)
+            cmd = [
+                sys.executable,
+                "-c",
+                "import os, sys; from pathlib import Path; from aichat.mcp_server import hub; print('imported')",
+            ]
+            res = subprocess.run(cmd, cwd=empty_dir, env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, f"Import failed: {res.stderr}")
+            self.assertIn("imported", res.stdout)
+
+            # Ensure no .db files were created in empty_dir
+            created_files = list(Path(empty_dir).rglob("*.db"))
+            self.assertEqual(created_files, [], f"Import created DB file: {created_files}")
+
+    def test_14_db_name_resolution_precedence(self):
+        """Verifies resolution order: --db > AICHAT_DB_NAME > AICHAT_DB_PATH > chat_v3.db."""
+        from aichat.storage import resolve_db_target, DATA_DIR
+
+        # 1. CLI arg takes highest precedence
+        p, origin = resolve_db_target("custom_cli.db")
+        self.assertEqual(p, Path("custom_cli.db").resolve())
+        self.assertEqual(origin, "Parâmetro CLI (--db)")
+
+        # 2. AICHAT_DB_NAME takes precedence over AICHAT_DB_PATH
+        env_orig_name = os.environ.get("AICHAT_DB_NAME")
+        env_orig_path = os.environ.get("AICHAT_DB_PATH")
+        try:
+            os.environ["AICHAT_DB_NAME"] = "my_custom_env.db"
+            os.environ["AICHAT_DB_PATH"] = "other_path.db"
+            p, origin = resolve_db_target()
+            self.assertEqual(p, (DATA_DIR / "my_custom_env.db").resolve())
+            self.assertIn("AICHAT_DB_NAME=my_custom_env.db", origin)
+
+            # 3. AICHAT_DB_PATH used when AICHAT_DB_NAME is absent
+            del os.environ["AICHAT_DB_NAME"]
+            p, origin = resolve_db_target()
+            self.assertEqual(p, Path("other_path.db").resolve())
+            self.assertEqual(origin, "Variável de ambiente (AICHAT_DB_PATH)")
+
+            # 4. Default production DB when no env or cli
+            del os.environ["AICHAT_DB_PATH"]
+            p, origin = resolve_db_target()
+            self.assertEqual(p, (DATA_DIR / "chat_v3.db").resolve())
+            self.assertEqual(origin, "Omissão de produção (data/chat_v3.db)")
+        finally:
+            if env_orig_name:
+                os.environ["AICHAT_DB_NAME"] = env_orig_name
+            else:
+                os.environ.pop("AICHAT_DB_NAME", None)
+            if env_orig_path:
+                os.environ["AICHAT_DB_PATH"] = env_orig_path
+            else:
+                os.environ.pop("AICHAT_DB_PATH", None)
 
 
 if __name__ == "__main__":

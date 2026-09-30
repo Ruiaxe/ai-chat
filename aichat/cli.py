@@ -23,9 +23,11 @@ def _get_storage(db_arg: str | None, require_exists: bool = True) -> StorageV3:
     if db_arg:
         p = Path(db_arg).resolve()
     else:
-        # Check env var or default to chat_v3.db, fallback to chat.db if v3
+        env_name = os.environ.get("AICHAT_DB_NAME")
         env_db = os.environ.get("AICHAT_DB_PATH")
-        if env_db:
+        if env_name:
+            p = (DATA_DIR / env_name).resolve()
+        elif env_db:
             p = Path(env_db).resolve()
         elif DEFAULT_V3_DB.exists():
             p = DEFAULT_V3_DB

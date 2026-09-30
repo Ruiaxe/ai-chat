@@ -18,9 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import uvicorn
 
-# Explicitly authorize production DB for server launcher
-os.environ["AICHAT_ALLOW_DEFAULT_DB"] = "1"
-
 from aichat.config import (
     BASE_DIR,
     DATA_DIR,
@@ -29,12 +26,12 @@ from aichat.config import (
     save_server_info,
     get_git_commit,
 )
-from aichat.storage import check_schema_version, ChatStorage
+from aichat.storage import check_schema_version, ChatStorage, resolve_db_target, get_db_origin
 from aichat.mcp_server import hub, mcp
 from aichat.web_app import create_app
 
 
-def print_banner(host: str, port: int, one_time_code: str = "", db_path: Path | None = None) -> None:
+def print_banner(host: str, port: int, one_time_code: str = "", db_path: Path | None = None, db_origin: str = "") -> None:
     display_host = host
     if host in ("0.0.0.0", "::"):
         try:
@@ -58,8 +55,7 @@ def print_banner(host: str, port: int, one_time_code: str = "", db_path: Path | 
     expected_db = (DATA_DIR / "chat_v3.db").resolve()
     is_unexpected = actual_db != expected_db
     proxy_status = "Ativo (--trust-proxy)" if os.environ.get("AICHAT_TRUST_PROXY") == "1" else "Inativo (ignora X-Forwarded-For)"
-    python_exe = sys.executable
-    bridge_path = BASE_DIR / "bridge_stdio.py"
+    db_origin_display = db_origin or get_db_origin(actual_db)
 
     banner = f"""
 ================================================================================
@@ -72,6 +68,7 @@ def print_banner(host: str, port: int, one_time_code: str = "", db_path: Path | 
  ⚡ MCP SSE Endpoint:      {sse_url}
  🔌 WebSocket Endpoint:    {ws_url}
  💾 SQLite Database:       {actual_db} (esquema v{schema_v or '?'})
+ 📌 Origem da BD:          {db_origin_display}
  📁 Logs Directory:        {LOGS_DIR}
  🛡️  Trust Proxy:           {proxy_status}
 ================================================================================
@@ -82,16 +79,23 @@ def print_banner(host: str, port: int, one_time_code: str = "", db_path: Path | 
    NÃO É a base de dados de produção padrão ({expected_db})!
 ================================================================================
 """
-    banner += f"""💡 QUICK SETUP FOR YOUR AGENTS:
+    banner += f"""💡 CONFIGURAÇÃO RÁPIDA DE AGENTES:
 
- Option 1: MCP over HTTP (SSE) - Recommended for Cursor, Antigravity, Cline:
-   URL: {sse_url}
+ Claude Code:
+   claude mcp add --transport sse aichat {sse_url} -H "Authorization: Bearer <token>" -s user
 
- Option 2: MCP via stdio (Claude Desktop):
-   Command: {python_exe}
-   Args:    ["{bridge_path}"]
+ Antigravity (mcpServers):
+   "aichat": {{ "url": "{sse_url}", "headers": {{ "Authorization": "Bearer <token>" }} }}
 
- Live chat activity will be displayed in real time below:
+ OpenCode (opencode.json):
+   "aichat": {{ "type": "remote", "url": "{sse_url}", "enabled": true, "headers": {{ "Authorization": "Bearer <token>" }} }}
+
+ aichat-wait (background / hook):
+   curl -o aichat-wait.py {web_url}tools/aichat-wait.py
+   ~/.aichat/<agente>.json: {{"url": "{web_url.rstrip('/')}", "token": "<token>"}}
+   python aichat-wait.py --agent <agente>
+
+ Mais opções e snippets prontos a copiar em: {web_url}admin (separador Agentes)
 ================================================================================
 """
     print(banner)
@@ -143,8 +147,7 @@ def main():
         os.environ["AICHAT_TRUST_PROXY"] = "1"
 
     # Validate database path before attempting to open or create
-    default_prod_db = (DATA_DIR / "chat_v3.db").resolve()
-    db_target = Path(args.db).resolve() if args.db else default_prod_db
+    db_target, db_origin = resolve_db_target(args.db)
 
     if not db_target.exists() and not args.init_db:
         print(f"\n❌ ERRO: A base de dados não existe em '{db_target}'.", file=sys.stderr)
@@ -152,9 +155,10 @@ def main():
         print("Se pretende inicializar uma nova base de dados intencionalmente, use a flag: --init-db\n", file=sys.stderr)
         sys.exit(1)
 
+    os.environ["AICHAT_ALLOW_DEFAULT_DB"] = "1"
     os.environ["AICHAT_DB_PATH"] = str(db_target)
-    if hub.storage.db_path.resolve() != db_target.resolve():
-        hub.storage = ChatStorage(db_path=db_target)
+    os.environ["AICHAT_DB_ORIGIN"] = db_origin
+    hub.storage = ChatStorage(db_path=db_target)
 
     port = args.port if args.port is not None else find_free_port(start_port=8765)
 
@@ -165,7 +169,7 @@ def main():
     one_time_code = hub.generate_one_time_auth_code(expiry_seconds=600)
 
     # Print startup banner
-    print_banner(host=host, port=port, one_time_code=one_time_code, db_path=db_target)
+    print_banner(host=host, port=port, one_time_code=one_time_code, db_path=db_target, db_origin=db_origin)
 
     if not args.no_browser:
         open_browser_delayed(f"http://{host}:{port}/?auth={one_time_code}")

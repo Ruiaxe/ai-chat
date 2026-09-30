@@ -50,17 +50,8 @@ class ChatHub:
     RESERVED_HUMAN_NAMES = {"human", "rui", "admin", "administrator", "system", "moderator", "root"}
 
     def __init__(self, storage: ChatStorage | None = None, human_token: str | None = None):
-        if storage is not None:
-            self.storage = storage
-        elif is_test_environment():
-            import tempfile
-            self._ephemeral_tmp = tempfile.mkdtemp(prefix="aichat_hub_test_")
-            self.storage = ChatStorage(
-                db_path=Path(self._ephemeral_tmp) / "chat.db",
-                logs_dir=Path(self._ephemeral_tmp) / "logs",
-            )
-        else:
-            self.storage = ChatStorage()
+        self._storage = storage
+        self._ephemeral_tmp: str | None = None
         # Active WebSocket connections per room: {room_name: {ws: {"name": str, "is_human": bool, "connected_at": str}}}
         self._active_websockets: dict[str, dict[Any, dict[str, Any]]] = {}
         # Waiting listeners for long polling: {room_name: list[dict[str, Any]]}
@@ -81,7 +72,14 @@ class ChatHub:
 
         # Human authentication token (supports env var, persisted local file, or generated)
         env_token = os.environ.get("AICHAT_HUMAN_TOKEN", "").strip()
-        token_file = self.storage.db_path.parent / ".human_token"
+        if is_test_environment():
+            import tempfile
+            token_dir = Path(tempfile.gettempdir())
+        else:
+            from aichat.config import DATA_DIR
+            token_dir = self._storage.db_path.parent if self._storage is not None else DATA_DIR
+        token_file = token_dir / ".human_token"
+
         if human_token:
             self.human_token = human_token
         elif env_token:
@@ -93,15 +91,38 @@ class ChatHub:
                     self.human_token = saved
                 else:
                     self.human_token = secrets.token_hex(24)
-                    token_file.write_text(self.human_token, encoding="utf-8")
+                    if not is_test_environment() and self._storage is not None:
+                        token_file.write_text(self.human_token, encoding="utf-8")
             except Exception:
                 self.human_token = secrets.token_hex(24)
         else:
             self.human_token = secrets.token_hex(24)
-            try:
-                token_file.write_text(self.human_token, encoding="utf-8")
-            except Exception:
-                pass
+            # Only write token file if storage was explicitly provided (e.g. server running) and not testing
+            if not is_test_environment() and self._storage is not None:
+                try:
+                    token_file.write_text(self.human_token, encoding="utf-8")
+                except Exception:
+                    pass
+
+    @property
+    def storage(self) -> Any:
+        if self._storage is not None:
+            return self._storage
+        if is_test_environment():
+            import tempfile
+            self._ephemeral_tmp = tempfile.mkdtemp(prefix="aichat_hub_test_")
+            self._storage = ChatStorage(
+                db_path=Path(self._ephemeral_tmp) / "chat_v3.db",
+                logs_dir=Path(self._ephemeral_tmp) / "logs",
+            )
+            return self._storage
+        from aichat.storage import get_default_db_path
+        self._storage = ChatStorage(db_path=get_default_db_path())
+        return self._storage
+
+    @storage.setter
+    def storage(self, val: Any) -> None:
+        self._storage = val
 
         # Human session management and ephemeral one-time auth codes (D5)
         self._one_time_auth_codes: dict[str, float] = {}  # code -> expiry_ts
