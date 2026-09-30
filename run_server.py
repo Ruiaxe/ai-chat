@@ -18,6 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import uvicorn
 
+# Explicitly authorize production DB for server launcher
+os.environ["AICHAT_ALLOW_DEFAULT_DB"] = "1"
+
 from aichat.config import (
     BASE_DIR,
     DATA_DIR,

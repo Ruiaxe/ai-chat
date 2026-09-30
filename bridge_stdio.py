@@ -12,6 +12,9 @@ from pathlib import Path
 # Ensure package is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Explicitly authorize production DB for stdio bridge launcher
+os.environ["AICHAT_ALLOW_DEFAULT_DB"] = "1"
+
 from aichat.mcp_server import init_stdio_mode, mcp
 
 if __name__ == "__main__":

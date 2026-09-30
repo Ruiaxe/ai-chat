@@ -5,9 +5,10 @@ import secrets
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
-from aichat.storage import ChatStorage
+from aichat.storage import ChatStorage, is_test_environment
 
 
 def _format_id_ranges(ids: list[int]) -> list[str]:
@@ -49,7 +50,17 @@ class ChatHub:
     RESERVED_HUMAN_NAMES = {"human", "rui", "admin", "administrator", "system", "moderator", "root"}
 
     def __init__(self, storage: ChatStorage | None = None, human_token: str | None = None):
-        self.storage = storage or ChatStorage()
+        if storage is not None:
+            self.storage = storage
+        elif is_test_environment():
+            import tempfile
+            self._ephemeral_tmp = tempfile.mkdtemp(prefix="aichat_hub_test_")
+            self.storage = ChatStorage(
+                db_path=Path(self._ephemeral_tmp) / "chat.db",
+                logs_dir=Path(self._ephemeral_tmp) / "logs",
+            )
+        else:
+            self.storage = ChatStorage()
         # Active WebSocket connections per room: {room_name: {ws: {"name": str, "is_human": bool, "connected_at": str}}}
         self._active_websockets: dict[str, dict[Any, dict[str, Any]]] = {}
         # Waiting listeners for long polling: {room_name: list[dict[str, Any]]}

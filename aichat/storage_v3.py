@@ -40,8 +40,9 @@ class StorageV3:
     _failed_ip_attempts: dict[str, list[float]] = {}  # IP -> list of failure timestamps
     _ip_lock = threading.Lock()
 
-    def __init__(self, db_path: Path = DEFAULT_V3_DB, logs_dir: Path = LOGS_DIR):
-        self.db_path = Path(db_path)
+    def __init__(self, db_path: Path | str | None = None, logs_dir: Path = LOGS_DIR):
+        from aichat.storage import validate_db_path
+        self.db_path = validate_db_path(db_path, caller="StorageV3", default_path=DEFAULT_V3_DB)
         self.logs_dir = Path(logs_dir)
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self._active_listeners: dict[int, int] = {}

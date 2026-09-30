@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import sys
 import threading
 import time
 from datetime import datetime, timedelta
@@ -10,6 +11,56 @@ from typing import Any
 from aichat.config import DATA_DIR, LOGS_DIR
 
 DB_PATH = DATA_DIR / os.environ.get("AICHAT_DB_NAME", "chat.db")
+
+
+def is_test_environment() -> bool:
+    """Returns True if the process is running in test mode (pytest, AICHAT_TESTING=1, etc.)."""
+    return (
+        os.environ.get("AICHAT_TESTING") == "1"
+        or "pytest" in sys.modules
+        or bool(os.environ.get("PYTEST_CURRENT_TEST"))
+    )
+
+
+def validate_db_path(
+    db_path: Path | str | None,
+    caller: str = "ChatStorage",
+    default_path: Path = DB_PATH,
+) -> Path:
+    """
+    Validates and resolves db_path according to data protection rules:
+    1. In test mode (pytest or AICHAT_TESTING=1):
+       - If db_path is None (unspecified), refuse default production DB.
+       - If db_path resolves to DATA_DIR/chat.db or DATA_DIR/chat_v3.db, refuse it.
+    2. In ad-hoc commands (outside run_server.py and bridge_stdio.py):
+       - If db_path is None and AICHAT_ALLOW_DEFAULT_DB is not set, refuse and require an explicit path.
+    """
+    production_db_resolves = {
+        (DATA_DIR / "chat.db").resolve(),
+        (DATA_DIR / "chat_v3.db").resolve(),
+        DB_PATH.resolve(),
+    }
+
+    if db_path is None:
+        if is_test_environment():
+            raise RuntimeError(
+                f"{caller}: O uso da base de dados por defeito ('data/chat.db') é estritamente proibido "
+                "em modo de teste (pytest ou AICHAT_TESTING=1). Forneça um caminho explícito temporário."
+            )
+        if os.environ.get("AICHAT_ALLOW_DEFAULT_DB") == "1":
+            return default_path
+        raise ValueError(
+            f"{caller}: Comandos avulsos exigem um caminho explícito de base de dados. "
+            f"Passe db_path explicitamente (ex: {caller}(db_path=...)) ou inicie o servidor via run_server.py."
+        )
+
+    resolved = Path(db_path).resolve()
+    if is_test_environment() and resolved in production_db_resolves:
+        raise RuntimeError(
+            f"{caller}: O uso da base de dados de produção ('{resolved}') é estritamente proibido "
+            "em modo de teste (pytest ou AICHAT_TESTING=1). Forneça um caminho explícito temporário."
+        )
+    return Path(db_path)
 
 
 def check_schema_version(db_path: Path) -> int | None:
@@ -36,12 +87,12 @@ def check_schema_version(db_path: Path) -> int | None:
                 pass
 
 
-def get_storage(db_path: Path = DB_PATH, logs_dir: Path = LOGS_DIR) -> Any:
+def get_storage(db_path: Path | str | None = None, logs_dir: Path = LOGS_DIR) -> Any:
     """
     Returns StorageV3 for v3 databases or empty/new databases.
     Fails fast if the database has tables but is not on schema_version=3.
     """
-    path = Path(db_path)
+    path = validate_db_path(db_path, caller="get_storage")
     if path.exists() and path.stat().st_size > 0:
         v = check_schema_version(path)
         if v == 3:
@@ -73,9 +124,9 @@ class ChatStorage:
 
     _local = threading.local()
 
-    def __init__(self, db_path: Path = DB_PATH, logs_dir: Path = LOGS_DIR, schema_version: int | None = None):
-        self.db_path = Path(db_path)
-        self.logs_dir = Path(logs_dir)
+    def __init__(self, db_path: Path | str | None = None, logs_dir: Path | str | None = None, schema_version: int | None = None):
+        self.db_path = validate_db_path(db_path, caller="ChatStorage")
+        self.logs_dir = Path(logs_dir) if logs_dir is not None else LOGS_DIR
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self._v3_storage: Any = None
         self._init_db(schema_version=schema_version)

@@ -395,6 +395,46 @@ class TestSecurityAuditVulnerabilities(unittest.IsolatedAsyncioTestCase):
         self.assertIn("join", actions)
         self.assertIn("leave", actions)
 
+    def test_database_protection_against_production_db_in_tests_and_adhoc(self):
+        """Verifies ChatStorage and StorageV3 strictly refuse production DB in test mode and ad-hoc commands."""
+        from aichat.config import DATA_DIR
+        from aichat.storage import ChatStorage, validate_db_path
+        from aichat.storage_v3 import StorageV3
+        from unittest.mock import patch
+
+        # 1. In test mode: ChatStorage() without args raises RuntimeError
+        with self.assertRaises(RuntimeError) as ctx:
+            ChatStorage()
+        self.assertIn("estritamente proibido em modo de teste", str(ctx.exception))
+
+        # 2. In test mode: ChatStorage with explicit production chat.db raises RuntimeError
+        with self.assertRaises(RuntimeError) as ctx:
+            ChatStorage(db_path=DATA_DIR / "chat.db")
+        self.assertIn("estritamente proibido em modo de teste", str(ctx.exception))
+
+        # 3. In test mode: StorageV3() without args raises RuntimeError
+        with self.assertRaises(RuntimeError) as ctx:
+            StorageV3()
+        self.assertIn("estritamente proibido em modo de teste", str(ctx.exception))
+
+        # 4. In test mode: StorageV3 with explicit production chat_v3.db raises RuntimeError
+        with self.assertRaises(RuntimeError) as ctx:
+            StorageV3(db_path=DATA_DIR / "chat_v3.db")
+        self.assertIn("estritamente proibido em modo de teste", str(ctx.exception))
+
+        # 5. Ad-hoc command outside test mode without AICHAT_ALLOW_DEFAULT_DB raises ValueError
+        with patch("aichat.storage.is_test_environment", return_value=False):
+            with patch.dict(os.environ, {}, clear=True):
+                with self.assertRaises(ValueError) as ctx:
+                    validate_db_path(None, caller="ChatStorage")
+                self.assertIn("Comandos avulsos exigem um caminho explícito", str(ctx.exception))
+
+        # 6. Launcher with AICHAT_ALLOW_DEFAULT_DB=1 allows default DB outside test mode
+        with patch("aichat.storage.is_test_environment", return_value=False):
+            with patch.dict(os.environ, {"AICHAT_ALLOW_DEFAULT_DB": "1"}):
+                res = validate_db_path(None, caller="ChatStorage")
+                self.assertEqual(res.resolve(), (DATA_DIR / "chat.db").resolve())
+
 
 if __name__ == "__main__":
     unittest.main()
