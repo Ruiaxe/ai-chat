@@ -110,6 +110,40 @@ class StorageV3:
                     "INSERT OR REPLACE INTO schema_version (version, applied_at, notes) VALUES (3, ?, 'ai-chat v3 schema');",
                     (utc_now(),),
                 )
+        self._ensure_v31_schema(conn)
+
+    def _ensure_v31_schema(self, conn: sqlite3.Connection) -> None:
+        """Ensures v3.1 columns and system_settings table exist on existing or newly created v3 databases."""
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(agents);").fetchall()}
+        v31_cols = [
+            ("harness", "TEXT NOT NULL DEFAULT 'other'"),
+            ("wake_mode", "TEXT NOT NULL DEFAULT 'tool'"),
+            ("listening_now", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_listen_at", "TEXT"),
+            ("last_activity_at", "TEXT"),
+            ("unconfirmed_batch_ids", "TEXT NOT NULL DEFAULT ''"),
+            ("unconfirmed_delivered_at", "TEXT"),
+            ("stalled_alert_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("last_stalled_alert_at", "TEXT"),
+        ]
+        with conn:
+            for col_name, col_def in v31_cols:
+                if col_name not in cols:
+                    conn.execute(f"ALTER TABLE agents ADD COLUMN {col_name} {col_def};")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS system_settings (
+                    key         TEXT PRIMARY KEY,
+                    value       TEXT NOT NULL,
+                    updated_at  TEXT NOT NULL
+                );
+                """
+            )
+            for k, v in [("t_idle_seconds", "180"), ("t_unread_seconds", "120"), ("max_wake_timeout", "600")]:
+                conn.execute(
+                    "INSERT OR IGNORE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?);",
+                    (k, v, utc_now()),
+                )
 
     # ------------------------------------------------------------------ Resolvers
     def _resolve_room(self, room_id_or_name: int | str | dict[str, Any]) -> dict[str, Any] | None:
@@ -194,7 +228,9 @@ class StorageV3:
             """
             SELECT p.*, 
                    h.access_role, h.must_change_password, h.failed_logins, h.locked_until, h.last_login_at,
-                   a.default_role_id, ar.role_key as default_role_key
+                   a.default_role_id, ar.role_key as default_role_key,
+                   a.harness, a.wake_mode, a.listening_now, a.last_listen_at, a.last_activity_at,
+                   a.stalled_alert_count, a.last_stalled_alert_at, a.unconfirmed_batch_ids
             FROM principals p
             LEFT JOIN humans h ON p.id = h.principal_id
             LEFT JOIN agents a ON p.id = a.principal_id
@@ -212,7 +248,9 @@ class StorageV3:
             """
             SELECT p.*, 
                    h.access_role, h.must_change_password, h.failed_logins, h.locked_until, h.last_login_at,
-                   a.default_role_id, ar.role_key as default_role_key
+                   a.default_role_id, ar.role_key as default_role_key,
+                   a.harness, a.wake_mode, a.listening_now, a.last_listen_at, a.last_activity_at,
+                   a.stalled_alert_count, a.last_stalled_alert_at, a.unconfirmed_batch_ids
             FROM principals p
             LEFT JOIN humans h ON p.id = h.principal_id
             LEFT JOIN agents a ON p.id = a.principal_id
@@ -229,7 +267,9 @@ class StorageV3:
         query = """
             SELECT p.*, 
                    h.access_role, h.must_change_password, h.failed_logins, h.locked_until, h.last_login_at,
-                   a.default_role_id, ar.role_key as default_role_key
+                   a.default_role_id, ar.role_key as default_role_key,
+                   a.harness, a.wake_mode, a.listening_now, a.last_listen_at, a.last_activity_at,
+                   a.stalled_alert_count, a.last_stalled_alert_at, a.unconfirmed_batch_ids
             FROM principals p
             LEFT JOIN humans h ON p.id = h.principal_id
             LEFT JOIN agents a ON p.id = a.principal_id
@@ -606,11 +646,14 @@ class StorageV3:
         is_system: int = 0,
         status: str = "active",
         default_role_id: int | None = None,
+        create_credential: bool = True,
+        harness: str = "other",
+        wake_mode: str = "tool",
         actor_id: int | None = None,
         actor_name: str = "admin",
     ) -> tuple[int, str]:
         """
-        Creates an agent principal, agents row, and initial credential.
+        Creates an agent principal, agents row, and optional initial credential.
         Returns (principal_id, raw_agent_token). Plain token is never logged.
         """
         conn = self._get_connection()
@@ -632,19 +675,25 @@ class StorageV3:
                 is_system=is_system,
             )
             conn.execute(
-                "INSERT INTO agents (principal_id, default_role_id) VALUES (?, ?);",
-                (pid, target_role_id),
-            )
-            raw_token = new_agent_token()
-            t_hash = hash_token(raw_token)
-            t_hint = token_hint(raw_token)
-            conn.execute(
                 """
-                INSERT INTO credentials (principal_id, token_hash, token_hint, created_at)
+                INSERT INTO agents (principal_id, default_role_id, harness, wake_mode)
                 VALUES (?, ?, ?, ?);
                 """,
-                (pid, t_hash, t_hint, now_str),
+                (pid, target_role_id, harness, wake_mode),
             )
+            raw_token = ""
+            t_hint = ""
+            if create_credential:
+                raw_token = new_agent_token()
+                t_hash = hash_token(raw_token)
+                t_hint = token_hint(raw_token)
+                conn.execute(
+                    """
+                    INSERT INTO credentials (principal_id, token_hash, token_hint, created_at)
+                    VALUES (?, ?, ?, ?);
+                    """,
+                    (pid, t_hash, t_hint, now_str),
+                )
 
         self.log_audit(
             actor_id=actor_id,
@@ -652,9 +701,610 @@ class StorageV3:
             action="create_agent",
             target_type="principal",
             target_id=pid,
-            details=f"Criou agente '{clean_callsign}' (role_id={target_role_id}, hint={t_hint})",
+            details=f"Criou agente '{clean_callsign}' (status={status}, role_id={target_role_id}, hint={t_hint})",
         )
         return pid, raw_token
+
+    def self_register_agent(self, callsign: str) -> dict[str, Any]:
+        """
+        Submits an agent self-registration request.
+        Creates a principal with status 'pending' WITHOUT credentials.
+        """
+        clean_callsign = (callsign or "").strip()
+        if not clean_callsign:
+            raise ValueError("Callsign não pode ser vazio.")
+        existing = self.get_principal_by_name(clean_callsign)
+        if existing:
+            raise ValueError(f"Agente ou utilizador com o nome '{clean_callsign}' já existe.")
+        pid, _ = self.create_agent(
+            callsign=clean_callsign,
+            status="pending",
+            create_credential=False,
+            actor_name="agent_self_register",
+        )
+        return {
+            "status": "registered_pending_token",
+            "principal_id": pid,
+            "callsign": clean_callsign,
+            "message": f"Pedido de registo submetido para o agente '{clean_callsign}'. O estado está pendente de aprovação por um administrador em /admin. O token será emitido aquando da aprovação.",
+        }
+
+    def approve_agent(
+        self,
+        principal_id: int,
+        actor_id: int | None = None,
+        actor_name: str = "admin",
+    ) -> dict[str, Any]:
+        """
+        Approves a pending agent principal:
+        Sets status = 'active', generates initial credential token, logs to audit.
+        Returns dict containing raw token (emitted once).
+        """
+        p = self.get_principal_by_id(principal_id)
+        if not p or p.get("kind") != "agent":
+            raise ValueError(f"Agente #{principal_id} não encontrado.")
+        if p["status"] == "active":
+            raise ValueError(f"Agente '{p['name']}' já se encontra ativo.")
+
+        conn = self._get_connection()
+        now_str = utc_now()
+        raw_token = new_agent_token()
+        t_hash = hash_token(raw_token)
+        t_hint = token_hint(raw_token)
+
+        with conn:
+            conn.execute("UPDATE principals SET status = 'active' WHERE id = ?;", (principal_id,))
+            conn.execute(
+                """
+                INSERT INTO credentials (principal_id, token_hash, token_hint, created_at)
+                VALUES (?, ?, ?, ?);
+                """,
+                (principal_id, t_hash, t_hint, now_str),
+            )
+
+        self.log_audit(
+            actor_id=actor_id,
+            actor_name=actor_name,
+            action="approve_agent",
+            target_type="principal",
+            target_id=principal_id,
+            details=f"Aprovou agente '{p['name']}' (hint={t_hint})",
+        )
+        updated = self.get_principal_by_id(principal_id) or {}
+        return {
+            "status": "active",
+            "principal_id": principal_id,
+            "callsign": p["name"],
+            "token": raw_token,
+            "token_hint": t_hint,
+            "agent": updated,
+        }
+
+    def update_agent_wake_profile(
+        self,
+        principal_id: int,
+        harness: str | None = None,
+        wake_mode: str | None = None,
+        actor_id: int | None = None,
+        actor_name: str = "admin",
+    ) -> dict[str, Any]:
+        """Updates agent harness and wake_mode profile."""
+        p = self.get_principal_by_id(principal_id)
+        if not p or p.get("kind") != "agent":
+            raise ValueError(f"Agente #{principal_id} não encontrado.")
+
+        updates = []
+        params = []
+        if harness is not None:
+            if harness not in ("claude-code", "antigravity", "opencode", "other"):
+                raise ValueError(f"Harness inválido: '{harness}'. Opções: claude-code, antigravity, opencode, other")
+            updates.append("harness = ?")
+            params.append(harness)
+        if wake_mode is not None:
+            if wake_mode not in ("hook", "background", "tool"):
+                raise ValueError(f"Wake mode inválido: '{wake_mode}'. Opções: hook, background, tool")
+            updates.append("wake_mode = ?")
+            params.append(wake_mode)
+
+        if updates:
+            conn = self._get_connection()
+            params.append(principal_id)
+            with conn:
+                conn.execute(f"UPDATE agents SET {', '.join(updates)} WHERE principal_id = ?;", params)
+
+        self.log_audit(
+            actor_id=actor_id,
+            actor_name=actor_name,
+            action="update_agent_wake_profile",
+            target_type="principal",
+            target_id=principal_id,
+            details=f"Atualizou perfil de wake do agente '{p['name']}' (harness={harness}, wake_mode={wake_mode})",
+        )
+        return self.get_principal_by_id(principal_id) or {}
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        """Retrieves system setting by key."""
+        conn = self._get_connection()
+        row = conn.execute("SELECT value FROM system_settings WHERE key = ?;", (key,)).fetchone()
+        return str(row["value"]) if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        """Sets or updates system setting."""
+        conn = self._get_connection()
+        now_str = utc_now()
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;
+                """,
+                (key, str(value), now_str),
+            )
+
+    def get_system_thresholds(self) -> dict[str, int]:
+        """Returns configured system thresholds for liveliness and wake-up."""
+        try:
+            t_idle = int(self.get_setting("t_idle_seconds", "180"))
+        except (ValueError, TypeError):
+            t_idle = 180
+        try:
+            t_unread = int(self.get_setting("t_unread_seconds", "120"))
+        except (ValueError, TypeError):
+            t_unread = 120
+        try:
+            max_wake = int(self.get_setting("max_wake_timeout", "600"))
+        except (ValueError, TypeError):
+            max_wake = 600
+        return {
+            "t_idle_seconds": t_idle,
+            "t_unread_seconds": t_unread,
+            "max_wake_timeout": max_wake,
+        }
+
+    def set_agent_listening(self, principal_id: int, listening: bool) -> None:
+        """Sets listening_now flag and last_listen_at for an agent."""
+        conn = self._get_connection()
+        now_str = utc_now()
+        with conn:
+            if listening:
+                conn.execute(
+                    "UPDATE agents SET listening_now = 1, last_listen_at = ? WHERE principal_id = ?;",
+                    (now_str, principal_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE agents SET listening_now = 0 WHERE principal_id = ?;",
+                    (principal_id,),
+                )
+
+    def record_agent_activity(self, principal_id: int) -> None:
+        """Records authenticated activity timestamp for an agent."""
+        conn = self._get_connection()
+        now_str = utc_now()
+        with conn:
+            conn.execute(
+                "UPDATE agents SET last_activity_at = ? WHERE principal_id = ?;",
+                (now_str, principal_id),
+            )
+
+    def get_unread_directed_messages_for_agent(
+        self,
+        principal_id: int,
+        room_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Returns all unread messages in accessible rooms that are directly addressed to this agent
+        (either by principal_id or by the agent's role in the respective room).
+        """
+        conn = self._get_connection()
+        query = """
+            SELECT m.id, m.room_id, r.name as room_name, m.created_at, m.sender_id, m.sender_name,
+                   m.content, m.message_type
+            FROM messages m
+            JOIN rooms r ON m.room_id = r.id
+            JOIN room_access ra ON m.room_id = ra.room_id AND ra.principal_id = ?
+            LEFT JOIN read_cursors rc ON rc.room_id = m.room_id AND rc.principal_id = ?
+            JOIN message_recipients mr ON mr.message_id = m.id
+            WHERE m.sender_id != ?
+              AND m.id > COALESCE(rc.last_message_id, 0)
+              AND (
+                (mr.target_kind = 'principal' AND mr.target_id = ?)
+                OR (mr.target_kind = 'role' AND mr.target_id IN (
+                    SELECT COALESCE(ra2.role_id, a.default_role_id)
+                    FROM agents a
+                    LEFT JOIN room_access ra2 ON ra2.room_id = m.room_id AND ra2.principal_id = a.principal_id
+                    WHERE a.principal_id = ?
+                ))
+              )
+        """
+        params: list[Any] = [principal_id, principal_id, principal_id, principal_id, principal_id]
+        if room_id is not None:
+            query += " AND m.room_id = ?"
+            params.append(room_id)
+        query += " GROUP BY m.id ORDER BY m.id ASC;"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_agent_liveliness(self, principal_id: int) -> dict[str, Any]:
+        """
+        Computes the 5 liveliness states for an agent:
+        🟢 a escutar (listening_now == 1)
+        🔵 a trabalhar (listening_now == 0 && last_activity <= T_idle)
+        💤 sem trabalho (listening_now == 0 && unread_directed_count == 0)
+        🔴 parado (listening_now == 0 && unread_directed_count > 0 && unread_age >= T_unread && idle_age >= T_idle)
+        ⚫ offline (listening_now == 0 && unread_directed_count == 0 && (last_activity is None or idle_age > 24h))
+        """
+        agent = self.get_principal_by_id(principal_id)
+        if not agent or agent.get("kind") != "agent":
+            return {"state": "offline", "state_icon": "⚫", "state_label": "offline"}
+
+        thresholds = self.get_system_thresholds()
+        t_idle = thresholds["t_idle_seconds"]
+        t_unread = thresholds["t_unread_seconds"]
+
+        listening_now = bool(agent.get("listening_now"))
+        if listening_now:
+            return {
+                "state": "listening",
+                "state_icon": "🟢",
+                "state_label": "a escutar",
+                "state_badge": "🟢 a escutar",
+                "listening_now": 1,
+                "last_listen_at": agent.get("last_listen_at"),
+                "last_activity_at": agent.get("last_activity_at"),
+                "unread_directed_count": 0,
+            }
+
+        now = datetime.now(timezone.utc)
+        def _parse_iso(ts_str: str | None) -> datetime | None:
+            if not ts_str:
+                return None
+            try:
+                clean = ts_str.replace("Z", "+00:00")
+                return datetime.fromisoformat(clean)
+            except Exception:
+                return None
+
+        last_act_dt = _parse_iso(agent.get("last_activity_at"))
+        idle_age = (now - last_act_dt).total_seconds() if last_act_dt else float("inf")
+
+        # 🔵 a trabalhar: not listening, but had activity within T_idle
+        if last_act_dt and idle_age <= t_idle:
+            return {
+                "state": "working",
+                "state_icon": "🔵",
+                "state_label": "a trabalhar",
+                "state_badge": "🔵 a trabalhar",
+                "listening_now": 0,
+                "last_listen_at": agent.get("last_listen_at"),
+                "last_activity_at": agent.get("last_activity_at"),
+                "idle_seconds": int(idle_age),
+                "unread_directed_count": 0,
+            }
+
+        # Check unread directed messages
+        unread_msgs = self.get_unread_directed_messages_for_agent(principal_id)
+        unread_count = len(unread_msgs)
+        if unread_count > 0:
+            oldest_unread_dt = _parse_iso(unread_msgs[0]["created_at"])
+            unread_age = (now - oldest_unread_dt).total_seconds() if oldest_unread_dt else 0
+            if unread_age >= t_unread and idle_age >= t_idle:
+                return {
+                    "state": "stalled",
+                    "state_icon": "🔴",
+                    "state_label": "parado",
+                    "state_badge": "🔴 parado",
+                    "listening_now": 0,
+                    "last_listen_at": agent.get("last_listen_at"),
+                    "last_activity_at": agent.get("last_activity_at"),
+                    "unread_directed_count": unread_count,
+                    "unread_age_seconds": int(unread_age),
+                    "idle_seconds": int(idle_age) if last_act_dt else None,
+                    "oldest_unread_at": unread_msgs[0]["created_at"],
+                }
+            else:
+                return {
+                    "state": "idle",
+                    "state_icon": "💤",
+                    "state_label": "sem trabalho",
+                    "state_badge": "💤 sem trabalho",
+                    "listening_now": 0,
+                    "last_listen_at": agent.get("last_listen_at"),
+                    "last_activity_at": agent.get("last_activity_at"),
+                    "unread_directed_count": unread_count,
+                }
+
+        # No unread messages directed to agent
+        if last_act_dt is None or idle_age > 86400:
+            return {
+                "state": "offline",
+                "state_icon": "⚫",
+                "state_label": "offline",
+                "state_badge": "⚫ offline",
+                "listening_now": 0,
+                "last_listen_at": agent.get("last_listen_at"),
+                "last_activity_at": agent.get("last_activity_at"),
+                "unread_directed_count": 0,
+            }
+
+        return {
+            "state": "idle",
+            "state_icon": "💤",
+            "state_label": "sem trabalho",
+            "state_badge": "💤 sem trabalho",
+            "listening_now": 0,
+            "last_listen_at": agent.get("last_listen_at"),
+            "last_activity_at": agent.get("last_activity_at"),
+            "unread_directed_count": 0,
+        }
+
+    def get_room_team_status(self, room_name_or_id: str | int) -> list[dict[str, Any]]:
+        """
+        Returns presence and liveliness status for all room members:
+        Name, role in room, 5-state liveliness icon and label, unread count.
+        No tokens or secrets.
+        """
+        room = self._resolve_room(room_name_or_id)
+        if not room:
+            return []
+        members = self.list_room_members(room["id"])
+        result = []
+        for m in members:
+            p_id = m["principal_id"]
+            kind = m["kind"]
+            name = m["name"]
+            role_title = m.get("room_role_name") or m.get("room_role_key") or m.get("default_role_name") or ("Administrador" if m.get("access_role") == "admin" else "Membro")
+
+            if kind == "agent":
+                liv = self.get_agent_liveliness(p_id)
+                unread = self.get_unread_directed_messages_for_agent(p_id, room_id=room["id"])
+                badge = liv.get("state_badge") or f"{liv['state_icon']} {liv['state_label']}"
+                result.append({
+                    "principal_id": p_id,
+                    "name": name,
+                    "kind": "agent",
+                    "role": role_title,
+                    "state": liv["state"],
+                    "state_icon": liv["state_icon"],
+                    "state_label": liv["state_label"],
+                    "state_badge": badge,
+                    "liveliness": {
+                        "state": liv["state"],
+                        "state_badge": badge,
+                        "listening_now": liv.get("listening_now", 0) == 1,
+                        "unread_count": len(unread),
+                    },
+                    "unread_directed_count": len(unread),
+                    "last_activity_at": liv.get("last_activity_at"),
+                    "last_listen_at": liv.get("last_listen_at"),
+                })
+            else:
+                result.append({
+                    "principal_id": p_id,
+                    "name": name,
+                    "kind": "human",
+                    "role": role_title,
+                    "state": "idle",
+                    "state_icon": "🟢",
+                    "state_label": "ativo",
+                    "state_badge": "🟢 ativo",
+                    "liveliness": {
+                        "state": "idle",
+                        "state_badge": "🟢 ativo",
+                        "listening_now": True,
+                        "unread_count": 0,
+                    },
+                    "unread_directed_count": 0,
+                    "last_activity_at": m.get("last_login_at"),
+                    "last_listen_at": None,
+                })
+        return result
+
+    def get_unconfirmed_batch(self, principal_id: int) -> list[int]:
+        """Returns message IDs for unconfirmed delivered batch, if any."""
+        conn = self._get_connection()
+        row = conn.execute("SELECT unconfirmed_batch_ids FROM agents WHERE principal_id = ?;", (principal_id,)).fetchone()
+        if not row or not row["unconfirmed_batch_ids"]:
+            return []
+        raw = str(row["unconfirmed_batch_ids"]).strip()
+        if not raw:
+            return []
+        try:
+            return [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
+        except Exception:
+            return []
+
+    def set_unconfirmed_batch(self, principal_id: int, message_ids: list[int]) -> None:
+        """Records an unconfirmed delivery batch for reliable at-least-once delivery."""
+        conn = self._get_connection()
+        val = ",".join(str(i) for i in message_ids) if message_ids else ""
+        now_str = utc_now() if message_ids else None
+        with conn:
+            conn.execute(
+                """
+                UPDATE agents
+                SET unconfirmed_batch_ids = ?, unconfirmed_delivered_at = ?
+                WHERE principal_id = ?;
+                """,
+                (val, now_str, principal_id),
+            )
+
+    def confirm_batch(self, principal_id: int, ack_id: int | None = None) -> None:
+        """
+        Confirms delivery batch. Clears unconfirmed batch and advances read cursor.
+        """
+        conn = self._get_connection()
+        unconfirmed = self.get_unconfirmed_batch(principal_id)
+        effective_ack = ack_id if (ack_id and ack_id > 0) else (max(unconfirmed) if unconfirmed else 0)
+
+        with conn:
+            conn.execute(
+                """
+                UPDATE agents
+                SET unconfirmed_batch_ids = '', unconfirmed_delivered_at = NULL
+                WHERE principal_id = ?;
+                """,
+                (principal_id,),
+            )
+            if effective_ack > 0:
+                rows = conn.execute(
+                    "SELECT DISTINCT room_id FROM messages WHERE id <= ?;",
+                    (effective_ack,),
+                ).fetchall()
+                for r in rows:
+                    rid = r["room_id"]
+                    has_acc = conn.execute(
+                        "SELECT 1 FROM room_access WHERE room_id = ? AND principal_id = ?;",
+                        (rid, principal_id),
+                    ).fetchone()
+                    if has_acc:
+                        self.update_read_cursor(principal_id, rid, effective_ack)
+
+    def list_stalled_agents_to_alert(self, t_idle: int = 600, t_unread: int = 600) -> list[dict[str, Any]]:
+        """
+        Finds stalled agents due for an alert according to backoff:
+        count 0: immediate (0m)
+        count 1: 10m (600s)
+        count 2: 30m (1800s)
+        count >= 3: 60m (3600s)
+        """
+        conn = self._get_connection()
+        agents = conn.execute(
+            """
+            SELECT p.id as principal_id, p.name, p.status,
+                   a.listening_now, a.last_listen_at, a.last_activity_at,
+                   a.stalled_alert_count, a.last_stalled_alert_at, p.created_at as registered_at
+            FROM principals p
+            JOIN agents a ON p.id = a.principal_id
+            WHERE p.status = 'active' AND a.listening_now = 0;
+            """
+        ).fetchall()
+
+        now = datetime.now(timezone.utc)
+        def _parse_iso(ts_str: str | None) -> datetime | None:
+            if not ts_str:
+                return None
+            try:
+                return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            except Exception:
+                return None
+
+        candidates = []
+        for ag in agents:
+            pid = ag["principal_id"]
+            unread_msgs = self.get_unread_directed_messages_for_agent(pid)
+            if not unread_msgs:
+                continue
+
+            last_act_dt = _parse_iso(ag["last_activity_at"]) or _parse_iso(ag["registered_at"])
+            idle_age = (now - last_act_dt).total_seconds() if last_act_dt else float("inf")
+            oldest_unread_dt = _parse_iso(unread_msgs[0]["created_at"])
+            unread_age = (now - oldest_unread_dt).total_seconds() if oldest_unread_dt else 0
+
+            if idle_age < t_idle or unread_age < t_unread:
+                continue
+
+            # Agent is stalled! Check backoff
+            count = ag["stalled_alert_count"] or 0
+            last_alert_dt = _parse_iso(ag["last_stalled_alert_at"])
+
+            should_alert = False
+            if count == 0 or last_alert_dt is None:
+                should_alert = True
+            else:
+                elapsed_since_last_alert = (now - last_alert_dt).total_seconds()
+                if count == 1 and elapsed_since_last_alert >= 600:
+                    should_alert = True
+                elif count == 2 and elapsed_since_last_alert >= 1800:
+                    should_alert = True
+                elif count >= 3 and elapsed_since_last_alert >= 3600:
+                    should_alert = True
+
+            if should_alert:
+                candidates.append({
+                    "principal_id": pid,
+                    "name": ag["name"],
+                    "unread_count": len(unread_msgs),
+                    "unread_minutes": max(1, int(unread_age // 60)),
+                    "activity_minutes": max(1, int(idle_age // 60)) if idle_age != float("inf") else 0,
+                    "room_id": unread_msgs[0]["room_id"],
+                    "room_name": unread_msgs[0]["room_name"],
+                    "stalled_alert_count": count,
+                })
+        return candidates
+
+    def record_stalled_alert(self, principal_id: int) -> None:
+        """Increments stalled_alert_count and updates last_stalled_alert_at."""
+        conn = self._get_connection()
+        now_str = utc_now()
+        with conn:
+            conn.execute(
+                """
+                UPDATE agents
+                SET stalled_alert_count = COALESCE(stalled_alert_count, 0) + 1,
+                    last_stalled_alert_at = ?
+                WHERE principal_id = ?;
+                """,
+                (now_str, principal_id),
+            )
+
+    def clear_stalled_alert(self, principal_id: int) -> bool:
+        """
+        Resets stalled alert state if agent was stalled.
+        Returns True if the agent was previously alerted as stalled (so recovery message can be sent).
+        """
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT stalled_alert_count FROM agents WHERE principal_id = ?;",
+            (principal_id,),
+        ).fetchone()
+        was_stalled = bool(row and (row["stalled_alert_count"] or 0) > 0)
+        if was_stalled:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE agents
+                    SET stalled_alert_count = 0, last_stalled_alert_at = NULL
+                    WHERE principal_id = ?;
+                    """,
+                    (principal_id,),
+                )
+        return was_stalled
+
+    def get_messages_by_ids(self, message_ids: list[int]) -> list[dict[str, Any]]:
+        """Retrieves specific messages by their IDs."""
+        if not message_ids:
+            return []
+        conn = self._get_connection()
+        placeholders = ",".join("?" for _ in message_ids)
+        rows = conn.execute(
+            f"""
+            SELECT m.*, r.name as room_name, p.display_name as sender_display_name, p.name as sender_username
+            FROM messages m
+            JOIN rooms r ON m.room_id = r.id
+            LEFT JOIN principals p ON m.sender_id = p.id
+            WHERE m.id IN ({placeholders})
+            ORDER BY m.id ASC;
+            """,
+            message_ids,
+        ).fetchall()
+        msg_ids = [r["id"] for r in rows]
+        reactions_map = self._get_reactions_map(msg_ids)
+        recipients_map = self._get_recipients_map(msg_ids)
+        result = []
+        for r in rows:
+            m = dict(r)
+            m["metadata"] = json.loads(m["metadata"]) if m["metadata"] else {}
+            m["sender"] = m["sender_name"]
+            m["display_name"] = m.get("sender_display_name") or m["sender_name"]
+            m["sender_username"] = m.get("sender_username") or m["sender_name"]
+            m["role"] = m["sender_kind"]
+            m["reactions"] = reactions_map.get(m["id"], [])
+            recips = recipients_map.get(m["id"], [{"target_kind": "all", "target_id": None, "target_name": "all"}])
+            m["recipients"] = recips
+            m["to"] = self._format_to_list(recips)
+            result.append(m)
+        return result
 
     def list_agents(self) -> list[dict[str, Any]]:
         """Lists all agent principals with default role information and credential summaries."""
@@ -662,7 +1312,9 @@ class StorageV3:
         rows = conn.execute(
             """
             SELECT p.id, p.name, p.display_name, p.status, p.is_system, p.is_legacy, p.created_at,
-                   a.default_role_id, ar.role_key as default_role_key, ar.display_name as default_role_name
+                   a.default_role_id, ar.role_key as default_role_key, ar.display_name as default_role_name,
+                   a.harness, a.wake_mode, a.listening_now, a.last_listen_at, a.last_activity_at,
+                   a.stalled_alert_count, a.last_stalled_alert_at, a.unconfirmed_batch_ids
             FROM principals p
             JOIN agents a ON p.id = a.principal_id
             LEFT JOIN agent_roles ar ON a.default_role_id = ar.id
@@ -673,6 +1325,7 @@ class StorageV3:
         for r in rows:
             d = dict(r)
             d["credentials"] = self.list_agent_credentials(d["id"])
+            d["liveliness"] = self.get_agent_liveliness(d["id"])
             result.append(d)
         return result
 
@@ -1956,6 +2609,24 @@ class StorageV3:
         reactions_map = self._get_reactions_map(msg_ids)
         recipients_map = self._get_recipients_map(msg_ids)
 
+        # Read receipts computation for this room
+        cursor_rows = conn.execute(
+            "SELECT principal_id, last_message_id FROM read_cursors WHERE room_id = ?;",
+            (room["id"],),
+        ).fetchall()
+        room_cursors = {cr["principal_id"]: cr["last_message_id"] for cr in cursor_rows}
+
+        member_rows = conn.execute(
+            """
+            SELECT ra.principal_id, COALESCE(ra.role_id, a.default_role_id) as effective_role_id
+            FROM room_access ra
+            LEFT JOIN agents a ON ra.principal_id = a.principal_id
+            WHERE ra.room_id = ?;
+            """,
+            (room["id"],),
+        ).fetchall()
+        room_members = {mr["principal_id"]: mr["effective_role_id"] for mr in member_rows}
+
         result = []
         for r in rows:
             m = dict(r)
@@ -1968,6 +2639,41 @@ class StorageV3:
             recips = recipients_map.get(m["id"], [{"target_kind": "all", "target_id": None, "target_name": "all"}])
             m["recipients"] = recips
             m["to"] = self._format_to_list(recips)
+
+            # Determine read receipts (✓ / ✓✓)
+            sender_id = m.get("sender_id")
+            mid = m["id"]
+            read_by_all = True
+            has_targets = False
+
+            for rec in recips:
+                t_kind = rec.get("target_kind")
+                t_id = rec.get("target_id")
+                if t_kind == "principal" and t_id is not None:
+                    if t_id != sender_id:
+                        has_targets = True
+                        if room_cursors.get(t_id, 0) < mid:
+                            read_by_all = False
+                            break
+                elif t_kind == "role" and t_id is not None:
+                    role_pids = [pid for pid, r_id in room_members.items() if r_id == t_id and pid != sender_id]
+                    if role_pids:
+                        has_targets = True
+                        if any(room_cursors.get(pid, 0) < mid for pid in role_pids):
+                            read_by_all = False
+                            break
+
+            if not has_targets:
+                # Broadcast to all active room members
+                other_members = [pid for pid in room_members.keys() if pid != sender_id]
+                if other_members:
+                    if any(room_cursors.get(pid, 0) < mid for pid in other_members):
+                        read_by_all = False
+
+            m["read_by_all"] = read_by_all
+            m["read_status"] = "read" if read_by_all else "delivered"
+            m["read_receipt"] = "✓✓" if read_by_all else "✓"
+
             result.append(m)
         return result
 

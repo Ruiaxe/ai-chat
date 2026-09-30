@@ -209,6 +209,60 @@ class ChatStorage:
     def update_agent(self, *args, **kwargs):
         return self.v3.update_agent(*args, **kwargs)
 
+    def self_register_agent(self, *args, **kwargs):
+        return self.v3.self_register_agent(*args, **kwargs)
+
+    def approve_agent(self, *args, **kwargs):
+        return self.v3.approve_agent(*args, **kwargs)
+
+    def update_agent_wake_profile(self, *args, **kwargs):
+        return self.v3.update_agent_wake_profile(*args, **kwargs)
+
+    def get_setting(self, *args, **kwargs):
+        return self.v3.get_setting(*args, **kwargs)
+
+    def set_setting(self, *args, **kwargs):
+        return self.v3.set_setting(*args, **kwargs)
+
+    def get_system_thresholds(self, *args, **kwargs):
+        return self.v3.get_system_thresholds(*args, **kwargs)
+
+    def set_agent_listening(self, *args, **kwargs):
+        return self.v3.set_agent_listening(*args, **kwargs)
+
+    def record_agent_activity(self, *args, **kwargs):
+        return self.v3.record_agent_activity(*args, **kwargs)
+
+    def get_unread_directed_messages_for_agent(self, *args, **kwargs):
+        return self.v3.get_unread_directed_messages_for_agent(*args, **kwargs)
+
+    def get_agent_liveliness(self, *args, **kwargs):
+        return self.v3.get_agent_liveliness(*args, **kwargs)
+
+    def get_room_team_status(self, *args, **kwargs):
+        return self.v3.get_room_team_status(*args, **kwargs)
+
+    def get_unconfirmed_batch(self, *args, **kwargs):
+        return self.v3.get_unconfirmed_batch(*args, **kwargs)
+
+    def set_unconfirmed_batch(self, *args, **kwargs):
+        return self.v3.set_unconfirmed_batch(*args, **kwargs)
+
+    def confirm_batch(self, *args, **kwargs):
+        return self.v3.confirm_batch(*args, **kwargs)
+
+    def list_stalled_agents_to_alert(self, *args, **kwargs):
+        return self.v3.list_stalled_agents_to_alert(*args, **kwargs)
+
+    def record_stalled_alert(self, *args, **kwargs):
+        return self.v3.record_stalled_alert(*args, **kwargs)
+
+    def clear_stalled_alert(self, *args, **kwargs):
+        return self.v3.clear_stalled_alert(*args, **kwargs)
+
+    def get_messages_by_ids(self, *args, **kwargs):
+        return self.v3.get_messages_by_ids(*args, **kwargs)
+
     def revoke_agent_credential(self, *args, **kwargs):
         return self.v3.revoke_agent_credential(*args, **kwargs)
 

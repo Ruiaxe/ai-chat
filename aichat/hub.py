@@ -436,6 +436,9 @@ class ChatHub:
         if clean_callsign.lower() in self.RESERVED_HUMAN_NAMES:
             raise ValueError(f"O nome '{clean_callsign}' está reservado para o utilizador humano. Agentes devem usar outro nome.")
 
+        if hasattr(self.storage, "is_v3") and self.storage.is_v3():
+            return self.storage.v3.self_register_agent(clean_callsign)
+
         res = self.storage.register_agent_admin(callsign=clean_callsign, role="agent", is_system=False, is_self_registration=True)
         self.storage.log_audit_event("system", clean_callsign, "agent_self_register", "success", f"Self-registered agent '{clean_callsign}' (token held for supervisor delivery)")
         return {
@@ -443,7 +446,7 @@ class ChatHub:
             "callsign": clean_callsign,
             "role": res.get("role", "agent"),
             "created_at": res.get("created_at", ""),
-            "message": f"Registo submetido com sucesso para '{clean_callsign}'. O teu token de acesso deve ser solicitado diretamente ao supervisor Rui.",
+            "message": f"Registo submetido com sucesso para '{clean_callsign}'. O teu pedido está pendente de aprovação por um administrador.",
         }
 
     def rotate_agent_token_admin(
@@ -726,6 +729,28 @@ class ChatHub:
             metadata=metadata,
             to=to,
         )
+
+        if hasattr(self.storage, "is_v3") and self.storage.is_v3():
+            sender_id = msg.get("sender_id")
+            if sender_id and msg.get("sender_kind") == "agent":
+                self.storage.v3.record_agent_activity(sender_id)
+                if self.storage.v3.clear_stalled_alert(sender_id):
+                    room_id = msg.get("room_id")
+                    humans = self.storage.v3.get_room_humans(room_id) if room_id else []
+                    human_targets = [f"@{h['name']}" for h in humans]
+                    rec_msg = self.storage.v3.add_message(
+                        room_name_or_id=room_id,
+                        sender="System",
+                        role="system",
+                        content=f"✅ @{clean_sender} voltou a escutar.",
+                        is_verified=True,
+                        to=human_targets,
+                        message_type="notice",
+                    )
+                    try:
+                        await self._broadcast_to_websockets(canonical_name, {"type": "new_message", "message": rec_msg})
+                    except Exception:
+                        pass
 
         # Print to console with clear timestamp, badge, and verification tag
         time_str = datetime.now().strftime("%H:%M:%S")
@@ -1441,6 +1466,11 @@ class ChatHub:
                         "last_id": self.storage.get_max_message_id(target_rooms[0]) if len(target_rooms) == 1 else 0,
                     }
         finally:
+            if is_v3 and principal and principal.get("kind") == "agent":
+                try:
+                    self.storage.v3.set_agent_listening(principal["id"], False)
+                except Exception:
+                    pass
             async with self._lock:
                 for r in target_rooms:
                     r_key = r.strip().lower()
@@ -1449,6 +1479,318 @@ class ChatHub:
                             li for li in self._room_listeners[r_key]
                             if (li.get("event") if isinstance(li, dict) else li) != event
                         ]
+
+    async def wait_for_work(
+        self,
+        principal_or_agent: dict[str, Any] | int | str = "",
+        timeout_seconds: float = 600.0,
+        ack: int = 0,
+        format: str = "json",
+        room: str = "",
+        on_progress: Any = None,
+        **kwargs: Any,
+    ) -> dict[str, Any] | str:
+        """
+        Universal wait mechanism for agents (v3.1 Camada 1):
+        - Manages liveliness (listening_now = 1 while waiting, 0 when leaving).
+        - If previously stalled, emits recovery message '✅ @{callsign} voltou a escutar.'
+        - Handles reliable delivery via ACK confirmation.
+        - If unconfirmed batch exists and not acked, redelivers with redelivered=True.
+        - If timeout_seconds=0, performs immediate check without suspending.
+        - Formats payload as JSON or plaintext.
+        """
+        if not principal_or_agent:
+            principal_or_agent = kwargs.get("agent_name", "") or kwargs.get("agent", "")
+        if not room:
+            room = kwargs.get("room_name", "") or kwargs.get("room", "")
+
+        is_v3 = hasattr(self.storage, "is_v3") and self.storage.is_v3()
+        if not is_v3:
+            clean_name = str(principal_or_agent) if not isinstance(principal_or_agent, dict) else principal_or_agent.get("name", "")
+            return await self.wait_for_new_messages(
+                room_name=room or "subscribed",
+                agent_name=clean_name,
+                timeout_seconds=timeout_seconds,
+                on_progress=on_progress,
+            )
+
+        if isinstance(principal_or_agent, dict):
+            principal = principal_or_agent
+        elif isinstance(principal_or_agent, int) or (isinstance(principal_or_agent, str) and str(principal_or_agent).isdigit()):
+            principal = self.storage.v3.get_principal_by_id(int(principal_or_agent))
+        else:
+            principal = self.storage.v3.get_principal_by_name(str(principal_or_agent))
+
+        if not principal:
+            raise ValueError(f"Principal '{principal_or_agent}' não encontrado.")
+
+        pid = principal["id"]
+        callsign = principal["name"]
+        is_agent = (principal.get("kind") == "agent")
+
+        thresholds = self.storage.v3.get_system_thresholds()
+        max_timeout = float(thresholds.get("max_wake_timeout", 1500))
+        effective_timeout = max(0.0, min(float(timeout_seconds), max_timeout))
+
+        if is_agent:
+            self.storage.v3.record_agent_activity(pid)
+            if self.storage.v3.clear_stalled_alert(pid):
+                user_rooms = self.storage.v3.list_rooms_for_principal(principal)
+                for ur in user_rooms:
+                    humans = self.storage.v3.get_room_humans(ur["id"])
+                    human_targets = [f"@{h['name']}" for h in humans]
+                    rec_msg = self.storage.v3.add_message(
+                        room_name_or_id=ur["id"],
+                        sender="System",
+                        role="system",
+                        content=f"✅ @{callsign} voltou a escutar.",
+                        is_verified=True,
+                        to=human_targets,
+                        message_type="notice",
+                    )
+                    try:
+                        await self._broadcast_to_websockets(ur["name"], {"type": "new_message", "message": rec_msg})
+                    except Exception:
+                        pass
+
+        if ack > 0 and is_agent:
+            self.storage.v3.confirm_batch(pid, ack_id=ack)
+
+        def _build_payload(msgs: list[dict[str, Any]], redelivered: bool, is_timeout: bool = False) -> dict[str, Any] | str:
+            batch_id = max((m["id"] for m in msgs), default=0)
+            target_room = msgs[0]["room_name"] if msgs else (room or "geral")
+
+            role_reminder = None
+            r_info = None
+            r_obj = self.storage.v3.get_room_by_name(target_room)
+            if r_obj:
+                r_info = self.storage.v3.get_agent_role_in_room(pid, r_obj["id"])
+            if not r_info and principal.get("default_role_id"):
+                r_info = self.storage.v3.get_role_by_id(principal["default_role_id"])
+            if r_info:
+                role_reminder = {
+                    "role_key": r_info.get("role_key", ""),
+                    "display_name": r_info.get("display_name", ""),
+                    "reminder_text": r_info.get("reminder_text", ""),
+                }
+
+            next_action = ""
+            try:
+                assigned_tasks = self.storage.v3.list_tasks(assignee=callsign, status="in_progress")
+                if not assigned_tasks:
+                    assigned_tasks = self.storage.v3.list_tasks(assignee=callsign, status="open")
+                if assigned_tasks:
+                    t0 = assigned_tasks[0]
+                    next_action = f"Tens {len(assigned_tasks)} tarefa(s) pendente(s): #{t0['id']} ({t0.get('title', '')})"
+            except Exception:
+                pass
+            if not next_action:
+                if msgs:
+                    next_action = "Responde às mensagens dirigidas"
+                else:
+                    next_action = "Sem tarefas pendentes"
+
+            summary = ""
+            if len(msgs) > 5:
+                by_sender: dict[str, int] = {}
+                for m in msgs:
+                    s_name = m.get("sender") or m.get("sender_name") or "Alguém"
+                    by_sender[s_name] = by_sender.get(s_name, 0) + 1
+                summary_parts = [f"{cnt} mensagem/mensagens de {snd}" for snd, cnt in by_sender.items()]
+                summary = "; ".join(summary_parts)
+
+            status_str = "timeout" if is_timeout else "new_messages"
+            data = {
+                "status": status_str,
+                "work_status": "timeout" if is_timeout else "work_available",
+                "batch_id": batch_id,
+                "redelivered": redelivered,
+                "count": len(msgs),
+                "messages": msgs,
+                "summary": summary,
+                "role_reminder": role_reminder,
+                "next_action": next_action,
+                "skipped_count": 0,
+                "skipped_ranges": [],
+            }
+
+            if format == "text":
+                lines = ["[AI-CHAT WAKE-UP]"]
+                if role_reminder and role_reminder.get("reminder_text"):
+                    lines.append(f"Papel: {role_reminder.get('display_name')} - {role_reminder.get('reminder_text')}")
+                if is_timeout:
+                    lines.append("Estado: Sem novo trabalho dentro do período de espera (timeout).")
+                else:
+                    lines.append(f"Trabalho disponível: {len(msgs)} mensagem(ns) nova(s)" + (" [REENTREGUE]" if redelivered else "") + ".")
+                    if summary:
+                        lines.append(f"Resumo: {summary}")
+                    for m in msgs:
+                        m_sender = m.get("sender") or m.get("sender_name") or "Desconhecido"
+                        m_room = m.get("room_name") or target_room
+                        m_content = m.get("content", "").replace("\n", " ")
+                        if len(m_content) > 120:
+                            m_content = m_content[:117] + "..."
+                        lines.append(f"- [Msg #{m['id']} de {m_sender} em #{m_room}]: {m_content}")
+                lines.append(f"Ação seguinte: {next_action}")
+                if batch_id > 0:
+                    lines.append(f"Batch ID: {batch_id} (confirma com ack={batch_id})")
+                return "\n".join(lines)
+
+            return data
+
+        if is_agent:
+            unconfirmed_ids = self.storage.v3.get_unconfirmed_batch(pid)
+            if unconfirmed_ids:
+                re_msgs = self.storage.v3.get_messages_by_ids(unconfirmed_ids)
+                if re_msgs:
+                    return _build_payload(re_msgs, redelivered=True, is_timeout=False)
+
+        def _scan_work() -> list[dict[str, Any]]:
+            accessible_rooms = self.storage.v3.list_rooms_for_principal(principal)
+            if room:
+                accessible_rooms = [r for r in accessible_rooms if r["name"].lower() == room.lower() or str(r["id"]) == str(room)]
+
+            found: list[dict[str, Any]] = []
+            for r in accessible_rooms:
+                cur = self.storage.v3.get_read_cursor(pid, r["id"])
+                max_id = self.storage.v3.get_max_message_id(r["id"])
+                if cur < max_id:
+                    unread_candidates = self.storage.v3.get_messages(r["id"], since_id=cur, limit=100)
+                    for cand in unread_candidates:
+                        if self.storage.v3.is_message_for_principal(cand, principal, r["id"]):
+                            found.append(cand)
+            found.sort(key=lambda m: m["id"])
+            return found
+
+        immediate = _scan_work()
+        if immediate:
+            if is_agent:
+                self.storage.v3.set_unconfirmed_batch(pid, [m["id"] for m in immediate])
+            return _build_payload(immediate, redelivered=False, is_timeout=False)
+
+        if effective_timeout <= 0:
+            return _build_payload([], redelivered=False, is_timeout=True)
+
+        if is_agent:
+            self.storage.v3.set_agent_listening(pid, True)
+
+        try:
+            event = asyncio.Event()
+            listener_info = {
+                "agent_name": callsign,
+                "event": event,
+                "started_at": datetime.now().isoformat(),
+            }
+            accessible_rooms = self.storage.v3.list_rooms_for_principal(principal)
+            target_rooms = [r["name"] for r in accessible_rooms] if not room else [room]
+
+            async with self._lock:
+                for r_name in target_rooms:
+                    r_key = r_name.strip().lower()
+                    self._room_listeners.setdefault(r_key, []).append(listener_info)
+
+            loop = asyncio.get_running_loop()
+            start_time = loop.time()
+            deadline = start_time + effective_timeout
+            last_progress_time = start_time
+            heartbeat_interval = 45.0
+
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return _build_payload([], redelivered=False, is_timeout=True)
+
+                slice_timeout = min(heartbeat_interval, remaining)
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=max(0.05, slice_timeout))
+                    event.clear()
+                except asyncio.TimeoutError:
+                    elapsed = loop.time() - start_time
+                    if on_progress and (loop.time() - last_progress_time >= 40.0):
+                        last_progress_time = loop.time()
+                        try:
+                            await on_progress(elapsed, effective_timeout, f"Waiting for work... ({int(elapsed)}s elapsed)")
+                        except Exception:
+                            pass
+                    continue
+
+                new_work = _scan_work()
+                if new_work:
+                    if is_agent:
+                        self.storage.v3.set_unconfirmed_batch(pid, [m["id"] for m in new_work])
+                    return _build_payload(new_work, redelivered=False, is_timeout=False)
+
+        finally:
+            if is_agent:
+                self.storage.v3.set_agent_listening(pid, False)
+                self.storage.v3.record_agent_activity(pid)
+            async with self._lock:
+                for r_name in target_rooms:
+                    r_key = r_name.strip().lower()
+                    if r_key in self._room_listeners and listener_info in self._room_listeners[r_key]:
+                        self._room_listeners[r_key].remove(listener_info)
+
+    async def check_and_alert_stalled_agents(self) -> None:
+        """
+        Scans for stalled agents and sends alert messages targeted strictly to humans in the room.
+        Adheres to backoff schedule (0m -> 10m -> 30m -> 60m).
+        """
+        if not (hasattr(self.storage, "is_v3") and self.storage.is_v3()):
+            return
+        thresholds = self.storage.v3.get_system_thresholds()
+        stalled = self.storage.v3.list_stalled_agents_to_alert(
+            t_idle=thresholds["t_idle_seconds"],
+            t_unread=thresholds["t_unread_seconds"],
+        )
+        for st in stalled:
+            pid = st["principal_id"]
+            callsign = st["name"]
+            unread_count = st["unread_count"]
+            unread_m = st["unread_minutes"]
+            act_m = st["activity_minutes"]
+            room_id = st["room_id"]
+            room_name = st["room_name"]
+
+            humans = self.storage.v3.get_room_humans(room_id)
+            human_targets = [f"@{h['name']}" for h in humans] if humans else []
+            msg_text = (
+                f"⚠️ @{callsign} não está a escutar e tem {unread_count} "
+                f"{'mensagem' if unread_count == 1 else 'mensagens'} por ler há {unread_m}m "
+                f"(última atividade há {act_m}m). Precisa de wake-up manual."
+            )
+            msg = self.storage.v3.add_message(
+                room_name_or_id=room_id,
+                sender="System",
+                role="system",
+                content=msg_text,
+                is_verified=True,
+                to=human_targets,
+                message_type="alert",
+                metadata={"is_liveliness_alert": True, "stalled_agent": callsign},
+            )
+            self.storage.v3.record_stalled_alert(pid)
+            try:
+                await self._broadcast_to_websockets(room_name, {"type": "new_message", "message": msg})
+            except Exception:
+                pass
+
+    async def liveness_monitor_loop(self) -> None:
+        """Background loop running periodic checks for stalled agents."""
+        while True:
+            try:
+                await self.check_and_alert_stalled_agents()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                pass
+            await asyncio.sleep(30.0)
+
+    def get_room_team_status(self, room_name: str, requester_principal: Any = None) -> list[dict[str, Any]]:
+        """Returns team presence and liveliness status for room members without sensitive tokens."""
+        if hasattr(self.storage, "is_v3") and self.storage.is_v3():
+            return self.storage.v3.get_room_team_status(room_name)
+        return []
+
 
     def check_new_messages(
         self,

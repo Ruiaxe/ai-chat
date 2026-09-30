@@ -50,8 +50,17 @@ CREATE TABLE agent_roles (
 );
 
 CREATE TABLE agents (
-    principal_id     INTEGER PRIMARY KEY REFERENCES principals(id) ON DELETE CASCADE,
-    default_role_id  INTEGER REFERENCES agent_roles(id) ON DELETE SET NULL
+    principal_id              INTEGER PRIMARY KEY REFERENCES principals(id) ON DELETE CASCADE,
+    default_role_id           INTEGER REFERENCES agent_roles(id) ON DELETE SET NULL,
+    harness                   TEXT NOT NULL DEFAULT 'other' CHECK (harness IN ('claude-code', 'antigravity', 'opencode', 'other')),
+    wake_mode                 TEXT NOT NULL DEFAULT 'tool' CHECK (wake_mode IN ('hook', 'background', 'tool')),
+    listening_now             INTEGER NOT NULL DEFAULT 0,
+    last_listen_at            TEXT,
+    last_activity_at          TEXT,
+    unconfirmed_batch_ids     TEXT NOT NULL DEFAULT '',
+    unconfirmed_delivered_at  TEXT,
+    stalled_alert_count       INTEGER NOT NULL DEFAULT 0,
+    last_stalled_alert_at     TEXT
 );
 
 -- An agent may hold several tokens during a rotation window; each is revocable on its own.
@@ -283,3 +292,16 @@ INSERT INTO agent_roles (role_key, display_name, description, reminder_text, is_
   'Tu és o Arquiteto. Define e revê o desenho técnico; delega a implementação ao Programador.', 1, strftime('%Y-%m-%dT%H:%M:%SZ','now')),
  ('docs', 'Documentação', 'Escreve e mantém documentação técnica e de utilizador.',
   'Tu és o responsável pela Documentação. Mantém a documentação correta e atual; confirma factos com quem implementou.', 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
+
+-- ---------------------------------------------------------------- system settings
+
+CREATE TABLE system_settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+INSERT INTO system_settings (key, value, updated_at) VALUES
+ ('t_idle_seconds', '180', strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+ ('t_unread_seconds', '120', strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+ ('max_wake_timeout', '600', strftime('%Y-%m-%dT%H:%M:%SZ','now'));

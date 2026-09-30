@@ -249,6 +249,8 @@ class V3AuthenticationMiddleware:
             if principal:
                 current_principal.set(principal)
                 current_auth_token.set(auth_token)
+                if principal.get("kind") == "agent":
+                    hub.storage.v3.record_agent_activity(principal["name"])
 
                 # Check must_change_password enforcement
                 if scope["type"] == "http" and principal.get("kind") == "human" and principal.get("must_change_password") == 1:
@@ -421,6 +423,14 @@ def get_request_auth(request: Request) -> dict[str, Any] | None:
         }
     except Exception:
         return None
+
+
+def _get_legacy_room_password(request: Request) -> str:
+    """Extracts password from query params, or legacy X-Room-Password header if in v2 mode."""
+    pwd = (request.query_params.get("password") or "").strip()
+    if not pwd and not (hasattr(hub.storage, "is_v3") and hub.storage.is_v3()):
+        pwd = (request.headers.get("x-room-password") or "").strip()
+    return pwd
 
 
 def set_human_session_cookie(response: Response, session_val: str) -> None:
@@ -656,7 +666,7 @@ async def endpoint_get_messages(request: Request) -> Response:
         )
 
     room_name = request.path_params["room_name"]
-    password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
+    password = request.query_params.get("password", "")
     since_id = safe_int(request.query_params.get("since_id"), default=0, min_val=0)
     before_id = safe_int(request.query_params.get("before_id"), default=0, min_val=0)
     limit = safe_int(request.query_params.get("limit"), default=50, min_val=1, max_val=1000)
@@ -860,7 +870,7 @@ async def endpoint_download_log(request: Request) -> Response:
         return JSONResponse({"error": "Acesso negado: Autenticação obrigatória."}, status_code=401)
 
     room_name = request.path_params["room_name"]
-    password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
+    password = request.query_params.get("password", "")
     effective_ht = hub.human_token if auth["is_human"] else ""
 
     try:
@@ -1328,7 +1338,7 @@ async def endpoint_rotate_token(request: Request) -> Response:
         return JSONResponse({"error": "member_name is required"}, status_code=400)
 
     current_token = (data.get("current_token") or data.get("member_token") or "").strip()
-    password = data.get("password", "") or request.headers.get("x-room-password", "")
+    password = data.get("password", "")
 
     supervisor_token = hub.human_token if is_authenticated_human(request) else (data.get("supervisor_token") or request.headers.get("x-human-token", "")).strip()
 
@@ -1357,7 +1367,7 @@ async def endpoint_change_password(request: Request) -> Response:
     except Exception:
         return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
 
-    old_password = data.get("old_password", "") or request.headers.get("x-room-password", "")
+    old_password = data.get("old_password", "")
     new_password = data.get("new_password", "")
     auth = get_request_auth(request)
     p = auth.get("principal") if auth else None
@@ -1399,7 +1409,7 @@ async def endpoint_kick_member(request: Request) -> Response:
     default_actor = (p.get("name") if p else auth.get("name")) if auth else (hub.human_name if is_authenticated_human(request) else "")
     actor_name = data.get("actor_name", "") or default_actor
     supervisor_token = hub.human_token if is_authenticated_human(request) else data.get("supervisor_token", "")
-    room_password = data.get("room_password", "") or request.headers.get("x-room-password", "")
+    room_password = data.get("room_password", "")
 
     try:
         res = hub.kick_member(
@@ -1421,7 +1431,7 @@ async def endpoint_kick_member(request: Request) -> Response:
 async def endpoint_get_audit(request: Request) -> Response:
     """Gets audit log for a room."""
     room_name = request.path_params["room_name"]
-    password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
+    password = _get_legacy_room_password(request)
     limit = safe_int(request.query_params.get("limit"), default=50, min_val=1, max_val=200)
 
     try:
@@ -1512,7 +1522,7 @@ async def endpoint_get_presence(request: Request) -> Response:
     if not auth:
         return JSONResponse({"error": "Acesso negado: Autenticação obrigatória."}, status_code=401)
     room_name = request.path_params["room_name"]
-    password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
+    password = request.query_params.get("password", "")
     effective_ht = hub.human_token if auth["is_human"] else ""
     try:
         presence = hub.who_is_listening(room_name=room_name, password=password, requester_token=effective_ht)
@@ -1531,7 +1541,7 @@ async def endpoint_get_tasks(request: Request) -> Response:
     if not auth:
         return JSONResponse({"error": "Acesso negado: Autenticação obrigatória."}, status_code=401)
     room_name = request.path_params["room_name"]
-    password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
+    password = request.query_params.get("password", "")
     status = request.query_params.get("status")
     assignee = request.query_params.get("assignee")
     hide_completed = request.query_params.get("hide_completed", "").lower() in ("true", "1", "yes")
@@ -1875,7 +1885,7 @@ async def endpoint_get_calendar_events(request: Request) -> Response:
     if hide_completed:
         include_completed = False
     filter_type = request.query_params.get("filter_type") or request.query_params.get("scope") or ""
-    password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
+    password = _get_legacy_room_password(request)
 
     try:
         events = hub.list_calendar_events(
@@ -1939,7 +1949,7 @@ async def endpoint_create_calendar_event(request: Request) -> Response:
     member_tok = (auth["token"] if not is_human else "") or data.get("member_token", "")
     human_name = (p.get("display_name") or p.get("name") if p else auth.get("name")) if is_human else ""
     creator = human_name if is_human else (auth.get("name") or data.get("created_by") or "Agent")
-    password = data.get("password", "") or request.headers.get("x-room-password", "")
+    password = data.get("password", "")
     is_personal = bool(data.get("is_personal", False))
 
     try:
@@ -1996,7 +2006,7 @@ async def endpoint_update_calendar_event(request: Request) -> Response:
     is_human = auth["is_human"]
     human_tok = hub.human_token if is_human else ""
     member_tok = data.get("member_token", "") or (auth["token"] if not is_human else "")
-    password = data.get("password", "") or request.headers.get("x-room-password", "")
+    password = data.get("password", "")
     force = bool(data.get("force", False))
 
     allowed_fields = [
@@ -2038,7 +2048,7 @@ async def endpoint_delete_calendar_event(request: Request) -> Response:
     human_tok = hub.human_token if is_human else ""
     is_v3 = hasattr(hub.storage, "is_v3") and hub.storage.is_v3()
     member_tok = ("" if is_v3 else request.query_params.get("member_token", "")) or (auth["token"] if not is_human else "")
-    password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
+    password = request.query_params.get("password", "")
 
     try:
         res = await hub.delete_calendar_event(
@@ -2077,7 +2087,7 @@ async def endpoint_get_calendar_ics(request: Request) -> Response:
         return PlainTextResponse("Acesso negado: Autenticação obrigatória.", status_code=401)
     is_human = auth["is_human"]
     effective_tok = hub.human_token if is_human else auth["token"]
-    password = request.query_params.get("password", "") or request.headers.get("x-room-password", "")
+    password = request.query_params.get("password", "")
 
     room_name = request.path_params.get("room_name") or request.query_params.get("room_name") or request.query_params.get("room") or "all"
     try:
@@ -2788,39 +2798,152 @@ async def endpoint_admin_list_audit_log(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-async def endpoint_admin_set_room_password(request: Request) -> Response:
-    """Allows authenticated supervisor Rui to set, change, or remove a room's password."""
-    if not is_authenticated_human(request):
-        return JSONResponse({"error": "Acesso negado: Apenas o supervisor humano Rui pode alterar senhas de salas."}, status_code=403)
-    room_name = request.path_params["room_name"]
+async def endpoint_admin_approve_agent(request: Request) -> Response:
+    """Approves a pending agent and emits its initial token once."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    if not (hasattr(hub.storage, "is_v3") and hub.storage.is_v3()):
+        return JSONResponse({"status": "error", "error": "Apenas suportado na v3"}, status_code=400)
+    agent_id = request.path_params.get("id")
+    try:
+        pid = int(agent_id)
+        res = hub.storage.v3.approve_agent(pid, actor_id=principal.get("id"), actor_name=principal.get("name", "admin"))
+        return JSONResponse(res, status_code=200)
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=400)
+
+
+async def endpoint_admin_update_agent_wake_profile(request: Request) -> Response:
+    """Updates an agent's harness and wake_mode profile."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    if not (hasattr(hub.storage, "is_v3") and hub.storage.is_v3()):
+        return JSONResponse({"status": "error", "error": "Apenas suportado na v3"}, status_code=400)
+    agent_id = request.path_params.get("id")
     try:
         data = await request.json()
-    except Exception:
-        data = {}
-    auto_generate = bool(data.get("auto_generate") or data.get("generate_token"))
-    if auto_generate:
-        password = secrets.token_hex(8)
-    else:
-        password = data.get("password", "")
-    try:
-        principal = current_principal.get(None)
-        actor_name = principal.get("name") if principal else hub.human_name
-        res = hub.change_room_password(
-            room_name=room_name,
-            old_password="",
-            new_password=password,
-            actor_name=actor_name,
-            supervisor_token=hub.human_token,
+        harness = data.get("harness")
+        wake_mode = data.get("wake_mode")
+        res = hub.storage.v3.update_agent_wake_profile(
+            int(agent_id),
+            harness=harness,
+            wake_mode=wake_mode,
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
         )
-        res["password"] = password
-        res["auto_generated"] = auto_generate
-        return JSONResponse(res, status_code=200)
-    except PermissionError as pe:
-        return JSONResponse({"error": str(pe)}, status_code=403)
-    except ValueError as ve:
-        return JSONResponse({"error": str(ve)}, status_code=404)
+        return JSONResponse({"status": "success", "agent": res}, status_code=200)
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=400)
+
+
+async def endpoint_admin_get_settings(request: Request) -> Response:
+    """Returns configured system settings/thresholds."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    if not (hasattr(hub.storage, "is_v3") and hub.storage.is_v3()):
+        return JSONResponse({"t_idle_seconds": 600, "t_unread_seconds": 600, "max_wake_timeout": 1500})
+    settings = hub.storage.v3.get_system_thresholds()
+    return JSONResponse({"status": "success", "settings": settings})
+
+
+async def endpoint_admin_patch_settings(request: Request) -> Response:
+    """Updates system thresholds (t_idle_seconds, t_unread_seconds, max_wake_timeout)."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    if not (hasattr(hub.storage, "is_v3") and hub.storage.is_v3()):
+        return JSONResponse({"status": "error", "error": "Apenas suportado na v3"}, status_code=400)
+    try:
+        data = await request.json()
+        if "t_idle_seconds" in data:
+            hub.storage.v3.set_setting("t_idle_seconds", str(int(data["t_idle_seconds"])))
+        if "t_unread_seconds" in data:
+            hub.storage.v3.set_setting("t_unread_seconds", str(int(data["t_unread_seconds"])))
+        if "max_wake_timeout" in data:
+            hub.storage.v3.set_setting("max_wake_timeout", str(int(data["max_wake_timeout"])))
+        hub.storage.v3.log_audit(
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+            action="update_settings",
+            target_type="system_settings",
+            details=f"Atualizou definições de wake: {data}",
+        )
+        return JSONResponse({"status": "success", "settings": hub.storage.v3.get_system_thresholds()})
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=400)
+
+
+async def endpoint_wake(request: Request) -> Response:
+    """
+    Universal wake-up endpoint (GET /api/wake):
+    Query params:
+    - timeout_seconds (default 600, max 1500 or configured)
+    - ack (optional message/batch ID to acknowledge)
+    - format (json | text, default json)
+    - room (optional room filter)
+    """
+    actor = get_authenticated_actor(request)
+    if not actor:
+        return JSONResponse(
+            {"status": "error", "error": "Autenticação obrigatória. Forneça cabeçalho Authorization: Bearer <token>."},
+            status_code=401,
+        )
+
+    try:
+        timeout_seconds = float(request.query_params.get("timeout_seconds", 600))
+    except (ValueError, TypeError):
+        timeout_seconds = 600.0
+
+    try:
+        ack = int(request.query_params.get("ack", 0))
+    except (ValueError, TypeError):
+        ack = 0
+
+    fmt = request.query_params.get("format", "json").strip().lower()
+    room = request.query_params.get("room", "").strip()
+
+    try:
+        result = await hub.wait_for_work(
+            principal_or_agent=actor["principal"] or actor["name"],
+            timeout_seconds=timeout_seconds,
+            ack=ack,
+            format=fmt,
+            room=room,
+        )
+        if fmt == "text":
+            return Response(content=str(result), media_type="text/plain; charset=utf-8")
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
+
+
+async def endpoint_room_team_status(request: Request) -> Response:
+    """Returns presence and liveliness state for members of a room."""
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse({"status": "error", "error": "Autenticação obrigatória"}, status_code=401)
+    room_name = request.path_params.get("room_name", "")
+    try:
+        team = hub.get_room_team_status(room_name, requester_principal=auth.get("principal"))
+        return JSONResponse({"status": "success", "room": room_name, "team": team})
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=400)
+
+
+async def endpoint_serve_aichat_wait(request: Request) -> Response:
+    """Serves the universal client script aichat-wait.py."""
+    candidates = [
+        Path(__file__).resolve().parent.parent / "tools" / "aichat-wait.py",
+        Path(__file__).resolve().parent / "static" / "tools" / "aichat-wait.py",
+    ]
+    for p in candidates:
+        if p.exists():
+            return Response(content=p.read_text(encoding="utf-8"), media_type="text/x-python; charset=utf-8")
+    return Response(content="# aichat-wait.py not found\n", media_type="text/plain", status_code=404)
+
 
 
 # --- WebSocket Endpoint ---
@@ -2956,14 +3079,16 @@ from contextlib import asynccontextmanager
 async def app_lifespan(app: Starlette):
     """Manages background tasks and Streamable HTTP session manager."""
     cal_task = asyncio.create_task(hub.calendar_dispatcher_loop())
+    live_task = asyncio.create_task(hub.liveness_monitor_loop())
     try:
         async with mcp.session_manager.run():
             yield
     finally:
         cal_task.cancel()
+        live_task.cancel()
         try:
-            await cal_task
-        except (asyncio.CancelledError, Exception):
+            await asyncio.gather(cal_task, live_task, return_exceptions=True)
+        except Exception:
             pass
 
 
@@ -2985,7 +3110,9 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
 
     routes = [
         Route("/", endpoint=endpoint_index, methods=["GET"]),
+        Route("/tools/aichat-wait.py", endpoint=endpoint_serve_aichat_wait, methods=["GET"]),
         Route("/api/status", endpoint=endpoint_status, methods=["GET"]),
+        Route("/api/wake", endpoint=endpoint_wake, methods=["GET"]),
         Route("/api/auth/status", endpoint=endpoint_auth_status, methods=["GET"]),
         Route("/api/auth/login", endpoint=endpoint_auth_login, methods=["POST"]),
         Route("/api/auth/logout", endpoint=endpoint_auth_logout, methods=["POST"]),
@@ -2996,6 +3123,7 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
         Route("/api/rooms", endpoint=endpoint_create_room, methods=["POST"]),
         Route("/api/rooms/{room_name}/messages", endpoint=endpoint_get_messages, methods=["GET"]),
         Route("/api/rooms/{room_name}/messages", endpoint=endpoint_post_message, methods=["POST"]),
+        Route("/api/rooms/{room_name}/team-status", endpoint=endpoint_room_team_status, methods=["GET"]),
         Route("/api/messages/{message_id:int}/reactions", endpoint=endpoint_toggle_reaction, methods=["POST"]),
         Route("/api/decisions/{message_id:int}/resolve", endpoint=endpoint_resolve_decision, methods=["POST"]),
         Route("/api/polls", endpoint=endpoint_create_poll, methods=["POST"]),
@@ -3017,6 +3145,8 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
         Route("/api/agents/{callsign}/status", endpoint=endpoint_update_agent_status, methods=["POST", "PATCH"]),
         Route("/admin", endpoint=endpoint_admin_ui, methods=["GET"]),
         Route("/api/admin/me", endpoint=endpoint_admin_me, methods=["GET"]),
+        Route("/api/admin/settings", endpoint=endpoint_admin_get_settings, methods=["GET"]),
+        Route("/api/admin/settings", endpoint=endpoint_admin_patch_settings, methods=["PATCH", "POST"]),
         Route("/api/admin/humans", endpoint=endpoint_admin_list_humans, methods=["GET"]),
         Route("/api/admin/humans", endpoint=endpoint_admin_create_human, methods=["POST"]),
         Route("/api/admin/humans/{principal_id:int}", endpoint=endpoint_admin_update_human, methods=["PATCH", "PUT"]),
@@ -3027,6 +3157,8 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
         Route("/api/admin/users/{principal_id:int}", endpoint=endpoint_admin_delete_human, methods=["DELETE"]),
         Route("/api/admin/agents", endpoint=endpoint_admin_list_agents, methods=["GET"]),
         Route("/api/admin/agents", endpoint=endpoint_admin_create_agent, methods=["POST"]),
+        Route("/api/admin/agents/{id:int}/approve", endpoint=endpoint_admin_approve_agent, methods=["POST"]),
+        Route("/api/admin/agents/{id:int}/wake-profile", endpoint=endpoint_admin_update_agent_wake_profile, methods=["PATCH", "POST"]),
         Route("/api/admin/agents/{principal_id:int}", endpoint=endpoint_admin_update_agent, methods=["PATCH", "PUT"]),
         Route("/api/admin/agents/{principal_id:int}/rotate-token", endpoint=endpoint_admin_rotate_agent_token, methods=["POST"]),
         Route("/api/admin/agents/{principal_id:int}/revoke-token", endpoint=endpoint_admin_revoke_agent_token, methods=["POST"]),
@@ -3038,12 +3170,12 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
         Route("/api/admin/rooms/{room_id}/access", endpoint=endpoint_admin_grant_room_access, methods=["POST"]),
         Route("/api/admin/rooms/{room_id}/access/{principal_id:int}", endpoint=endpoint_admin_revoke_room_access, methods=["DELETE"]),
         Route("/api/admin/rooms/bulk-grant", endpoint=endpoint_admin_bulk_grant_room_access, methods=["POST"]),
-        Route("/api/admin/rooms/{room_name}/password", endpoint=endpoint_admin_set_room_password, methods=["POST"]),
         Route("/api/admin/roles", endpoint=endpoint_admin_list_roles, methods=["GET"]),
         Route("/api/admin/roles", endpoint=endpoint_admin_create_role, methods=["POST"]),
         Route("/api/admin/roles/{role_id:int}", endpoint=endpoint_admin_update_role, methods=["PATCH", "PUT"]),
         Route("/api/admin/roles/{role_id:int}", endpoint=endpoint_admin_delete_role, methods=["DELETE"]),
         Route("/api/admin/audit", endpoint=endpoint_admin_list_audit_log, methods=["GET"]),
+
         Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_get_tasks, methods=["GET"]),
         Route("/api/rooms/{room_name}/tasks", endpoint=endpoint_create_task, methods=["POST"]),
         Route("/api/tasks/{task_id:int}", endpoint=endpoint_update_task, methods=["PATCH", "POST"]),

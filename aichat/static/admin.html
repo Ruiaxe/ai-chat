@@ -74,6 +74,10 @@
         <i data-lucide="file-text" class="w-4 h-4"></i>
         <span>Auditoria</span>
       </button>
+      <button onclick="switchTab('settings')" id="tab-btn-settings" class="tab-btn flex items-center space-x-2.5 px-3 py-2 rounded-lg text-xs font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent">
+        <i data-lucide="settings" class="w-4 h-4"></i>
+        <span>Definições</span>
+      </button>
     </aside>
 
     <!-- Main Content Area -->
@@ -143,13 +147,14 @@
                   <th class="py-3 px-4">ID</th>
                   <th class="py-3 px-4">Callsign / Nome</th>
                   <th class="py-3 px-4">Papel por Defeito</th>
-                  <th class="py-3 px-4">Estado</th>
-                  <th class="py-3 px-4">Credenciais Ativas</th>
+                  <th class="py-3 px-4">Estado / Vivacidade</th>
+                  <th class="py-3 px-4">Harness & Wake</th>
+                  <th class="py-3 px-4">Credenciais</th>
                   <th class="py-3 px-4 text-right">Ações</th>
                 </tr>
               </thead>
               <tbody id="agents-table-body" class="divide-y divide-slate-800/60">
-                <tr><td colspan="6" class="py-8 text-center text-slate-500">A carregar agentes...</td></tr>
+                <tr><td colspan="7" class="py-8 text-center text-slate-500">A carregar agentes...</td></tr>
               </tbody>
             </table>
           </div>
@@ -322,6 +327,51 @@
         </div>
       </section>
 
+      <!-- ================= TAB: SETTINGS ================= -->
+      <section id="tab-settings" class="tab-content hidden space-y-6">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+          <div>
+            <h2 class="text-lg font-bold text-white">Definições do Sistema & Wake-Up</h2>
+            <p class="text-xs text-slate-400">Limiares temporais para deteção de agentes parados e limites de espera do universal wake-up.</p>
+          </div>
+        </div>
+
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-sm max-w-2xl">
+          <form onsubmit="handleSaveSettings(event)" class="space-y-4 text-xs">
+            <div>
+              <label class="block text-slate-300 font-semibold mb-1">
+                T_idle — Limite de Inatividade (segundos)
+              </label>
+              <input type="number" id="setting-t-idle" min="30" max="3600" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-indigo-500">
+              <p class="text-[11px] text-slate-500 mt-1">Tempo máximo sem chamadas autenticadas antes de considerar o agente parado (se tiver mensagens por ler). Padrão: 180s.</p>
+            </div>
+
+            <div>
+              <label class="block text-slate-300 font-semibold mb-1">
+                T_unread — Limite de Mensagens por Ler (segundos)
+              </label>
+              <input type="number" id="setting-t-unread" min="30" max="3600" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-indigo-500">
+              <p class="text-[11px] text-slate-500 mt-1">Idade mínima da mensagem dirigida mais antiga por ler para acionar alerta de agente parado. Padrão: 120s.</p>
+            </div>
+
+            <div>
+              <label class="block text-slate-300 font-semibold mb-1">
+                Timeout Máximo de Espera / Long-Polling (segundos)
+              </label>
+              <input type="number" id="setting-max-timeout" min="30" max="1800" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-indigo-500">
+              <p class="text-[11px] text-slate-500 mt-1">Duração máxima que uma chamada <code>wait_for_work</code> ou <code>/api/wake</code> pode ficar aberta no servidor. Padrão: 600s.</p>
+            </div>
+
+            <div class="pt-2">
+              <button type="submit" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold transition flex items-center space-x-1.5 shadow-sm">
+                <i data-lucide="save" class="w-4 h-4"></i>
+                <span>Guardar Definições</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </section>
+
     </main>
   </div>
 
@@ -459,6 +509,34 @@
       <div class="flex justify-end pt-2">
         <button onclick="closeModal('modal-token-display')" class="px-5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold transition">
           Compreendi e guardei o token
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Snippet de Wake-up Universal -->
+  <div id="modal-wake-snippet" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-indigo-500/40 rounded-2xl w-full max-w-xl p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-white flex items-center gap-2">
+          <i data-lucide="code-2" class="w-5 h-5 text-indigo-400"></i>
+          <span id="ws-modal-title">Configuração de Wake-up Universal</span>
+        </h3>
+        <button onclick="closeModal('modal-wake-snippet')" class="text-slate-400 hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
+      </div>
+      <p class="text-xs text-slate-300">
+        Configuração e comandos recomendados para o agente <strong id="ws-agent-name" class="text-white"></strong>:
+      </p>
+      
+      <div class="bg-slate-950 border border-slate-800 rounded-xl p-3.5 overflow-x-auto">
+        <pre id="ws-snippet-code" class="text-xs font-mono text-emerald-400 whitespace-pre-wrap break-all select-all"></pre>
+      </div>
+
+      <div class="flex justify-end space-x-2 pt-1">
+        <button type="button" onclick="closeModal('modal-wake-snippet')" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition">Fechar</button>
+        <button onclick="copyWakeSnippet()" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition">
+          <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+          <span id="ws-copy-btn-text">Copiar</span>
         </button>
       </div>
     </div>
@@ -644,6 +722,7 @@
       if (tabId === 'rooms') loadRooms();
       if (tabId === 'roles') loadRoles();
       if (tabId === 'audit') loadAuditLog();
+      if (tabId === 'settings') loadSettings();
     }
 
     // --- Alerts ---
@@ -884,9 +963,18 @@
           const tr = document.createElement('tr');
           tr.className = 'hover:bg-slate-800/30 transition';
           const isActive = a.status === 'active';
+          const isPending = a.status === 'pending';
           const creds = a.credentials || [];
           const activeCreds = creds.filter(c => !c.revoked_at);
           const hintsHtml = activeCreds.map(c => `<span class="font-mono bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800 text-[10px]">...${escapeHtml(c.token_hint)}</span>`).join(' ');
+
+          const statusBadge = isPending
+            ? '<span class="px-2 py-0.5 rounded text-[10px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">Pendente</span>'
+            : `<span class="px-2 py-0.5 rounded text-[10px] font-medium ${isActive ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}">${isActive ? 'Ativo' : 'Inativo'}</span>`;
+
+          const livBadge = a.liveliness?.state_badge || '⚫ offline';
+          const curHarness = a.harness || 'claude-code';
+          const curWakeMode = a.wake_mode || 'hook';
 
           tr.innerHTML = `
             <td class="py-3 px-4 font-mono text-[11px] text-slate-400">#${a.id}</td>
@@ -903,30 +991,186 @@
               </span>
             </td>
             <td class="py-3 px-4">
-              <span class="px-2 py-0.5 rounded text-[10px] font-medium ${isActive ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}">
-                ${isActive ? 'Ativo' : 'Inativo'}
-              </span>
+              <div>${statusBadge}</div>
+              <div class="text-[10px] font-mono text-slate-400 mt-1">${escapeHtml(livBadge)}</div>
             </td>
             <td class="py-3 px-4">
-              <div class="flex items-center gap-1 flex-wrap">${hintsHtml || '<span class="text-slate-500 text-[10px]">Sem tokens ativos</span>'}</div>
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <select onchange="onAgentWakeProfileChange(${a.id}, this.value, document.getElementById('wm-${a.id}').value)" id="hn-${a.id}" class="bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] text-slate-300 focus:outline-none focus:border-indigo-500">
+                  <option value="claude-code" ${curHarness === 'claude-code' ? 'selected' : ''}>Claude Code</option>
+                  <option value="antigravity" ${curHarness === 'antigravity' ? 'selected' : ''}>Antigravity</option>
+                  <option value="opencode" ${curHarness === 'opencode' ? 'selected' : ''}>OpenCode</option>
+                  <option value="other" ${curHarness === 'other' ? 'selected' : ''}>Outro</option>
+                </select>
+                <select onchange="onAgentWakeProfileChange(${a.id}, document.getElementById('hn-${a.id}').value, this.value)" id="wm-${a.id}" class="bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] text-slate-300 focus:outline-none focus:border-indigo-500">
+                  <option value="hook" ${curWakeMode === 'hook' ? 'selected' : ''}>Hook</option>
+                  <option value="background" ${curWakeMode === 'background' ? 'selected' : ''}>Background</option>
+                  <option value="tool" ${curWakeMode === 'tool' ? 'selected' : ''}>Tool</option>
+                </select>
+                <button onclick="openWakeSnippetModal('${escapeHtml(a.name)}', document.getElementById('hn-${a.id}').value, document.getElementById('wm-${a.id}').value)" title="Snippet de Configuração" class="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-indigo-400 hover:text-indigo-300 text-[10px] font-medium border border-slate-700 flex items-center gap-1">
+                  <i data-lucide="code-2" class="w-3 h-3"></i>
+                  <span>Snippet</span>
+                </button>
+              </div>
+            </td>
+            <td class="py-3 px-4">
+              <div class="flex items-center gap-1 flex-wrap">${hintsHtml || '<span class="text-slate-500 text-[10px]">Sem tokens</span>'}</div>
             </td>
             <td class="py-3 px-4 text-right space-x-1">
-              <button onclick="rotateAgentToken(${a.id})" title="Rodar Token" class="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-medium transition">
-                Rodar Token
-              </button>
-              ${activeCreds.length > 0 ? `
-                <button onclick="revokeAgentToken(${a.id}, '${activeCreds[0].token_hint}')" title="Revogar Token Atual" class="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
-                  Revogar
+              ${isPending ? `
+                <button onclick="approveAgent(${a.id}, '${escapeHtml(a.name)}')" title="Aprovar Agente e Emitir Token" class="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-semibold transition shadow-sm">
+                  Aprovar
                 </button>
-              ` : ''}
-              <button onclick="toggleAgentStatus(${a.id}, '${isActive ? 'inactive' : 'active'}')" title="Ativar/Desativar" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">
-                ${isActive ? 'Desativar' : 'Ativar'}
-              </button>
+              ` : `
+                <button onclick="rotateAgentToken(${a.id})" title="Rodar Token" class="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-medium transition">
+                  Rodar Token
+                </button>
+                ${activeCreds.length > 0 ? `
+                  <button onclick="revokeAgentToken(${a.id}, '${activeCreds[0].token_hint}')" title="Revogar Token Atual" class="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
+                    Revogar
+                  </button>
+                ` : ''}
+                <button onclick="toggleAgentStatus(${a.id}, '${isActive ? 'inactive' : 'active'}')" title="Ativar/Desativar" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">
+                  ${isActive ? 'Desativar' : 'Ativar'}
+                </button>
+              `}
             </td>
           `;
           tbody.appendChild(tr);
         });
         lucide.createIcons();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function approveAgent(agentId, name) {
+      if (!confirm(`Aprovar o agente '${name}'? Um token inicial de acesso será emitido.`)) return;
+      try {
+        const res = await fetch(`/api/admin/agents/${agentId}/approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao aprovar agente');
+        showAlert(`Agente '${name}' aprovado com sucesso!`);
+        showGeneratedToken(data.token, data.token_hint);
+        loadAgents();
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function onAgentWakeProfileChange(agentId, harness, wakeMode) {
+      try {
+        const res = await fetch(`/api/admin/agents/${agentId}/wake-profile`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ harness, wake_mode: wakeMode })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao atualizar perfil de wake-up');
+        showAlert('Perfil de wake-up do agente atualizado.');
+      } catch (err) {
+        showAlert(err.message, true);
+        loadAgents();
+      }
+    }
+
+    function openWakeSnippetModal(agentName, harness, wakeMode) {
+      const nameEl = document.getElementById('ws-agent-name');
+      const codeEl = document.getElementById('ws-snippet-code');
+      const copyBtn = document.getElementById('ws-copy-btn-text');
+      if (nameEl) nameEl.textContent = `@${agentName} (${harness} / ${wakeMode})`;
+      if (copyBtn) copyBtn.textContent = 'Copiar';
+
+      let snippet = '';
+      if (harness === 'claude-code') {
+        if (wakeMode === 'hook') {
+          snippet = `# Configurar no Claude Code (.claude.json ou terminal):
+export AICHAT_AGENT_TOKEN="<COPIAR_TOKEN_DO_AGENTE>"
+export AICHAT_ROOM="geral"
+
+# Script cliente universal como hook de paragem:
+python tools/aichat-wait.py --hook claude-code --room geral`;
+        } else if (wakeMode === 'background') {
+          snippet = `# Em segundo plano (background daemon):
+export AICHAT_AGENT_TOKEN="<COPIAR_TOKEN_DO_AGENTE>"
+python tools/aichat-wait.py --room geral --format json`;
+        } else {
+          snippet = `# Chamada MCP direta:
+wait_for_work(timeout_seconds=600, ack=0)`;
+        }
+      } else if (harness === 'antigravity') {
+        if (wakeMode === 'tool') {
+          snippet = `# No Antigravity, chamar MCP:
+wait_for_work(timeout_seconds=600, ack=0)`;
+        } else {
+          snippet = `# No Antigravity via script universal:
+python tools/aichat-wait.py --room geral --timeout 600`;
+        }
+      } else if (harness === 'opencode') {
+        snippet = `# No OpenCode:
+export AICHAT_AGENT_TOKEN="<COPIAR_TOKEN_DO_AGENTE>"
+python tools/aichat-wait.py --hook opencode --room geral`;
+      } else {
+        snippet = `# Cliente universal para qualquer harness:
+python tools/aichat-wait.py --url "http://localhost:8000" --token "<TOKEN>" --room geral --timeout 600`;
+      }
+
+      if (codeEl) codeEl.textContent = snippet;
+      openModal('modal-wake-snippet');
+    }
+
+    function copyWakeSnippet() {
+      const codeEl = document.getElementById('ws-snippet-code');
+      if (!codeEl) return;
+      navigator.clipboard.writeText(codeEl.textContent).then(() => {
+        const copyBtn = document.getElementById('ws-copy-btn-text');
+        if (copyBtn) {
+          copyBtn.textContent = 'Copiado!';
+          setTimeout(() => { copyBtn.textContent = 'Copiar'; }, 2500);
+        }
+      });
+    }
+
+    // ================= SYSTEM SETTINGS LOGIC =================
+    async function loadSettings() {
+      try {
+        const res = await fetch('/api/admin/settings');
+        if (!res.ok) throw new Error('Falha ao carregar definições');
+        const data = await res.json();
+        const s = data.settings || {};
+        const tIdle = document.getElementById('setting-t-idle');
+        const tUnread = document.getElementById('setting-t-unread');
+        const maxTimeout = document.getElementById('setting-max-timeout');
+        if (tIdle) tIdle.value = s.t_idle_seconds ?? 180;
+        if (tUnread) tUnread.value = s.t_unread_seconds ?? 120;
+        if (maxTimeout) maxTimeout.value = s.max_wake_timeout ?? 600;
+      } catch (err) {
+        showAlert(err.message, true);
+      }
+    }
+
+    async function handleSaveSettings(e) {
+      e.preventDefault();
+      const tIdle = parseInt(document.getElementById('setting-t-idle').value);
+      const tUnread = parseInt(document.getElementById('setting-t-unread').value);
+      const maxTimeout = parseInt(document.getElementById('setting-max-timeout').value);
+
+      try {
+        const res = await fetch('/api/admin/settings', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            t_idle_seconds: tIdle,
+            t_unread_seconds: tUnread,
+            max_wake_timeout: maxTimeout,
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao guardar definições');
+        showAlert('Definições do sistema atualizadas com sucesso.');
       } catch (err) {
         showAlert(err.message, true);
       }

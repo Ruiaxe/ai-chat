@@ -216,11 +216,6 @@
         <button onclick="toggleArchiveCurrentRoom()" id="archive-room-btn" title="Arquivar / Desarquivar Sala (Apenas Humano)" class="hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 flex items-center space-x-1.5 transition">
           <i id="archive-btn-icon" data-lucide="archive" class="w-3.5 h-3.5"></i>
           <span id="archive-btn-label" class="hidden md:inline">Arquivar</span>
-        </button>
-        <button onclick="openCurrentRoomTokenModal()" id="room-token-header-btn" title="Gerir e Gerar Token de Acesso para esta sala" class="hidden px-2.5 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-xs font-semibold flex items-center space-x-1.5 transition shadow-sm">
-          <i data-lucide="key" class="w-3.5 h-3.5 text-amber-400"></i>
-          <span>Token de Sala</span>
-        </button>
         <button onclick="downloadTranscript()" id="download-btn" title="Download Room Log" class="hidden px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 flex items-center space-x-1.5 transition">
           <i data-lucide="download" class="w-3.5 h-3.5"></i>
           <span class="hidden sm:inline">Log</span>
@@ -597,191 +592,10 @@
           <input id="new-room-topic" type="text" placeholder="e.g. Refactoring authentication module"
             class="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500" />
         </div>
-        <div>
-          <div class="flex items-center justify-between mb-1">
-            <label class="block text-slate-400 font-medium">Token / Senha da Sala (opcional)</label>
-            <button type="button" onclick="generateAutoRoomTokenForNewRoom()" 
-              class="text-xs text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1 transition">
-              <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
-              <span>Gerar Automático</span>
-            </button>
-          </div>
-          <div class="relative">
-            <input id="new-room-password" type="password" placeholder="Deixa vazio para sala pública ou gera token..."
-              oninput="handleNewRoomPasswordInput()"
-              class="w-full pl-3 pr-9 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-amber-500 font-mono" />
-            <button type="button" onclick="togglePasswordVisibility('new-room-password', 'new-room-pwd-toggle-icon')" 
-              class="absolute right-2.5 top-2.5 text-slate-400 hover:text-white" title="Mostrar/Ocultar Token">
-              <i id="new-room-pwd-toggle-icon" data-lucide="eye" class="w-4 h-4"></i>
-            </button>
-          </div>
-          <!-- Revealed Token Card with One-Click Copy -->
-          <div id="new-room-token-preview" class="hidden mt-2 p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg flex items-center justify-between gap-2 text-xs">
-            <div class="min-w-0 flex-1 flex items-center gap-1.5">
-              <span class="text-amber-400 font-semibold">Novo Token:</span>
-              <code id="new-room-token-display" class="font-mono text-amber-300 text-[11px] truncate select-all"></code>
-            </div>
-            <button type="button" onclick="copyNewRoomToken(this)" 
-              class="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/40 text-amber-300 font-medium border border-amber-500/30 flex items-center gap-1 flex-shrink-0 transition">
-              <i data-lucide="copy" class="w-3 h-3"></i>
-              <span>Copiar</span>
-            </button>
-          </div>
-          <p class="text-[11px] text-slate-500 mt-1">Se definido, os agentes e membros devem fornecer este token para ler ou enviar mensagens.</p>
-        </div>
       </div>
       <div class="flex justify-end space-x-2 pt-2">
         <button onclick="closeCreateRoomModal()" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium">Cancel</button>
         <button onclick="submitCreateRoom()" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium">Create Room</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Password Prompt Modal -->
-  <div id="password-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4">
-      <div class="flex items-center space-x-3">
-        <div class="w-10 h-10 rounded-full bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 flex-shrink-0">
-          <i data-lucide="lock" class="w-5 h-5"></i>
-        </div>
-        <div class="min-w-0">
-          <h3 class="font-bold text-white text-base">Sala Protegida</h3>
-          <p id="pwd-modal-room-name" class="text-xs text-slate-400 break-words">Introduza o token de acesso ou senha</p>
-        </div>
-      </div>
-      <div>
-        <div class="relative">
-          <input id="room-password-input" type="password" placeholder="Token de acesso ou senha..." onkeydown="if(event.key==='Enter') submitPassword()"
-            class="w-full pl-3 pr-9 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-200 text-sm focus:outline-none focus:border-amber-500" />
-          <button type="button" onclick="togglePasswordVisibility('room-password-input', 'pwd-toggle-icon')" class="absolute right-2.5 top-2.5 text-slate-400 hover:text-white" title="Mostrar/Ocultar">
-            <i id="pwd-toggle-icon" data-lucide="eye" class="w-4 h-4"></i>
-          </button>
-        </div>
-        <p id="pwd-error" class="text-xs text-rose-400 mt-1.5 hidden">Token ou senha incorreta. Tente novamente.</p>
-        <p class="text-[11px] text-slate-500 mt-2">Nota: Protege contra envios na sala errada; não impede agentes locais com acesso ao sistema de lerem a sala.</p>
-        <div class="mt-2.5 pt-2 border-t border-slate-800/60 flex items-center justify-between text-xs">
-          <button type="button" onclick="closePasswordModal(); openCurrentRoomTokenModal(pendingRoomToUnlock ? pendingRoomToUnlock.name : null);" class="text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1.5 transition">
-            <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
-            <span>Gerar / Gerir Token desta Sala</span>
-          </button>
-        </div>
-        <div class="mt-2 pt-2 border-t border-slate-800 flex items-center justify-between text-xs">
-          <span class="text-slate-400">És um utilizador humano?</span>
-          <button type="button" onclick="closePasswordModal(); openAuthModal();" class="text-emerald-400 hover:text-emerald-300 font-medium hover:underline flex items-center gap-1 transition">
-            <i data-lucide="shield-check" class="w-3.5 h-3.5"></i>
-            <span>Iniciar Sessão</span>
-          </button>
-        </div>
-      </div>
-      <div class="flex justify-end space-x-2 pt-2">
-        <button onclick="closePasswordModal()" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium">Cancelar</button>
-        <button onclick="submitPassword()" class="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium">Salvar & Entrar</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Dedicated Room Token Generator & Password Manager Modal -->
-  <div id="room-token-modal" class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-        <div class="flex items-center space-x-2.5">
-          <div class="p-2 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20">
-            <i data-lucide="key" class="w-5 h-5"></i>
-          </div>
-          <div>
-            <h3 class="font-bold text-white text-base">Token de Acesso da Sala</h3>
-            <p id="room-token-modal-title" class="text-xs text-slate-400 font-mono">#geral</p>
-          </div>
-        </div>
-        <button onclick="closeRoomTokenModal()" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition">
-          <i data-lucide="x" class="w-5 h-5"></i>
-        </button>
-      </div>
-
-      <!-- Current Token Display -->
-      <div id="room-token-current-section" class="space-y-2">
-        <div class="flex items-center justify-between text-xs">
-          <span class="text-slate-400 font-medium">Estado da Sala:</span>
-          <span id="room-token-status-badge" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">Protegida</span>
-        </div>
-
-        <div id="room-token-val-container" class="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
-          <div class="flex items-center justify-between">
-            <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Token Atual da Sala</span>
-            <span id="room-token-last-copied" class="text-[10px] text-emerald-400 hidden font-medium">✓ Copiado!</span>
-          </div>
-          <div class="flex items-center space-x-2">
-            <input id="room-token-current-input" type="password" readonly placeholder="Sem token definido"
-              class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2.5 py-1.5 text-xs text-amber-300 font-mono select-all focus:outline-none" />
-            <button onclick="togglePasswordVisibility('room-token-current-input', 'room-token-eye-icon')" class="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition" title="Ver/Ocultar Token">
-              <i id="room-token-eye-icon" data-lucide="eye" class="w-4 h-4"></i>
-            </button>
-            <button onclick="copyCurrentRoomToken(this)" class="px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-xs font-semibold flex items-center gap-1 transition">
-              <i data-lucide="copy" class="w-3.5 h-3.5"></i>
-              <span>Copiar</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Generator Action Button (Big & Prominent) -->
-      <div class="p-4 bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-indigo-500/10 border border-amber-500/30 rounded-xl space-y-2.5">
-        <div class="flex items-start justify-between">
-          <div>
-            <h4 class="text-xs font-bold text-white flex items-center gap-1.5">
-              <i data-lucide="sparkles" class="w-4 h-4 text-amber-400"></i>
-              Gerador Automático de Token
-            </h4>
-            <p class="text-[11px] text-slate-400 mt-0.5">Gera instantaneamente um token aleatório criptográfico e aplica-o a esta sala.</p>
-          </div>
-        </div>
-        <button onclick="executeGenerateRoomToken()" id="btn-execute-generate-token"
-          class="w-full py-2.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition active:scale-[0.99] cursor-pointer">
-          <i data-lucide="sparkles" class="w-4 h-4"></i>
-          <span>Gerar Novo Token & Copiar</span>
-        </button>
-      </div>
-
-      <!-- Generated Success Banner -->
-      <div id="room-token-generated-banner" class="hidden p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1.5">
-        <div class="flex items-center justify-between text-xs">
-          <span class="text-emerald-400 font-bold flex items-center gap-1">
-            <i data-lucide="check-circle" class="w-3.5 h-3.5"></i>
-            Novo Token Gerado com Sucesso!
-          </span>
-          <span class="text-[10px] text-emerald-300 font-medium">Copiado para o clipboard ✓</span>
-        </div>
-        <div class="p-2 bg-slate-950 rounded-lg border border-emerald-500/20 flex items-center justify-between">
-          <code id="room-token-newly-generated-code" class="text-xs font-mono text-emerald-300 select-all font-bold"></code>
-          <button onclick="copyGeneratedTokenFromBanner(this)" class="px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 text-xs font-semibold flex items-center gap-1 transition">
-            <i data-lucide="copy" class="w-3 h-3"></i>
-            <span>Copiar</span>
-          </button>
-        </div>
-        <p class="text-[10px] text-slate-400">Entrega este token aos agentes para que possam aceder a esta sala.</p>
-      </div>
-
-      <!-- Advanced Options -->
-      <div class="pt-2 border-t border-slate-800 space-y-2">
-        <details class="text-xs">
-          <summary class="text-slate-400 hover:text-slate-200 cursor-pointer font-medium select-none">Opções avançadas (definir senha manual ou remover proteção)</summary>
-          <div class="mt-2.5 space-y-2 pl-1">
-            <div>
-              <label class="block text-[11px] text-slate-400 mb-1">Senha Personalizada</label>
-              <div class="flex items-center gap-2">
-                <input id="room-token-manual-input" type="text" placeholder="Escreve uma senha..."
-                  class="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono" />
-                <button onclick="submitManualRoomToken()" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold">Guardar</button>
-              </div>
-            </div>
-            <div class="pt-1">
-              <button onclick="submitRemoveRoomProtection()" class="text-xs text-rose-400 hover:text-rose-300 hover:underline flex items-center gap-1">
-                <i data-lucide="unlock" class="w-3 h-3"></i>
-                <span>Remover proteção e tornar sala pública</span>
-              </button>
-            </div>
-          </div>
-        </details>
       </div>
     </div>
   </div>
@@ -2267,6 +2081,7 @@
                 ${verifiedBadge}
                 ${toBadge}
                 <span class="text-[11px] text-slate-500 ml-auto flex-shrink-0">${formattedTime}</span>
+                ${msg.read_receipt ? `<span class="text-[11px] font-mono flex-shrink-0 ${msg.read_status === 'read' ? 'text-sky-400 font-semibold' : 'text-slate-500'}" title="${msg.read_status === 'read' ? 'Lida por todos os destinatários' : 'Entregue'}">${escapeHtml(msg.read_receipt)}</span>` : ''}
                 <button onclick="speakMessageById(${msg.id})" title="Ouvir esta mensagem (Edge TTS)" class="text-slate-400 hover:text-indigo-400 p-1 rounded transition opacity-0 group-hover:opacity-100 hover:bg-slate-800 flex-shrink-0">
                   <i data-lucide="volume-2" class="w-3.5 h-3.5"></i>
                 </button>
@@ -3830,7 +3645,14 @@
       if (!currentRoom) return;
       const pwd = getSavedPassword(currentRoom.name);
       try {
-        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/presence?password=${encodeURIComponent(pwd)}`);
+        let res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/team-status`);
+        if (res.ok) {
+          const data = await res.json();
+          currentPresence = data;
+          renderPresence(data);
+          return;
+        }
+        res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/presence?password=${encodeURIComponent(pwd)}`);
         if (!res.ok) return;
         const data = await res.json();
         currentPresence = data;
@@ -3842,6 +3664,10 @@
 
     function renderPresence(presence) {
       if (!presence) return;
+      if (presence.team) {
+        renderTeamStatus(presence);
+        return;
+      }
       const total = presence.total_listening || 0;
       const countText = document.getElementById('presence-count-text');
       const sidebarCount = document.getElementById('sidebar-presence-count');
@@ -3884,6 +3710,75 @@
                 </div>
                 <div class="flex items-center space-x-1.5 flex-shrink-0 ml-2">
                   <span class="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0 animate-pulse" title="Ativo agora"></span>
+                </div>
+              </div>
+            `;
+          }).join('');
+
+      if (sidebarList) sidebarList.innerHTML = html;
+      if (listContainer) listContainer.innerHTML = html;
+      lucide.createIcons();
+    }
+
+    function renderTeamStatus(data) {
+      if (!data) return;
+      const team = data.team || [];
+      const listeningCount = team.filter(m => m.liveliness && m.liveliness.listening_now).length;
+      const countText = document.getElementById('presence-count-text');
+      const sidebarCount = document.getElementById('sidebar-presence-count');
+      const popoverCount = document.getElementById('presence-popover-count');
+      const sidebarList = document.getElementById('sidebar-presence-list');
+      const listContainer = document.getElementById('presence-listeners-list');
+
+      if (countText) countText.textContent = `${listeningCount} a escutar`;
+      if (sidebarCount) sidebarCount.textContent = listeningCount;
+      if (popoverCount) popoverCount.textContent = listeningCount;
+
+      const html = team.length === 0
+        ? '<div class="text-slate-500 text-center py-2.5 text-[11px]">Nenhum membro detetado.</div>'
+        : team.map(m => {
+            const isHuman = m.kind === 'human';
+            const icon = isHuman ? '👤' : '🤖';
+            const liv = m.liveliness || { state_badge: '⚫ offline', state: 'offline' };
+            const badge = liv.state_badge || '⚫ offline';
+            let dotColor = 'bg-slate-600';
+            let pulse = '';
+            if (liv.state === 'listening') {
+              dotColor = 'bg-emerald-400';
+              pulse = 'animate-pulse';
+            } else if (liv.state === 'working') {
+              dotColor = 'bg-blue-400';
+              pulse = 'animate-pulse';
+            } else if (liv.state === 'stalled') {
+              dotColor = 'bg-red-500';
+              pulse = 'animate-ping';
+            } else if (liv.state === 'idle') {
+              dotColor = 'bg-amber-400/80';
+            }
+
+            const unreadBadge = liv.unread_count > 0
+              ? `<span class="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 font-semibold" title="${liv.unread_count} mensagens dirigidas por ler">${liv.unread_count} por ler</span>`
+              : '';
+
+            const roleName = m.role_display_name || m.role || (isHuman ? 'Humano' : 'Agente');
+
+            return `
+              <div class="flex items-center justify-between p-2 rounded-lg bg-slate-950/70 border border-slate-800/80 text-[11px] hover:border-slate-700/80 transition shadow-sm">
+                <div class="flex items-center space-x-2.5 min-w-0 flex-1">
+                  <div class="w-6 h-6 rounded-md ${isHuman ? 'bg-emerald-500/20 text-emerald-400' : 'bg-indigo-600/20 text-indigo-400'} border border-slate-800 flex items-center justify-center flex-shrink-0 text-xs">
+                    ${icon}
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center space-x-1.5 flex-wrap">
+                      <span class="font-bold text-slate-200 truncate max-w-[110px]" title="@${escapeHtml(m.name)}">@${escapeHtml(m.name)}</span>
+                      <span class="text-[9px] px-1 rounded bg-slate-800 text-slate-400 border border-slate-700/50">${escapeHtml(roleName)}</span>
+                      ${unreadBadge}
+                    </div>
+                    <span class="text-[10px] text-slate-400 font-mono block truncate">${escapeHtml(badge)}</span>
+                  </div>
+                </div>
+                <div class="flex items-center space-x-1.5 flex-shrink-0 ml-2">
+                  <span class="w-2 h-2 rounded-full ${dotColor} ${pulse} flex-shrink-0" title="${escapeHtml(badge)}"></span>
                 </div>
               </div>
             `;

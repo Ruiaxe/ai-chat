@@ -1131,18 +1131,9 @@ class TestWebAppAndApi(unittest.TestCase):
         self.assertEqual(target["password"], "InitialPassword123")
         self.assertTrue(target["is_protected"])
 
-        # 2. POST /api/admin/rooms/{room}/password: change password as supervisor
-        ch_fail = self.client.post(f"/api/admin/rooms/{room_name}/password", json={"password": "NewSecretPass456"})
-        self.assertEqual(ch_fail.status_code, 403)
-
-        ch_ok = self.client.post(
-            f"/api/admin/rooms/{room_name}/password",
-            headers={"x-human-token": hub.human_token},
-            json={"password": "NewSecretPass456"},
-        )
-        self.assertEqual(ch_ok.status_code, 200)
-        self.assertTrue(hub.verify_room_access(room_name, "NewSecretPass456"))
-        self.assertFalse(hub.verify_room_access(room_name, "InitialPassword123"))
+        # 2. POST /api/admin/rooms/{room}/password: removed endpoint returns 404
+        ch_removed = self.client.post(f"/api/admin/rooms/{room_name}/password", json={"password": "NewSecretPass456"})
+        self.assertEqual(ch_removed.status_code, 404)
 
         # 3. POST /api/agents/register: does not leak secret token to caller
         callsign = f"AgentTest-{uuid.uuid4().hex[:4]}"
@@ -1219,18 +1210,13 @@ class TestWebAppAndApi(unittest.TestCase):
         react_ident = hub.authenticate_agent(token)
         self.assertEqual(react_ident["status"], "active")
 
-        # 4. Auto-generate room password via /api/admin/rooms/{room}/password
+        # 4. /api/admin/rooms/{room}/password returns 404 (removed endpoint)
         auto_pwd_res = self.client.post(
             f"/api/admin/rooms/{room_name}/password",
             headers={"x-human-token": hub.human_token},
             json={"auto_generate": True},
         )
-        self.assertEqual(auto_pwd_res.status_code, 200)
-        auto_pwd_data = auto_pwd_res.json()
-        self.assertTrue(auto_pwd_data["auto_generated"])
-        generated_token = auto_pwd_data["password"]
-        self.assertEqual(len(generated_token), 16)
-        self.assertTrue(hub.verify_room_access(room_name, generated_token))
+        self.assertEqual(auto_pwd_res.status_code, 404)
 
         # 5. Auto-generate room password on room creation via /api/rooms
         new_room_name = f"auto-room-{uuid.uuid4().hex[:6]}"

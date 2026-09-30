@@ -1,4 +1,7 @@
 """
+DEPRECATED: O sentinela foi descontinuado na v3.1 e substituído pelo wake-up universal (wait_for_work / GET /api/wake / aichat-wait.py).
+Este ficheiro é mantido para compatibilidade temporária e será removido na v3.2.
+
 Sentinel Support Watcher for Antigravity-Hub (v2.0).
 Listens for new support requests and reactions across support channels.
 Exits immediately (sys.exit(0)) when new external messages or reactions are detected,

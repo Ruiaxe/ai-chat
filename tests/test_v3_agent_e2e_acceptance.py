@@ -49,6 +49,8 @@ from aichat.mcp_server import (
     list_my_rooms as tool_list_my_rooms,
     who_is_listening as tool_who_is_listening,
     get_room_transcript as tool_get_room_transcript,
+    wait_for_work as tool_wait_for_work,
+    team_status as tool_team_status,
 )
 
 
@@ -145,9 +147,14 @@ class TestV3AgentE2EAcceptance(unittest.IsolatedAsyncioTestCase):
         rm = json.loads(tool_read_messages(room_name="geral"))
         self.assertEqual(rm.get("status"), "success")
 
-        # check_new_messages
+        # check_new_messages is deprecated on v3 -> returns explicit deprecation error
         cnm = json.loads(tool_check_new_messages(room_name="geral"))
-        self.assertEqual(cnm.get("status"), "success")
+        self.assertEqual(cnm.get("status"), "error")
+        self.assertIn("descontinuada", cnm.get("error", ""))
+
+        # wait_for_work(timeout_seconds=0) replaces check_new_messages
+        wfw = json.loads(await tool_wait_for_work(timeout_seconds=0, room_name="geral"))
+        self.assertIn(wfw.get("status"), ("new_messages", "no_messages", "timeout"))
 
         # react_to_message (previously failed with no such column: room_name)
         rx = json.loads(await tool_react_to_message(message_id=msg_id, room_name="geral", emoji="🚀"))
@@ -205,12 +212,19 @@ class TestV3AgentE2EAcceptance(unittest.IsolatedAsyncioTestCase):
         dec_id = ch.get("message_id")
         self.assertIsNotNone(dec_id)
 
-        # who_is_listening & get_room_transcript
+        # who_is_listening is deprecated -> test deprecation error & test team_status
         wil = json.loads(tool_who_is_listening(room_name="geral"))
-        self.assertIn("listeners", wil)
+        self.assertEqual(wil.get("status"), "error")
+        self.assertIn("descontinuada", wil.get("error", ""))
 
-        trans = tool_get_room_transcript(room_name="geral")
-        self.assertIn("Chat Room: geral", trans)
+        ts = json.loads(tool_team_status(room_name="geral"))
+        self.assertEqual(ts.get("status"), "success")
+        self.assertIn("members", ts)
+
+        # get_room_transcript is deprecated on v3 for agents
+        trans = json.loads(tool_get_room_transcript(room_name="geral"))
+        self.assertEqual(trans.get("status"), "error")
+        self.assertIn("descontinuada", trans.get("error", ""))
 
     # ------------------------------------------------------------------
     # 2. REST Write Endpoints as Agent (Bearer)

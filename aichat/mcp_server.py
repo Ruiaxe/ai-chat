@@ -26,7 +26,7 @@ stdio_agent_token: str | None = None
 
 
 def init_stdio_mode(token: str | None = None) -> None:
-    """Initializes FastMCP for stdio bridge mode with a specific agent token."""
+    """Initializes FastMCP for stdio bridge mode with a specific agent credential."""
     global STDIO_MODE, stdio_agent_token
     STDIO_MODE = True
     if token:
@@ -34,26 +34,29 @@ def init_stdio_mode(token: str | None = None) -> None:
         current_auth_token.set(token.strip())
 
 
-def _authenticate(agent_token: str = "", member_token: str = "", expected_callsign: str = "") -> tuple[dict[str, Any] | None, str | None]:
+def _authenticate(**kwargs: Any) -> tuple[dict[str, Any] | None, str | None]:
     """
     Validates caller against v3 storage or v2 registry.
     In v3:
-      - Rejects calls with identity arguments (agent_token, member_token, expected_callsign).
-      - Authenticates caller strictly from current_principal context (set by ASGI Authorization header middleware)
-        or stdio bridge mode.
-      - Never reads AICHAT_AGENT_TOKEN directly in HTTP mode.
+      - Rejects calls with identity arguments in tool calls.
+      - Authenticates caller strictly from current_principal context or stdio bridge mode.
+      - Automatically records agent activity timestamp on successful authentication.
     """
     is_v3 = hasattr(hub.storage, "is_v3") and hub.storage.is_v3()
 
+    agent_token = kwargs.get("agent_token", "")
+    member_token = kwargs.get("member_token", "")
+    expected_callsign = kwargs.get("expected_callsign") or kwargs.get("sender_name") or kwargs.get("agent_name") or ""
+
     # In v3 mode: reject if caller passed identity parameters in tool arguments
     if is_v3:
-        if (agent_token and agent_token.strip()) or (member_token and member_token.strip()) or (expected_callsign and expected_callsign.strip()):
+        if (agent_token and str(agent_token).strip()) or (member_token and str(member_token).strip()) or (expected_callsign and str(expected_callsign).strip()):
             return None, json.dumps({
                 "status": "error",
                 "error": "No AI Chat v3, o envio de tokens ou nomes de identidade nos argumentos foi descontinuado. Configure o cabeçalho 'Authorization: Bearer <token>' na ligação MCP."
             }, indent=2)
 
-    # 1. From active principal context (e.g. set by ASGI Authorization header middleware)
+    # 1. From active principal context
     p = current_principal.get()
     if p:
         tok = (current_auth_token.get() or "").strip()
@@ -65,9 +68,14 @@ def _authenticate(agent_token: str = "", member_token: str = "", expected_callsi
             "principal": p,
             "token": tok,
         }
+        if is_v3 and not ident.get("is_human"):
+            try:
+                hub.storage.v3.record_agent_activity(ident["callsign"])
+            except Exception:
+                pass
         return ident, None
 
-    # 2. From token in context (set by ASGI middleware or stdio bridge) or stdio mode
+    # 2. From context or stdio bridge
     if is_v3:
         token = (current_auth_token.get() or "").strip()
         if not token and STDIO_MODE and stdio_agent_token:
@@ -91,6 +99,11 @@ def _authenticate(agent_token: str = "", member_token: str = "", expected_callsi
                 "principal": p,
                 "token": token,
             }
+            if not ident.get("is_human"):
+                try:
+                    hub.storage.v3.record_agent_activity(ident["callsign"])
+                except Exception:
+                    pass
             return ident, None
         return None, json.dumps({
             "status": "error",
@@ -104,7 +117,11 @@ def _authenticate(agent_token: str = "", member_token: str = "", expected_callsi
         (current_auth_token.get() or "") or
         os.environ.get("AICHAT_AGENT_TOKEN", "") or
         os.environ.get("AI_CHAT_AGENT_TOKEN", "")
-    ).strip()
+    )
+    if isinstance(token, str):
+        token = token.strip()
+    else:
+        token = ""
 
     if not token:
         return None, json.dumps({
@@ -113,36 +130,72 @@ def _authenticate(agent_token: str = "", member_token: str = "", expected_callsi
         }, indent=2)
 
     try:
-        ident = hub.authenticate_agent(token, expected_callsign=expected_callsign)
+        ident = hub.authenticate_agent(token, expected_callsign=str(expected_callsign) if expected_callsign else "")
         ident["token"] = token
         return ident, None
     except Exception as e:
         return None, json.dumps({"status": "error", "error": str(e)}, indent=2)
 
 
+def _handle_deprecated(tool_name: str, message: str, room_name: str = "", actor: str = "unknown") -> str | None:
+    """If running in v3, records call in audit log and returns standard deprecation error."""
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        try:
+            p = current_principal.get()
+            actor_id = p.get("id") if p else None
+            actor_name = p.get("name") if p else actor
+            room = hub.storage.v3._resolve_room(room_name) if room_name else None
+            rid = room["id"] if room else None
+            hub.storage.v3.log_audit(
+                actor_id=actor_id,
+                actor_name=actor_name,
+                action="mcp_deprecated_call",
+                target_type="mcp_tool",
+                room_id=rid,
+                status="deprecated_call",
+                details=f"Tool '{tool_name}' called: {message}",
+            )
+        except Exception:
+            pass
+        return json.dumps({
+            "status": "error",
+            "error": message,
+        }, indent=2)
+    return None
+
+
+# -----------------------------------------------------------------
+# Active Agent Core Tools
+# -----------------------------------------------------------------
 @mcp.tool()
-def register_agent(callsign: str) -> str:
+def register_agent(callsign: str, **kwargs: Any) -> str:
     """
-    Registers a new agent with a unique callsign in the AI Chat Hub.
-    Note: Your access token is generated securely on the server and must be delivered directly by supervisor Rui.
+    Submits a registration request for an agent with a unique callsign.
+    The request enters a pending state and must be approved by an administrator in the admin console.
     """
     try:
         res = hub.self_register_agent(callsign)
+        if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+            return json.dumps({
+                "status": "pending",
+                "callsign": res["callsign"],
+                "message": res.get("message", "Pedido de registo submetido. Aguarda aprovação de um administrador na consola (/admin)."),
+            }, indent=2)
         return json.dumps({
             "status": "registered_pending_token",
             "callsign": res["callsign"],
-            "message": f"Agente '{res['callsign']}' registado no servidor. O teu token pessoal de acesso foi gerado e deve ser solicitado diretamente ao supervisor Rui. Uma vez obtido o token, inclui-o como agent_token em todas as chamadas futuras."
+            "message": f"Agente '{res['callsign']}' registado no servidor. O teu token pessoal de acesso foi gerado e deve ser solicitado diretamente ao supervisor Rui. Uma vez obtido o token, inclui-o como agent_token em todas as chamadas futuras.",
         }, indent=2)
     except Exception as e:
         return json.dumps({"status": "error", "error": str(e)}, indent=2)
 
 
 @mcp.tool()
-def get_my_identity(agent_token: str = "", member_token: str = "") -> str:
+def get_my_identity(**kwargs: Any) -> str:
     """
-    Verifies your authentication token and returns your official registered callsign and role.
+    Returns your official registered callsign, role, and status.
     """
-    ident, err = _authenticate(agent_token, member_token)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     return json.dumps({
@@ -155,40 +208,11 @@ def get_my_identity(agent_token: str = "", member_token: str = "") -> str:
 
 
 @mcp.tool()
-def create_room(room_name: str, password: str = "", topic: str = "", agent_token: str = "", member_token: str = "") -> str:
+def list_rooms(**kwargs: Any) -> str:
     """
-    Creates a new collaborative chat room. Requires authorized agent_token.
-    Optionally set a password to protect the room from unauthorized access.
+    Lists chat rooms with metadata. Returns rooms the caller is authorized to access.
     """
-    ident, err = _authenticate(agent_token, member_token)
-    if err:
-        return err
-    try:
-        if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
-            p = ident.get("principal")
-            if not hub.storage.v3.authorize(p, "admin"):
-                return json.dumps({
-                    "status": "error",
-                    "error": "Acesso negado: Apenas administradores podem criar salas."
-                }, indent=2)
-            room = hub.storage.v3.create_room(name=room_name, topic=topic, created_by_id=p["id"] if p else None)
-        else:
-            room = hub.create_room(name=room_name, password=password, topic=topic)
-        return json.dumps({
-            "status": "success",
-            "message": f"Room '{room_name}' created successfully.",
-            "room": room,
-        }, indent=2)
-    except Exception as e:
-        return json.dumps({"status": "error", "error": str(e)}, indent=2)
-
-
-@mcp.tool()
-def list_rooms(agent_token: str = "", member_token: str = "") -> str:
-    """
-    Lists chat rooms with metadata. Returns only rooms the caller is authorized to access.
-    """
-    ident, err = _authenticate(agent_token, member_token)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     try:
@@ -207,133 +231,20 @@ def list_rooms(agent_token: str = "", member_token: str = "") -> str:
 
 
 @mcp.tool()
-def join_room(room_name: str, agent_name: str = "", password: str = "", member_token: str = "", agent_token: str = "") -> str:
+def list_my_rooms(agent_name: str = "", **kwargs: Any) -> str:
     """
-    Joins an existing chat room as a participant.
-    Requires authorized agent_token (or member_token).
-    Callsign is automatically resolved from your authenticated token.
+    Lists all chat rooms that this caller has access to or has joined.
     """
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(agent_token, member_token, expected_callsign=agent_name)
+    ident, err = _authenticate(expected_callsign=agent_name, **kwargs)
     if err:
         return err
     callsign = ident["callsign"]
     try:
-        res = hub.join_room(room_name=room_name, member_name=callsign, role="agent", password=password, member_token=token)
-        return json.dumps({
-            "status": "success",
-            "message": f"Agent '{callsign}' joined room '{room_name}'.",
-            "details": res,
-            "member_token": res.get("member_token", token),
-        }, indent=2)
-    except Exception as e:
-        return json.dumps({"status": "error", "error": str(e)}, indent=2)
-
-
-@mcp.tool()
-def leave_room(room_name: str, agent_name: str = "", member_token: str = "", agent_token: str = "") -> str:
-    """Leaves a chat room. Requires authorized agent_token."""
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(agent_token, member_token, expected_callsign=agent_name)
-    if err:
-        return err
-    callsign = ident["callsign"]
-    try:
-        res = hub.leave_room(room_name=room_name, member_name=callsign, member_token=token)
-        return json.dumps({"status": "success", "details": res}, indent=2)
-    except Exception as e:
-        return json.dumps({"status": "error", "error": str(e)}, indent=2)
-
-
-@mcp.tool()
-def rotate_member_token(room_name: str, agent_name: str = "", current_token: str = "", password: str = "", member_token: str = "", agent_token: str = "", supervisor_token: str = "") -> str:
-    """
-    [RESTRICTED] Token management is restricted to supervisor Rui. Agents cannot rotate tokens.
-    """
-    token = (supervisor_token or agent_token or member_token or current_token).strip()
-    try:
-        res = hub.rotate_member_token(room_name=room_name, member_name=agent_name, supervisor_token=token)
-        return json.dumps({
-            "status": "success",
-            "message": f"Token for agent '{agent_name}' in room '{room_name}' rotated successfully by supervisor.",
-            "details": res,
-            "member_token": res.get("member_token", ""),
-        }, indent=2)
-    except Exception as e:
-        return json.dumps({"status": "error", "error": str(e)}, indent=2)
-
-
-@mcp.tool()
-def change_room_password(room_name: str, old_password: str = "", new_password: str = "", agent_name: str = "", agent_token: str = "", member_token: str = "", supervisor_token: str = "") -> str:
-    """
-    [RESTRICTED] Room password management is restricted to supervisor Rui. Agents cannot change room passwords.
-    """
-    token = (supervisor_token or agent_token or member_token).strip()
-    try:
-        res = hub.change_room_password(room_name=room_name, old_password=old_password, new_password=new_password, actor_name=agent_name or "Rui", supervisor_token=token)
-        return json.dumps({
-            "status": "success",
-            "message": f"Password for room '{room_name}' changed successfully.",
-            "details": res,
-        }, indent=2)
-    except Exception as e:
-        return json.dumps({"status": "error", "error": str(e)}, indent=2)
-
-
-@mcp.tool()
-def kick_member(room_name: str, member_to_kick: str, requester_name: str = "", room_password: str = "", agent_token: str = "", member_token: str = "") -> str:
-    """
-    Ejects a member from a room.
-    Requires authorized agent_token and room password (or supervisor authorization).
-    """
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(token, expected_callsign=requester_name)
-    if err:
-        return err
-    callsign = ident["callsign"]
-    try:
-        res = hub.kick_member(room_name=room_name, member_to_kick=member_to_kick, actor_name=callsign, room_password=room_password)
-        return json.dumps({
-            "status": "success",
-            "message": f"Member '{member_to_kick}' ejected from room '{room_name}'.",
-            "details": res,
-        }, indent=2)
-    except Exception as e:
-        return json.dumps({"status": "error", "error": str(e)}, indent=2)
-
-
-@mcp.tool()
-def get_room_audit_log(room_name: str, password: str = "", limit: int = 50, agent_token: str = "", member_token: str = "") -> str:
-    """
-    Retrieves the historical audit log of security events. Requires authorized agent_token.
-    """
-    ident, err = _authenticate(agent_token, member_token)
-    if err:
-        return err
-    try:
-        events = hub.get_room_audit_log(room_name=room_name, password=password, limit=limit)
-        return json.dumps({
-            "status": "success",
-            "room_name": room_name,
-            "count": len(events),
-            "events": events,
-        }, indent=2)
-    except Exception as e:
-        return json.dumps({"status": "error", "error": str(e)}, indent=2)
-
-
-@mcp.tool()
-def list_my_rooms(agent_name: str = "", agent_token: str = "", member_token: str = "") -> str:
-    """
-    Lists all chat rooms that this agent has joined. Requires authorized agent_token.
-    """
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(token, expected_callsign=agent_name)
-    if err:
-        return err
-    callsign = ident["callsign"]
-    try:
-        rooms = hub.list_my_rooms(agent_name=callsign)
+        if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+            p = ident.get("principal")
+            rooms = hub.storage.v3.list_rooms_for_principal(p) if p else []
+        else:
+            rooms = hub.list_my_rooms(agent_name=callsign)
         return json.dumps({
             "status": "success",
             "agent_name": callsign,
@@ -348,20 +259,15 @@ def list_my_rooms(agent_name: str = "", agent_token: str = "", member_token: str
 async def send_message(
     room_name: str,
     content: str,
-    sender_name: str = "",
-    password: str = "",
-    member_token: str = "",
-    agent_token: str = "",
     to: str = "all",
+    **kwargs: Any,
 ) -> str:
     """
     Sends a message to the specified chat room.
-    Requires authorized agent_token (or member_token).
-    Sender callsign is automatically bound and verified from your authenticated token.
+    Sender callsign is automatically bound from connection credentials.
     - to: Target recipient ('all', '@role_key', '@callsign', or comma-separated list). Default is 'all'.
     """
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(token, expected_callsign=sender_name)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     callsign = ident["callsign"]
@@ -420,6 +326,31 @@ async def send_message(
                     )
                 }, indent=2)
 
+            liv = hub.storage.v3.get_agent_liveliness(callsign)
+            was_stalled = liv.get("state") == "stalled" or liv.get("stalled_alert_count", 0) > 0
+            hub.storage.v3.record_agent_activity(callsign)
+            if was_stalled:
+                hub.storage.v3.clear_stalled_alert(callsign)
+                humans = hub.storage.v3.get_room_humans(room["id"])
+                if humans:
+                    rec_targets = [f"@{h['name']}" for h in humans]
+                    rec_msg = hub.storage.v3.add_message(
+                        room_name_or_id=room["id"],
+                        sender="System",
+                        role="system",
+                        content=f"✅ @{callsign} voltou a escutar.",
+                        is_verified=True,
+                        to=rec_targets,
+                    )
+                    try:
+                        await hub._broadcast_to_websockets(room["name"], {
+                            "type": "new_message",
+                            "message": rec_msg,
+                        })
+                        hub._notify_listeners(room["name"], message=rec_msg)
+                    except Exception:
+                        pass
+
         try:
             msg = hub.storage.v3.add_message(
                 room_name_or_id=room["id"],
@@ -457,8 +388,8 @@ async def send_message(
             sender=callsign,
             content=content,
             role="agent" if not ident.get("is_human") else "human",
-            password=password,
-            member_token=token,
+            password=kwargs.get("password", ""),
+            member_token=ident.get("token", ""),
             human_token=hub.human_token if ident.get("is_human") else "",
             to=to,
         )
@@ -477,23 +408,20 @@ async def send_message(
 @mcp.tool()
 def read_messages(
     room_name: str,
-    password: str = "",
     since_id: int = 0,
     before_id: int = 0,
     limit: int = 50,
     message_id: int = 0,
-    agent_token: str = "",
-    member_token: str = "",
+    **kwargs: Any,
 ) -> str:
     """
     Reads recent messages from a room, or fetches a specific message by message_id.
-    Requires authorized agent_token (or member_token).
     - since_id: Only fetch messages newer than this ID.
     - before_id: Only fetch messages older than this ID (for backward pagination).
     - message_id: If specified (> 0), fetches that specific message with its current reactions and status.
-    Each message includes 'reactions': [{'emoji': '👍', 'count': 1, 'users': ['Rui']}].
+    Each message includes 'reactions': [{'emoji': '👍', 'count': 1, 'users': ['human']}].
     """
-    ident, err = _authenticate(agent_token, member_token)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
 
@@ -509,7 +437,7 @@ def read_messages(
     try:
         msgs = hub.read_messages(
             room_name=room_name,
-            password=password,
+            password=kwargs.get("password", ""),
             since_id=since_id,
             before_id=before_id,
             limit=limit,
@@ -531,36 +459,82 @@ def read_messages(
 
 
 @mcp.tool()
-async def wait_for_new_messages(
-    room_name: str = "subscribed",
-    agent_name: str = "",
-    since_id: int = 0,
+async def wait_for_work(
     timeout_seconds: int = 600,
-    password: str = "",
-    agent_token: str = "",
-    member_token: str = "",
+    ack: int = 0,
+    format: str = "json",
     ctx: Context = None,
+    **kwargs: Any,
 ) -> str:
     """
-    Long-polling notification tool for agents:
-    Requires authorized agent_token (or member_token).
-    Suspends and waits until another agent or the human sends a new message OR reacts with an emoji (e.g. 👍).
-    - room_name: Specific room name, 'subscribed' (or empty) to watch all joined rooms, or comma-separated list.
-    - agent_name: Your registered callsign (resolved automatically from token). Your own messages and reactions are ignored.
-    - since_id: ID of the last message you processed. If 0 (default), waits for new messages arriving from now on.
-    - timeout_seconds: Maximum seconds to wait before timing out (1 to 3600, default 600 = 10 minutes).
-      Sends regular MCP progress heartbeats (every 45s) to prevent client timeouts (e.g. Claude Code 300s limit).
-    - password: Room password if protected.
-    Returns immediately if new messages/reactions already exist or as soon as one arrives.
-    Returns status 'new_messages' on new messages, 'new_reactions' on emoji reactions, or 'timeout'.
+    Universal wait-for-work mechanism for agents.
+    Suspends and waits until new directed messages or room work arrive for this agent.
+    - timeout_seconds: Maximum seconds to wait (0 = immediate non-blocking check, default 600).
+      Regular progress heartbeats (every 45s) are emitted to prevent harness timeouts.
+    - ack: ID of the last message successfully processed by the agent. Confirms delivery.
+    - format: 'json' (default, complete payload) or 'text' (compact summary).
     """
-    ident, err = _authenticate(agent_token, member_token, expected_callsign=agent_name)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     effective_agent = ident["callsign"]
 
     try:
-        # Cap timeout between 1 and 3600 seconds (1 hour)
+        safe_timeout = max(0, min(timeout_seconds, 3600))
+
+        async def progress_cb(elapsed: float, total: float, msg: str):
+            if ctx:
+                try:
+                    await ctx.report_progress(progress=elapsed, total=total, message=msg)
+                except Exception:
+                    pass
+
+        res = await hub.wait_for_work(
+            principal_or_agent=ident.get("principal") or effective_agent,
+            timeout_seconds=float(safe_timeout),
+            ack=ack,
+            format=format,
+            room=kwargs.get("room_name") or kwargs.get("room") or "subscribed",
+            on_progress=progress_cb,
+        )
+        if isinstance(res, str):
+            return res
+        return json.dumps(res, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+async def wait_for_new_messages(
+    room_name: str = "subscribed",
+    since_id: int = 0,
+    timeout_seconds: int = 600,
+    ctx: Context = None,
+    **kwargs: Any,
+) -> str:
+    """
+    Waits for new messages in joined rooms (alias for wait_for_work).
+    - room_name: Specific room name or 'subscribed' to watch all joined rooms.
+    - since_id: Message ID to ack/check since.
+    - timeout_seconds: Maximum seconds to wait before returning.
+    """
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        return await wait_for_work(
+            timeout_seconds=timeout_seconds,
+            ack=since_id,
+            format="json",
+            ctx=ctx,
+            room_name=room_name,
+            **kwargs,
+        )
+
+    # Legacy v2 fallback:
+    ident, err = _authenticate(**kwargs)
+    if err:
+        return err
+    effective_agent = ident["callsign"]
+
+    try:
         safe_timeout = max(1, min(timeout_seconds, 3600))
 
         async def progress_cb(elapsed: float, total: float, msg: str):
@@ -575,7 +549,7 @@ async def wait_for_new_messages(
             agent_name=effective_agent,
             since_id=since_id,
             timeout_seconds=float(safe_timeout),
-            password=password,
+            password=kwargs.get("password", ""),
             on_progress=progress_cb,
         )
         return json.dumps(result, indent=2)
@@ -584,107 +558,31 @@ async def wait_for_new_messages(
 
 
 @mcp.tool()
-def check_new_messages(
-    room_name: str = "subscribed",
-    agent_name: str = "",
-    since_id: int = 0,
-    password: str = "",
-    agent_token: str = "",
-    member_token: str = "",
-) -> str:
+def team_status(room_name: str, **kwargs: Any) -> str:
     """
-    Fast non-blocking check: immediately returns whether there are new messages.
-    Requires authorized agent_token (or member_token).
-    Does not suspend or wait. Ideal for fast polling or checking status before acting.
-    - room_name: Specific room name, 'subscribed' (or empty) to check all joined rooms, or comma-separated list.
-    - since_id: Only return messages with ID > since_id.
-    - agent_name: Filter out messages sent by this agent (bound from token).
+    Returns the liveliness status of each member in the specified room.
+    Shows state (🟢 a escutar, 🔵 a trabalhar, 💤 sem trabalho, 🔴 parado, ⚫ offline), role,
+    and unread directed messages count.
     """
-    ident, err = _authenticate(agent_token, member_token, expected_callsign=agent_name)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
-    effective_agent = ident["callsign"]
+
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        p = ident.get("principal")
+        room = hub.storage.v3.get_room(room_name)
+        if not room:
+            return json.dumps({"status": "error", "error": f"Room '{room_name}' does not exist."}, indent=2)
+        if not hub.storage.v3.authorize(p, "read_room", {"room_id": room["id"]}):
+            return json.dumps({"status": "error", "error": f"Access denied: read permission not granted for room '{room_name}'."}, indent=2)
 
     try:
-        result = hub.check_new_messages(
-            room_name=room_name,
-            agent_name=effective_agent,
-            since_id=since_id,
-            password=password,
-        )
-        return json.dumps(result, indent=2)
+        res = hub.get_room_team_status(room_name)
+        if isinstance(res, list):
+            return json.dumps({"status": "success", "room": room_name, "members": res}, indent=2)
+        return json.dumps({"status": "success", **res}, indent=2)
     except Exception as e:
         return json.dumps({"status": "error", "error": str(e)}, indent=2)
-
-
-@mcp.tool()
-async def wake_up_call(
-    room_name: str = "all",
-    since_seq: int | None = None,
-    timeout_seconds: int = 60,
-    watcher_name: str = "Sentinel",
-    ctx: Context = None,
-) -> str:
-    """
-    Lightweight wake-up notification tool for Sentinel and background scripts.
-    DOES NOT require agent_token or room password.
-    Returns a lightweight ping when ANY activity occurs in the subscribed channel(s):
-    - messages (new messages)
-    - polls (creation, votes, closes)
-    - reactions (emoji reactions)
-    - tasks (creation, updates, deletions, reordering)
-    - decisions (human decisions resolved)
-    - room lifecycle (archived, unarchived)
-
-    Parameters:
-    - room_name: Channel name (e.g. 'klarity'), comma-separated channels ('general,klarity'), or 'all' to monitor all rooms.
-    - since_seq: Previous activity sequence number. If provided, returns immediately if activity occurred since then.
-    - timeout_seconds: Maximum seconds to wait (1 to 3600, default 60). Sends progress heartbeats to keep connection active.
-    - watcher_name: Optional name for presence tracking (default 'Sentinel').
-
-    Returns:
-    JSON string with {"status": "activity", "room": ..., "event_type": ..., "seq": ..., "timestamp": ...} on activity,
-    or {"status": "timeout", "room": ..., "seq": ...} when no activity occurred.
-    """
-    try:
-        safe_timeout = max(1, min(timeout_seconds, 3600))
-
-        async def progress_cb(elapsed: float, total: float, msg: str):
-            if ctx:
-                try:
-                    await ctx.report_progress(progress=elapsed, total=total, message=msg)
-                except Exception:
-                    pass
-
-        result = await hub.wait_for_activity(
-            room_name=room_name,
-            since_seq=since_seq,
-            timeout_seconds=float(safe_timeout),
-            watcher_name=watcher_name or "Sentinel",
-            on_progress=progress_cb,
-        )
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return json.dumps({"status": "error", "error": str(e)}, indent=2)
-
-
-@mcp.tool()
-def get_room_transcript(room_name: str, password: str = "", agent_token: str = "", member_token: str = "") -> str:
-    """
-    Returns the complete human-readable transcript file of the room.
-    Requires authorized agent_token (or member_token).
-    Useful for reviewing the entire history of an agent team session.
-    """
-    ident, err = _authenticate(agent_token, member_token)
-    if err:
-        return err
-    try:
-        if not hub.verify_room_access(room_name, password):
-            return json.dumps({"status": "error", "error": "Access denied: incorrect password."})
-        transcript = hub.storage.read_text_transcript(room_name)
-        return transcript
-    except Exception as e:
-        return json.dumps({"status": "error", "error": str(e)})
 
 
 @mcp.tool()
@@ -692,18 +590,13 @@ async def react_to_message(
     message_id: int,
     room_name: str,
     emoji: str,
-    sender_name: str = "",
-    agent_name: str = "",
-    member_token: str = "",
-    agent_token: str = "",
+    **kwargs: Any,
 ) -> str:
     """
     Adds or removes an emoji reaction on a message (e.g. '👍', '🚀', '❤️', '👀', '🎉', '👎').
-    Requires authorized agent_token (or member_token).
     Calling again with the same emoji toggles (removes) it.
     """
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(token, expected_callsign=sender_name or agent_name)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     callsign = ident["callsign"]
@@ -724,39 +617,32 @@ async def react_to_message(
 async def call_human(
     room_name: str,
     question: str,
-    sender_name: str = "",
-    agent_name: str = "",
     options: list[str] = [],
-    member_token: str = "",
-    agent_token: str = "",
-    password: str = "",
     to: str = "",
     target_human: str = "",
+    **kwargs: Any,
 ) -> str:
     """
-    Calls the human user for an important decision, impasse resolution, or architectural choice.
-    Requires authorized agent_token (or member_token).
-    Renders high-visibility alert cards, desktop notifications, and quick-action choice buttons in the human's Web UI.
-    - options: Optional list of proposed choices (e.g. ['Option A: Vector DB', 'Option B: SQLite']).
-    - password: Room password if calling in a password-protected room.
+    Calls human team members for an important decision, impasse resolution, or guidance.
+    Renders high-visibility alert cards and quick-action choice buttons in the human Web UI.
+    - options: Optional list of proposed choices.
     - to: Optional target recipient (e.g. 'humans' or '@Alice').
-    - target_human: Optional specific human username or ID to target.
+    - target_human: Optional specific human username to target.
     """
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(token, expected_callsign=sender_name or agent_name)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     callsign = ident["callsign"]
 
     try:
-        eff_token = ident.get("token") or token
+        eff_token = ident.get("token") or ""
         msg = await hub.call_human(
             room_name=room_name,
             sender=callsign,
             question=question,
             options=options,
             member_token=eff_token,
-            password=password,
+            password=kwargs.get("password", ""),
             to=to or None,
             target_human=target_human or None,
         )
@@ -778,33 +664,26 @@ async def create_poll(
     room_name: str,
     question: str,
     options: list[str],
-    creator_name: str = "",
-    agent_name: str = "",
-    member_token: str = "",
-    agent_token: str = "",
-    password: str = "",
+    **kwargs: Any,
 ) -> str:
     """
     Creates a voting poll in the chat room for team decisions.
-    Requires authorized agent_token (or member_token).
     - options: List of at least 2 choices to vote on.
-    - password: Room password if creating a poll in a password-protected room.
     """
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(token, expected_callsign=creator_name or agent_name)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     callsign = ident["callsign"]
 
     try:
-        eff_token = ident.get("token") or token
+        eff_token = ident.get("token") or ""
         poll = await hub.create_poll(
             room_name=room_name,
             creator=callsign,
             question=question,
             options=options,
             member_token=eff_token,
-            password=password,
+            password=kwargs.get("password", ""),
         )
         return json.dumps({"status": "success", "poll": poll}, indent=2)
     except Exception as e:
@@ -815,18 +694,13 @@ async def create_poll(
 async def cast_vote(
     poll_id: int,
     option_index: int,
-    voter_name: str = "",
-    agent_name: str = "",
-    member_token: str = "",
-    agent_token: str = "",
+    **kwargs: Any,
 ) -> str:
     """
     Casts a vote on an active poll.
-    Requires authorized agent_token (or member_token).
     - option_index: 0-indexed choice position.
     """
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(token, expected_callsign=voter_name or agent_name)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     callsign = ident["callsign"]
@@ -843,12 +717,11 @@ async def cast_vote(
 
 
 @mcp.tool()
-def get_poll(poll_id: int, agent_token: str = "", member_token: str = "") -> str:
+def get_poll(poll_id: int, **kwargs: Any) -> str:
     """
     Gets live poll status, vote counts per option, and percentages.
-    Requires authorized agent_token (or member_token).
     """
-    ident, err = _authenticate(agent_token, member_token)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     try:
@@ -863,29 +736,22 @@ def get_poll(poll_id: int, agent_token: str = "", member_token: str = "") -> str
 @mcp.tool()
 async def close_poll(
     poll_id: int,
-    closer_name: str = "",
-    agent_name: str = "",
-    password: str = "",
-    member_token: str = "",
-    agent_token: str = "",
+    **kwargs: Any,
 ) -> str:
     """
-    Closes an active poll (can only be closed by its creator or the human user).
-    Requires authorized agent_token (or member_token).
-    - password: Password of the room if it is protected.
+    Closes an active poll (can only be closed by its creator or a human administrator).
     """
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(token, expected_callsign=closer_name or agent_name)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     callsign = ident["callsign"]
 
     try:
-        eff_token = ident.get("token") or token
+        eff_token = ident.get("token") or ""
         poll = await hub.close_poll(
             poll_id=poll_id,
             closer=callsign,
-            password=password,
+            password=kwargs.get("password", ""),
             is_human=ident.get("is_human", False),
             member_token=eff_token,
         )
@@ -894,20 +760,8 @@ async def close_poll(
         return json.dumps({"status": "error", "error": str(e)}, indent=2)
 
 
-@mcp.tool()
-def archive_room(room_name: str, requester_name: str = "", requester_role: str = "agent") -> str:
-    """
-    Archives a chat room to read-only mode.
-    WARNING: THIS TOOL IS STRICTLY RESTRICTED TO THE HUMAN USER VIA WEB UI. AGENTS CANNOT ARCHIVE ROOMS.
-    """
-    return json.dumps({
-        "status": "error",
-        "error": "Apenas o utilizador humano através da Web UI tem permissão para arquivar salas."
-    }, indent=2)
-
-
 # -----------------------------------------------------------------
-# Task Planner & Presence MCP Tools (v2.5)
+# Task Planner Tools
 # -----------------------------------------------------------------
 @mcp.tool()
 async def create_task(
@@ -924,20 +778,15 @@ async def create_task(
     due_at: str = "",
     resource: str = "",
     message_id: int = 0,
-    password: str = "",
-    member_token: str = "",
-    agent_token: str = "",
-    creator_name: str = "",
-    agent_name: str = "",
+    **kwargs: Any,
 ) -> str:
     """
     Creates a new task in the room's task planner.
-    Requires authorized agent_token (or member_token).
     - room_name: Target chat room
     - title: Brief summary of the task
     - description: Detailed notes / acceptance criteria
     - assignee: Name of assigned agent or human
-    - waiting_for_agent: If waiting for another agent, their name
+    - waiting_for_agent: If waiting for another agent, their callsign
     - priority: 'urgent', 'high', 'medium', or 'low' (default: 'medium')
     - status: 'planned', 'in_progress', 'waiting_human', 'waiting_agent', 'done', 'cancelled'
     - uses_gpu: True if task requires local GPU resources
@@ -945,17 +794,15 @@ async def create_task(
     - start_at: Optional planned ISO start time (e.g. '2026-09-27T14:00:00')
     - due_at: Optional deadline ISO timestamp
     - resource: Optional hardware resource (e.g. 'RTX_3080', 'RTX_5070TI')
-    - message_id: Optional ID of chat message requesting this task or decision
-    - agent_token: Your registered token for authentication
+    - message_id: Optional ID of chat message requesting this task
     """
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(token, expected_callsign=creator_name or agent_name)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     callsign = ident["callsign"]
 
     try:
-        eff_token = ident.get("token") or token
+        eff_token = ident.get("token") or ""
         task = await hub.create_task(
             room_name=room_name,
             title=title,
@@ -971,7 +818,7 @@ async def create_task(
             resource=resource,
             message_id=message_id if message_id > 0 else None,
             member_token=eff_token,
-            password=password,
+            password=kwargs.get("password", ""),
             created_by=callsign,
         )
         return json.dumps({
@@ -999,18 +846,12 @@ async def update_task(
     start_at: str = "",
     due_at: str = "",
     resource: str = "",
-    member_token: str = "",
-    agent_token: str = "",
-    actor_name: str = "",
-    agent_name: str = "",
-    password: str = "",
+    **kwargs: Any,
 ) -> str:
     """
     Updates an existing task in the room task planner.
-    Requires authorized agent_token (or member_token).
     """
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(token, expected_callsign=actor_name or agent_name)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     callsign = ident["callsign"]
@@ -1044,11 +885,11 @@ async def update_task(
         if resource:
             fields["resource"] = resource
 
-        eff_token = ident.get("token") or token
+        eff_token = ident.get("token") or ""
         task = await hub.update_task(
             task_id=task_id,
             member_token=eff_token,
-            password=password,
+            password=kwargs.get("password", ""),
             actor=callsign,
             **fields,
         )
@@ -1067,19 +908,15 @@ def list_tasks(
     status: str = "",
     assignee: str = "",
     hide_completed: bool = False,
-    password: str = "",
-    agent_token: str = "",
-    member_token: str = "",
+    **kwargs: Any,
 ) -> str:
     """
     Lists tasks for a room from the task planner.
-    Requires authorized agent_token (or member_token).
     - status: Optional filter ('planned', 'in_progress', 'waiting_human', 'waiting_agent', 'done', 'cancelled')
-    - assignee: Optional filter by responsible agent/human
-    - hide_completed: If True, excludes 'done' and 'cancelled' tasks
-    - password: Password if room is protected
+    - assignee: Optional filter by responsible agent or human
+    - hide_completed: If True, excludes done and cancelled tasks
     """
-    ident, err = _authenticate(agent_token, member_token)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     try:
@@ -1088,7 +925,7 @@ def list_tasks(
             status=status or None,
             assignee=assignee or None,
             hide_completed=hide_completed,
-            password=password,
+            password=kwargs.get("password", ""),
         )
         return json.dumps({
             "status": "success",
@@ -1104,26 +941,21 @@ def list_tasks(
 async def reorder_tasks(
     room_name: str,
     task_ids: list[int],
-    agent_name: str = "",
-    member_token: str = "",
-    agent_token: str = "",
-    password: str = "",
+    **kwargs: Any,
 ) -> str:
     """
     Sets a new execution order for tasks in a room by providing the task IDs in preferred sequence.
-    Requires authorized agent_token (or member_token).
     """
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(token, expected_callsign=agent_name)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     try:
-        eff_token = ident.get("token") or token
+        eff_token = ident.get("token") or ""
         tasks = await hub.reorder_tasks(
             room_name=room_name,
             task_ids=task_ids,
             member_token=eff_token,
-            password=password,
+            password=kwargs.get("password", ""),
         )
         return json.dumps({
             "status": "success",
@@ -1134,25 +966,8 @@ async def reorder_tasks(
         return json.dumps({"status": "error", "error": str(e)}, indent=2)
 
 
-@mcp.tool()
-def who_is_listening(room_name: str, password: str = "", agent_token: str = "", member_token: str = "") -> str:
-    """
-    Checks who is actively listening in the chat room right now.
-    Requires authorized agent_token (or member_token).
-    Returns listeners across Web UI, long-polling MCP listeners, and Sentinel HTTP pollers (within 60s).
-    """
-    ident, err = _authenticate(agent_token, member_token)
-    if err:
-        return err
-    try:
-        res = hub.who_is_listening(room_name=room_name, password=password)
-        return json.dumps(res, indent=2)
-    except Exception as e:
-        return json.dumps({"status": "error", "error": str(e)}, indent=2)
-
-
 # -----------------------------------------------------------------
-# Calendar & Resource Booking Tools (v2.8)
+# Calendar & Resource Booking Tools
 # -----------------------------------------------------------------
 @mcp.tool()
 def list_calendar_events(
@@ -1163,26 +978,22 @@ def list_calendar_events(
     status: str = "",
     include_completed: bool = True,
     hide_completed: bool = False,
-    password: str = "",
-    agent_token: str = "",
-    member_token: str = "",
+    **kwargs: Any,
 ) -> str:
     """
     Lists calendar events for a specific room or across all rooms ('all').
-    Requires authorized agent_token (or member_token).
     - room_name: Room name or 'all' to see all rooms
     - start_from: ISO datetime string filter (e.g. '2026-09-27T00:00:00')
     - start_to: ISO datetime string filter
-    - resource: Filter by reserved hardware/resource (e.g. 'RTX_3080', 'RTX_5070TI')
+    - resource: Filter by reserved hardware or resource (e.g. 'RTX_3080', 'RTX_5070TI')
     - status: 'scheduled', 'in_progress', 'completed', 'cancelled'
-    - include_completed: If True, includes past completed/cancelled events
+    - include_completed: If True, includes past completed or cancelled events
     - hide_completed: If True, excludes completed and cancelled events
-    - password: Password if room is protected
     """
-    ident, err = _authenticate(agent_token, member_token)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
-    token = (agent_token or member_token).strip()
+    token = ident.get("token", "")
     if hide_completed:
         include_completed = False
     try:
@@ -1193,7 +1004,7 @@ def list_calendar_events(
             resource=resource,
             status=status,
             include_completed=include_completed,
-            password=password,
+            password=kwargs.get("password", ""),
             requester_token=token,
         )
         return json.dumps({
@@ -1219,18 +1030,12 @@ async def create_calendar_event(
     target_agent: str = "",
     wake_on_start: bool = True,
     wake_on_end: bool = False,
-    password: str = "",
-    member_token: str = "",
-    agent_token: str = "",
-    creator_name: str = "",
-    agent_name: str = "",
+    **kwargs: Any,
 ) -> str:
     """
     Schedules a new calendar event or GPU reservation in a room.
-    The Hub calendar dispatcher automatically fires reactive wake-up events on start_at / end_at.
-    If 'resource' is specified, reservations overlapping in time with existing active reservations
-    for the same resource are categorically rejected with an error.
-    Requires authorized agent_token (or member_token).
+    The calendar dispatcher automatically fires reactive wake-up events on start_at / end_at.
+    If 'resource' is specified, overlapping reservations for the same resource are rejected.
     - room_name: Target chat room
     - title: Event title or job summary
     - start_at: ISO 8601 start timestamp (e.g. '2026-09-27T15:00:00')
@@ -1240,17 +1045,16 @@ async def create_calendar_event(
     - event_type: 'event', 'gpu_lock', 'sync', 'maintenance'
     - task_id: Optional ID of linked Task Planner task
     - target_agent: Optional callsign of agent to ping on wake-up
-    - wake_on_start: If True, Hub dispatches a wake-up activity notification to the room at start_at
-    - wake_on_end: If True, Hub dispatches a wake-up activity notification to the room at end_at
+    - wake_on_start: If True, dispatches a wake-up activity notification at start_at
+    - wake_on_end: If True, dispatches a wake-up activity notification at end_at
     """
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(token, expected_callsign=creator_name or agent_name)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     callsign = ident["callsign"]
 
     try:
-        eff_token = ident.get("token") or token
+        eff_token = ident.get("token") or ""
         ev = await hub.create_calendar_event(
             room_name=room_name,
             title=title,
@@ -1264,7 +1068,7 @@ async def create_calendar_event(
             wake_on_start=wake_on_start,
             wake_on_end=wake_on_end,
             member_token=eff_token,
-            password=password,
+            password=kwargs.get("password", ""),
             created_by=callsign,
         )
         return json.dumps({
@@ -1289,18 +1093,12 @@ async def update_calendar_event(
     status: str = "",
     wake_on_start: bool | None = None,
     wake_on_end: bool | None = None,
-    password: str = "",
-    member_token: str = "",
-    agent_token: str = "",
-    actor_name: str = "",
-    agent_name: str = "",
+    **kwargs: Any,
 ) -> str:
     """
     Updates an existing calendar event or resource reservation.
-    Requires authorized agent_token (or member_token).
     """
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(token, expected_callsign=actor_name or agent_name)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     try:
@@ -1326,11 +1124,11 @@ async def update_calendar_event(
         if wake_on_end is not None:
             fields["wake_on_end"] = wake_on_end
 
-        eff_token = ident.get("token") or token
+        eff_token = ident.get("token") or ""
         ev = await hub.update_calendar_event(
             event_id=event_id,
             member_token=eff_token,
-            password=password,
+            password=kwargs.get("password", ""),
             **fields,
         )
         return json.dumps({
@@ -1345,24 +1143,20 @@ async def update_calendar_event(
 @mcp.tool()
 async def delete_calendar_event(
     event_id: int,
-    password: str = "",
-    member_token: str = "",
-    agent_token: str = "",
+    **kwargs: Any,
 ) -> str:
     """
     Cancels/deletes a calendar event and releases any associated resource lock.
-    Requires authorized agent_token (or member_token).
     """
-    token = (agent_token or member_token).strip()
-    ident, err = _authenticate(token)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     try:
-        eff_token = ident.get("token") or token
+        eff_token = ident.get("token") or ""
         res = await hub.delete_calendar_event(
             event_id=event_id,
             member_token=eff_token,
-            password=password,
+            password=kwargs.get("password", ""),
         )
         return json.dumps(res, indent=2)
     except Exception as e:
@@ -1374,18 +1168,15 @@ def check_resource_availability(
     resource: str,
     start_at: str,
     end_at: str = "",
-    agent_token: str = "",
-    member_token: str = "",
+    **kwargs: Any,
 ) -> str:
     """
-    Checks if a hardware or cluster resource (e.g. 'RTX_3080', 'RTX_5070TI') is available
-    during a specified time interval, or if it has conflicting reservations.
-    Requires authorized agent_token (or member_token).
+    Checks if a hardware resource is available during a specified time interval, or if it has conflicting reservations.
     - resource: Resource name (case-insensitive)
     - start_at: ISO 8601 start timestamp
-    - end_at: ISO 8601 end timestamp (optional, defaults to +1h)
+    - end_at: ISO 8601 end timestamp
     """
-    ident, err = _authenticate(agent_token, member_token)
+    ident, err = _authenticate(**kwargs)
     if err:
         return err
     try:
@@ -1406,6 +1197,233 @@ def check_resource_availability(
         return json.dumps({"status": "error", "error": str(e)}, indent=2)
 
 
+# -----------------------------------------------------------------
+# 12 Deprecated Tools (Stage 1: Explicit deprecation in v3, legacy in v2)
+# -----------------------------------------------------------------
+@mcp.tool()
+def create_room(room_name: str, password: str = "", topic: str = "", **kwargs: Any) -> str:
+    """Creates a new collaborative chat room (deprecated)."""
+    dep = _handle_deprecated("create_room", "descontinuada: ação só para admins, na consola", room_name=room_name)
+    if dep is not None:
+        return dep
+    # Legacy v2 fallback
+    ident, err = _authenticate(password=password, **kwargs)
+    if err:
+        return err
+    try:
+        room = hub.create_room(name=room_name, password=password, topic=topic)
+        return json.dumps({"status": "success", "message": f"Room '{room_name}' created successfully.", "room": room}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def join_room(room_name: str, agent_name: str = "", password: str = "", member_token: str = "", agent_token: str = "", **kwargs: Any) -> str:
+    """Joins an existing chat room as a participant (deprecated)."""
+    dep = _handle_deprecated("join_room", "descontinuada: ação só para admins, na consola", room_name=room_name)
+    if dep is not None:
+        return dep
+    # Legacy v2 fallback
+    token = (agent_token or member_token or kwargs.get("token", "")).strip()
+    ident, err = _authenticate(agent_token=token, expected_callsign=agent_name, **kwargs)
+    if err:
+        return err
+    callsign = ident["callsign"]
+    try:
+        res = hub.join_room(room_name=room_name, member_name=callsign, role="agent", password=password, member_token=token)
+        return json.dumps({
+            "status": "success",
+            "message": f"Agent '{callsign}' joined room '{room_name}'.",
+            "details": res,
+            "member_token": res.get("member_token", token),
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def leave_room(room_name: str, agent_name: str = "", member_token: str = "", agent_token: str = "", **kwargs: Any) -> str:
+    """Leaves a chat room (deprecated)."""
+    dep = _handle_deprecated("leave_room", "descontinuada: ação só para admins, na consola", room_name=room_name)
+    if dep is not None:
+        return dep
+    # Legacy v2 fallback
+    token = (agent_token or member_token).strip()
+    ident, err = _authenticate(agent_token=token, expected_callsign=agent_name, **kwargs)
+    if err:
+        return err
+    callsign = ident["callsign"]
+    try:
+        res = hub.leave_room(room_name=room_name, member_name=callsign, member_token=token)
+        return json.dumps({"status": "success", "details": res}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def rotate_member_token(room_name: str, agent_name: str = "", current_token: str = "", password: str = "", member_token: str = "", agent_token: str = "", supervisor_token: str = "", **kwargs: Any) -> str:
+    """Rotates member credential in a room (deprecated)."""
+    dep = _handle_deprecated("rotate_member_token", "descontinuada: ação só para admins, na consola", room_name=room_name)
+    if dep is not None:
+        return dep
+    # Legacy v2 fallback
+    token = (supervisor_token or agent_token or member_token or current_token).strip()
+    try:
+        res = hub.rotate_member_token(room_name=room_name, member_name=agent_name, supervisor_token=token)
+        return json.dumps({
+            "status": "success",
+            "message": f"Token for agent '{agent_name}' in room '{room_name}' rotated successfully.",
+            "details": res,
+            "member_token": res.get("member_token", ""),
+        }, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def change_room_password(room_name: str, old_password: str = "", new_password: str = "", agent_name: str = "", agent_token: str = "", member_token: str = "", supervisor_token: str = "", **kwargs: Any) -> str:
+    """Changes room password (deprecated)."""
+    dep = _handle_deprecated("change_room_password", "descontinuada: ação só para admins, na consola", room_name=room_name)
+    if dep is not None:
+        return dep
+    # Legacy v2 fallback
+    token = (supervisor_token or agent_token or member_token).strip()
+    try:
+        res = hub.change_room_password(room_name=room_name, old_password=old_password, new_password=new_password, actor_name=agent_name or "admin", supervisor_token=token)
+        return json.dumps({"status": "success", "message": f"Password for room '{room_name}' changed successfully.", "details": res}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def kick_member(room_name: str, member_to_kick: str, requester_name: str = "", room_password: str = "", agent_token: str = "", member_token: str = "", **kwargs: Any) -> str:
+    """Ejects a member from a room (deprecated)."""
+    dep = _handle_deprecated("kick_member", "descontinuada: ação só para admins, na consola", room_name=room_name)
+    if dep is not None:
+        return dep
+    # Legacy v2 fallback
+    token = (agent_token or member_token).strip()
+    ident, err = _authenticate(agent_token=token, expected_callsign=requester_name, **kwargs)
+    if err:
+        return err
+    callsign = ident["callsign"]
+    try:
+        res = hub.kick_member(room_name=room_name, member_to_kick=member_to_kick, actor_name=callsign, room_password=room_password)
+        return json.dumps({"status": "success", "message": f"Member '{member_to_kick}' ejected from room '{room_name}'.", "details": res}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def archive_room(room_name: str, requester_name: str = "", requester_role: str = "agent", **kwargs: Any) -> str:
+    """Archives a chat room (deprecated)."""
+    dep = _handle_deprecated("archive_room", "descontinuada: ação só para admins, na consola", room_name=room_name)
+    if dep is not None:
+        return dep
+    return json.dumps({"status": "error", "error": "Apenas o utilizador humano através da Web UI tem permissão para arquivar salas."}, indent=2)
+
+
+@mcp.tool()
+def get_room_audit_log(room_name: str, password: str = "", limit: int = 50, agent_token: str = "", member_token: str = "", **kwargs: Any) -> str:
+    """Retrieves the audit log of security events (deprecated)."""
+    dep = _handle_deprecated("get_room_audit_log", "descontinuada: ação só para admins, na consola", room_name=room_name)
+    if dep is not None:
+        return dep
+    # Legacy v2 fallback
+    ident, err = _authenticate(agent_token=agent_token, member_token=member_token, **kwargs)
+    if err:
+        return err
+    try:
+        events = hub.get_room_audit_log(room_name=room_name, password=password, limit=limit)
+        return json.dumps({"status": "success", "room_name": room_name, "count": len(events), "events": events}, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def get_room_transcript(room_name: str, password: str = "", agent_token: str = "", member_token: str = "", **kwargs: Any) -> str:
+    """Returns the transcript file of a room (deprecated)."""
+    dep = _handle_deprecated("get_room_transcript", "descontinuada: ação só para admins, na consola", room_name=room_name)
+    if dep is not None:
+        return dep
+    # Legacy v2 fallback
+    ident, err = _authenticate(agent_token=agent_token, member_token=member_token, **kwargs)
+    if err:
+        return err
+    try:
+        if not hub.verify_room_access(room_name, password):
+            return json.dumps({"status": "error", "error": "Access denied: incorrect password."})
+        transcript = hub.storage.read_text_transcript(room_name)
+        return transcript
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)})
+
+
+@mcp.tool()
+def check_new_messages(room_name: str = "subscribed", agent_name: str = "", since_id: int = 0, password: str = "", agent_token: str = "", member_token: str = "", **kwargs: Any) -> str:
+    """Checks for new messages without blocking (deprecated)."""
+    dep = _handle_deprecated("check_new_messages", "descontinuada: usa wait_for_work(timeout_seconds=0)", room_name=room_name)
+    if dep is not None:
+        return dep
+    # Legacy v2 fallback
+    ident, err = _authenticate(agent_token=agent_token, member_token=member_token, expected_callsign=agent_name, **kwargs)
+    if err:
+        return err
+    effective_agent = ident["callsign"]
+    try:
+        result = hub.check_new_messages(room_name=room_name, agent_name=effective_agent, since_id=since_id, password=password)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def who_is_listening(room_name: str, password: str = "", agent_token: str = "", member_token: str = "", **kwargs: Any) -> str:
+    """Checks active listeners in a room (deprecated)."""
+    dep = _handle_deprecated("who_is_listening", "descontinuada: usa team_status", room_name=room_name)
+    if dep is not None:
+        return dep
+    # Legacy v2 fallback
+    ident, err = _authenticate(agent_token=agent_token, member_token=member_token, **kwargs)
+    if err:
+        return err
+    try:
+        res = hub.who_is_listening(room_name=room_name, password=password)
+        return json.dumps(res, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+@mcp.tool()
+async def wake_up_call(room_name: str = "all", since_seq: int | None = None, timeout_seconds: int = 60, watcher_name: str = "Sentinel", ctx: Context = None, **kwargs: Any) -> str:
+    """Listens for activity pings across channels (deprecated)."""
+    dep = _handle_deprecated("wake_up_call", "descontinuada: usa wait_for_work", room_name=room_name)
+    if dep is not None:
+        return dep
+    # Legacy v2 fallback
+    try:
+        safe_timeout = max(1, min(timeout_seconds, 3600))
+        async def progress_cb(elapsed: float, total: float, msg: str):
+            if ctx:
+                try:
+                    await ctx.report_progress(progress=elapsed, total=total, message=msg)
+                except Exception:
+                    pass
+        result = await hub.wait_for_activity(
+            room_name=room_name,
+            since_seq=since_seq,
+            timeout_seconds=float(safe_timeout),
+            watcher_name=watcher_name or "Sentinel",
+            on_progress=progress_cb,
+        )
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({"status": "error", "error": str(e)}, indent=2)
+
+
+# -----------------------------------------------------------------
+# MCP Resources & Prompts
+# -----------------------------------------------------------------
 @mcp.resource("chat://rooms")
 def resource_rooms() -> str:
     """Resource listing all chat rooms."""
@@ -1419,8 +1437,6 @@ def resource_room_messages(room_name: str) -> str:
     room = hub.storage.get_room(room_name)
     if not room:
         return f"Room '{room_name}' not found."
-    if room["is_protected"]:
-        return f"Room '{room_name}' is password protected. Use the read_messages tool with the password."
     msgs = hub.storage.get_messages(room_name, limit=50)
     return json.dumps(msgs, indent=2)
 
@@ -1429,33 +1445,48 @@ def resource_room_messages(room_name: str) -> str:
 def collaborative_agent(room_name: str, my_agent_name: str, task_goal: str) -> str:
     """Prompt template for configuring an agent to collaborate in a chat room."""
     return f"""You are collaborating with other AI agents and human teammates in the chat room '{room_name}'.
-Your name in this room is: '{my_agent_name}'.
+Your callsign in this room is: '{my_agent_name}'.
 The overall team objective is: {task_goal}
 
 Collaboration Protocol:
-1. Join the room using `join_room(room_name="{room_name}", agent_name="{my_agent_name}")`.
-   Keep the returned `member_token` to authenticate your messages.
-2. Check existing messages using `read_messages(room_name="{room_name}")` to catch up.
-3. When you have an update, question, or handoff, call `send_message(room_name="{room_name}", sender_name="{my_agent_name}", content=..., member_token=...)`.
-4. After sending your message, call `wait_for_new_messages(room_name="{room_name}", agent_name="{my_agent_name}", since_id=..., timeout_seconds=600)` to wait for other agents or the human to respond.
-   Or use `room_name="subscribed"` to listen to all channels you have joined simultaneously.
-5. Be concise, constructive, and do not repeat messages already stated.
+1. Check room messages using `read_messages(room_name="{room_name}")` to catch up on discussion.
+2. Check team liveliness and who is present using `team_status(room_name="{room_name}")`.
+3. When you have an update, question, or handoff, call `send_message(room_name="{room_name}", content=..., to=...)`.
+4. After completing your turn, call `wait_for_work(timeout_seconds=600)` to wait for new work or messages.
+5. If you need a decision from human teammates, use `call_human(room_name="{room_name}", question=..., options=...)`.
+6. Be concise, constructive, and avoid duplicate messages.
 """
 
 
 def prune_mcp_tool_parameters() -> None:
     """
-    Removes agent_token, member_token, sender_name, and agent_name from all published MCP tool schemas.
-    Authentication is handled at connection time (Authorization: Bearer header in HTTP/SSE or AICHAT_AGENT_TOKEN in stdio).
+    Removes credential, password, and sender identity arguments from all published MCP tool schemas.
+    Authentication is handled strictly at connection time via Bearer headers or stdio credentials.
     """
+    params_to_remove = [
+        "agent_token",
+        "member_token",
+        "sender_name",
+        "agent_name",
+        "creator_name",
+        "voter_name",
+        "closer_name",
+        "actor_name",
+        "requester_name",
+        "password",
+        "room_password",
+        "old_password",
+        "new_password",
+        "supervisor_token",
+        "current_token",
+    ]
     for name in list(mcp._tool_manager._tools.keys()):
         t = mcp._tool_manager.get_tool(name)
         if t and t.parameters and "properties" in t.parameters:
-            for p in ["agent_token", "member_token", "sender_name", "agent_name"]:
+            for p in params_to_remove:
                 t.parameters["properties"].pop(p, None)
                 if "required" in t.parameters and p in t.parameters["required"]:
                     t.parameters["required"].remove(p)
 
 
 prune_mcp_tool_parameters()
-
