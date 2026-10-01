@@ -2788,6 +2788,25 @@ async def endpoint_admin_bulk_grant_room_access(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=400)
 
 
+async def endpoint_admin_rooms_matrix(request: Request) -> Response:
+    """Returns rooms x principals access matrix for admins."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+
+    include_archived = request.query_params.get("include_archived", "0").lower() in ("1", "true")
+    include_humans = request.query_params.get("include_humans", "0").lower() in ("1", "true")
+
+    if not (hasattr(hub.storage, "is_v3") and hub.storage.is_v3()):
+        return JSONResponse({"status": "error", "error": "Apenas suportado na v3"}, status_code=400)
+
+    matrix = hub.storage.v3.get_access_matrix(
+        include_archived=include_archived,
+        include_humans=include_humans,
+    )
+    return JSONResponse({"status": "success", **matrix})
+
+
 async def endpoint_admin_list_roles(request: Request) -> Response:
     """Lists all agent roles."""
     principal, err = require_admin(request)
@@ -3367,6 +3386,7 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
         Route("/api/admin/rooms/{room_id}/access/{principal_id:int}", endpoint=endpoint_admin_revoke_room_access, methods=["DELETE"]),
         Route("/api/admin/rooms/{room_id}/access/{principal_id:int}", endpoint=endpoint_admin_patch_room_access, methods=["PATCH"]),
         Route("/api/admin/rooms/bulk-grant", endpoint=endpoint_admin_bulk_grant_room_access, methods=["POST"]),
+        Route("/api/admin/rooms/matrix", endpoint=endpoint_admin_rooms_matrix, methods=["GET"]),
         Route("/api/admin/roles", endpoint=endpoint_admin_list_roles, methods=["GET"]),
         Route("/api/admin/roles", endpoint=endpoint_admin_create_role, methods=["POST"]),
         Route("/api/admin/roles/{role_id:int}", endpoint=endpoint_admin_update_role, methods=["PATCH", "PUT"]),

@@ -67,6 +67,10 @@
         <i data-lucide="door-open" class="w-4 h-4"></i>
         <span>Salas & Acessos</span>
       </button>
+      <button onclick="switchTab('matrix')" id="tab-btn-matrix" class="tab-btn flex items-center space-x-2.5 px-3 py-2 rounded-lg text-xs font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent">
+        <i data-lucide="grid" class="w-4 h-4"></i>
+        <span>Matriz de Acessos</span>
+      </button>
       <button onclick="switchTab('roles')" id="tab-btn-roles" class="tab-btn flex items-center space-x-2.5 px-3 py-2 rounded-lg text-xs font-medium transition text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 border border-transparent">
         <i data-lucide="tag" class="w-4 h-4"></i>
         <span>Papéis</span>
@@ -252,6 +256,58 @@
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= TAB: MATRIX ================= -->
+      <section id="tab-matrix" class="tab-content hidden space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+          <div>
+            <h2 class="text-lg font-bold text-white flex items-center gap-2">
+              <i data-lucide="grid" class="w-5 h-5 text-indigo-400"></i>
+              <span>Matriz de Acessos</span>
+            </h2>
+            <p class="text-xs text-slate-400">Visão matricial salas × principais. Configure acessos, papéis específicos e modo observador com gravação instantânea.</p>
+          </div>
+          <div class="flex items-center space-x-2">
+            <button onclick="loadAccessMatrix()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium flex items-center space-x-1.5 transition border border-slate-700">
+              <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+              <span>Recarregar</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Matrix Controls & Filters -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div class="flex flex-wrap items-center gap-3">
+            <div class="relative min-w-[220px]">
+              <input type="text" id="matrix-search" oninput="renderAccessMatrix()" placeholder="Pesquisar sala ou principal..." class="w-full bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500">
+              <i data-lucide="search" class="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-2.5 pointer-events-none"></i>
+            </div>
+            <div class="flex items-center space-x-1.5">
+              <span class="text-slate-400 text-[11px]">Papel:</span>
+              <select id="matrix-role-filter" onchange="renderAccessMatrix()" class="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500">
+                <option value="">Todos os papéis</option>
+              </select>
+            </div>
+          </div>
+          <div class="flex items-center space-x-4">
+            <label class="flex items-center space-x-2 text-slate-300 cursor-pointer select-none">
+              <input type="checkbox" id="matrix-show-archived" onchange="loadAccessMatrix()" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0">
+              <span class="text-[11px] text-slate-400">Mostrar arquivadas</span>
+            </label>
+            <label class="flex items-center space-x-2 text-slate-300 cursor-pointer select-none">
+              <input type="checkbox" id="matrix-include-humans" onchange="loadAccessMatrix()" class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0">
+              <span class="text-[11px] text-slate-400">Incluir humanos</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Matrix Container -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
+          <div id="matrix-container" class="overflow-auto max-h-[calc(100vh-270px)]">
+            <div class="p-8 text-center text-slate-500 text-xs">A carregar matriz de acessos...</div>
           </div>
         </div>
       </section>
@@ -958,6 +1014,20 @@
         </div>
       </form>
     </div>
+  <!-- Floating Undo Toast Notification -->
+  <div id="undo-toast" class="fixed bottom-6 right-6 z-50 hidden max-w-md bg-slate-900 border border-indigo-500/40 rounded-xl p-3 shadow-2xl flex items-center justify-between gap-4 text-xs text-slate-200 transition-all">
+    <div class="flex items-center space-x-2">
+      <i data-lucide="info" class="w-4 h-4 text-indigo-400 shrink-0"></i>
+      <span id="undo-toast-message" class="text-xs">Alteração gravada.</span>
+    </div>
+    <div class="flex items-center space-x-2 shrink-0">
+      <button id="undo-toast-btn" onclick="executeUndoAction()" class="px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs shadow-sm transition">
+        Desfazer
+      </button>
+      <button onclick="hideUndoToast()" class="text-slate-400 hover:text-white p-1">
+        <i data-lucide="x" class="w-3.5 h-3.5"></i>
+      </button>
+    </div>
   </div>
 
   <!-- Application Logic -->
@@ -992,6 +1062,7 @@
       if (tabId === 'audit') loadAuditLog();
       if (tabId === 'settings') loadSettings();
       if (tabId === 'system') loadSystemInfo();
+      if (tabId === 'matrix') loadAccessMatrix();
     }
 
     function formatRelativeTime(isoStr) {
@@ -2422,6 +2493,350 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'}`;
         principalsCache = [...humans, ...agents];
       } catch (e) {
         console.warn('Failed to refresh principals:', e);
+      }
+    }
+
+    // ================= ACCESS MATRIX LOGIC =================
+    let matrixData = { rooms: [], principals: [], roles: [], access: [] };
+    let undoAction = null;
+    let undoTimer = null;
+
+    function showUndoToast(msg, onUndo) {
+      if (undoTimer) clearTimeout(undoTimer);
+      undoAction = onUndo;
+      const toast = document.getElementById('undo-toast');
+      const msgEl = document.getElementById('undo-toast-message');
+      if (msgEl) msgEl.textContent = msg;
+      if (toast) toast.classList.remove('hidden');
+      undoTimer = setTimeout(() => {
+        hideUndoToast();
+      }, 7000);
+      lucide.createIcons();
+    }
+
+    function hideUndoToast() {
+      if (undoTimer) {
+        clearTimeout(undoTimer);
+        undoTimer = null;
+      }
+      undoAction = null;
+      const toast = document.getElementById('undo-toast');
+      if (toast) toast.classList.add('hidden');
+    }
+
+    async function executeUndoAction() {
+      if (undoAction) {
+        const fn = undoAction;
+        hideUndoToast();
+        try {
+          await fn();
+        } catch (err) {
+          showAlert('Erro ao desfazer alteração: ' + err.message, true);
+        }
+      }
+    }
+
+    async function loadAccessMatrix() {
+      const container = document.getElementById('matrix-container');
+      if (!container) return;
+
+      const showArchived = document.getElementById('matrix-show-archived')?.checked ? '1' : '0';
+      const includeHumans = document.getElementById('matrix-include-humans')?.checked ? '1' : '0';
+
+      try {
+        const res = await fetch(`/api/admin/rooms/matrix?include_archived=${showArchived}&include_humans=${includeHumans}`);
+        if (!res.ok) throw new Error('Falha ao carregar matriz de acessos');
+        const data = await res.json();
+        matrixData = {
+          rooms: data.rooms || [],
+          principals: data.principals || [],
+          roles: data.roles || [],
+          access: data.access || []
+        };
+
+        const roleFilterSel = document.getElementById('matrix-role-filter');
+        if (roleFilterSel) {
+          const currentVal = roleFilterSel.value;
+          roleFilterSel.innerHTML = '<option value="">Todos os papéis</option>';
+          matrixData.roles.forEach(r => {
+            const opt = document.createElement('option');
+            opt.value = String(r.id);
+            opt.textContent = r.display_name || r.role_key;
+            if (String(r.id) === currentVal) opt.selected = true;
+            roleFilterSel.appendChild(opt);
+          });
+        }
+
+        renderAccessMatrix();
+      } catch (err) {
+        container.innerHTML = `<div class="p-8 text-center text-rose-400 text-xs">Erro ao carregar matriz: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    function renderAccessMatrix() {
+      const container = document.getElementById('matrix-container');
+      if (!container) return;
+
+      const query = (document.getElementById('matrix-search')?.value || '').trim().toLowerCase();
+      const roleFilter = document.getElementById('matrix-role-filter')?.value || '';
+
+      const accessMap = new Map();
+      (matrixData.access || []).forEach(a => {
+        accessMap.set(`${a.room_id}:${a.principal_id}`, a);
+      });
+
+      let filteredPrincipals = matrixData.principals || [];
+      if (roleFilter) {
+        const rfNum = Number(roleFilter);
+        filteredPrincipals = filteredPrincipals.filter(p => {
+          if (p.default_role_id === rfNum) return true;
+          return matrixData.access.some(a => a.principal_id === p.id && a.role_id === rfNum);
+        });
+      }
+
+      let filteredRooms = matrixData.rooms || [];
+      if (query) {
+        const roomMatches = r => (r.name || '').toLowerCase().includes(query) || (r.topic || '').toLowerCase().includes(query);
+        const princMatches = p => (p.name || '').toLowerCase().includes(query) || (p.display_name || '').toLowerCase().includes(query);
+
+        filteredRooms = filteredRooms.filter(r => 
+          roomMatches(r) || filteredPrincipals.some(p => princMatches(p) && accessMap.has(`${r.id}:${p.id}`))
+        );
+        filteredPrincipals = filteredPrincipals.filter(p => 
+          princMatches(p) || matrixData.rooms.some(r => roomMatches(r) && accessMap.has(`${r.id}:${p.id}`))
+        );
+      }
+
+      if (filteredRooms.length === 0 || filteredPrincipals.length === 0) {
+        container.innerHTML = `<div class="p-12 text-center text-slate-500 text-xs">Nenhum resultado encontrado para os filtros selecionados.</div>`;
+        return;
+      }
+
+      let html = `
+        <table class="border-collapse text-xs w-full">
+          <thead>
+            <tr>
+              <th class="sticky top-0 left-0 z-30 bg-slate-900 border-b border-r border-slate-800 p-2.5 text-left min-w-[200px] shadow-sm">
+                <div class="font-bold text-white text-xs">Salas \\ Principais</div>
+                <div class="text-[10px] text-slate-400 font-normal">${filteredRooms.length} salas · ${filteredPrincipals.length} principais</div>
+              </th>
+      `;
+
+      filteredPrincipals.forEach(p => {
+        const isAgent = p.kind === 'agent';
+        const defaultRole = p.default_role_display_name || p.default_role_key || 'nenhum';
+        html += `
+          <th class="sticky top-0 z-20 bg-slate-900 border-b border-r border-slate-800 p-2 text-center min-w-[170px] max-w-[210px] shadow-sm">
+            <div class="flex items-center justify-center gap-1.5 font-bold text-slate-200">
+              <i data-lucide="${isAgent ? 'bot' : 'user'}" class="w-3.5 h-3.5 ${isAgent ? 'text-indigo-400' : 'text-emerald-400'} shrink-0"></i>
+              <span class="truncate" title="${escapeHtml(p.name)}">${escapeHtml(p.name)}</span>
+            </div>
+            ${p.display_name && p.display_name !== p.name ? `<div class="text-[10px] text-slate-400 truncate" title="${escapeHtml(p.display_name)}">${escapeHtml(p.display_name)}</div>` : ''}
+            <div class="mt-1">
+              <span class="inline-block px-1.5 py-0.5 rounded text-[9px] bg-slate-800 text-slate-400 font-mono" title="Papel por defeito">
+                def: ${escapeHtml(defaultRole)}
+              </span>
+            </div>
+          </th>
+        `;
+      });
+
+      html += `</tr></thead><tbody>`;
+
+      filteredRooms.forEach(r => {
+        html += `
+          <tr class="hover:bg-slate-900/40 transition">
+            <td class="sticky left-0 z-10 bg-slate-900 border-b border-r border-slate-800 p-2.5 min-w-[200px]">
+              <div class="font-semibold text-slate-100 flex items-center gap-1.5">
+                <span>#${escapeHtml(r.name)}</span>
+                ${r.is_archived ? '<span class="px-1 py-0.2 rounded text-[9px] bg-amber-500/10 text-amber-400 border border-amber-500/20">arquivada</span>' : ''}
+              </div>
+              ${r.topic ? `<div class="text-[10px] text-slate-400 truncate max-w-[190px]" title="${escapeHtml(r.topic)}">${escapeHtml(r.topic)}</div>` : ''}
+            </td>
+        `;
+
+        filteredPrincipals.forEach(p => {
+          const acc = accessMap.get(`${r.id}:${p.id}`);
+          const hasAccess = !!acc;
+          const canWrite = acc ? (acc.can_write ?? 1) : 1;
+          const currentRoleId = acc ? acc.role_id : null;
+          const defaultRoleLabel = p.default_role_display_name || p.default_role_key || 'Nenhum';
+
+          html += `
+            <td class="border-b border-r border-slate-800/60 p-2 text-center align-middle bg-slate-950/40 hover:bg-slate-800/30 transition">
+              <div class="flex items-center justify-center gap-2">
+                <input type="checkbox" ${hasAccess ? 'checked' : ''}
+                  onchange="handleMatrixAccessChange(${r.id}, ${p.id}, this.checked, '${escapeJs(r.name)}', '${escapeJs(p.name)}', this)"
+                  class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 cursor-pointer"
+                  title="${hasAccess ? 'Revogar acesso' : 'Conceder acesso'}">
+                
+                ${hasAccess ? `
+                  <select onchange="handleMatrixRoleChange(${r.id}, ${p.id}, this.value, '${escapeJs(r.name)}', '${escapeJs(p.name)}')"
+                    class="bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] text-slate-300 focus:outline-none focus:border-indigo-500 max-w-[100px] truncate"
+                    title="Papel na sala">
+                    <option value="">defeito: ${escapeHtml(defaultRoleLabel)}</option>
+                    ${matrixData.roles.map(role => `
+                      <option value="${role.id}" ${role.id === currentRoleId ? 'selected' : ''}>
+                        ${escapeHtml(role.display_name || role.role_key)}
+                      </option>
+                    `).join('')}
+                  </select>
+
+                  <button type="button"
+                    onclick="handleMatrixObserverToggle(${r.id}, ${p.id}, '${escapeJs(r.name)}', '${escapeJs(p.name)}')"
+                    class="p-1 rounded transition ${canWrite ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-800' : 'text-amber-400 bg-amber-500/10 border border-amber-500/30'}"
+                    title="${canWrite ? 'Escrita ativa. Clique para modo observador.' : 'Observador (leitura apenas). Clique para permitir escrita.'}">
+                    <i data-lucide="${canWrite ? 'pencil' : 'eye'}" class="w-3.5 h-3.5"></i>
+                  </button>
+                ` : `
+                  <span class="text-slate-700 text-[10px] select-none">—</span>
+                `}
+              </div>
+            </td>
+          `;
+        });
+
+        html += `</tr>`;
+      });
+
+      html += `</tbody></table>`;
+      container.innerHTML = html;
+      lucide.createIcons();
+    }
+
+    function escapeJs(str) {
+      if (!str) return '';
+      return String(str).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    }
+
+    async function handleMatrixAccessChange(roomId, principalId, grant, roomName, principalName, checkboxEl) {
+      if (grant) {
+        try {
+          const res = await fetch(`/api/admin/rooms/${roomId}/access`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ principal_id: principalId, can_write: 1, role_id: null })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Erro ao conceder acesso');
+
+          matrixData.access.push({ room_id: roomId, principal_id: principalId, role_id: null, can_write: 1 });
+          renderAccessMatrix();
+
+          showUndoToast(`Acesso concedido a ${principalName} na sala #${roomName}`, async () => {
+            const undoRes = await fetch(`/api/admin/rooms/${roomId}/access/${principalId}`, { method: 'DELETE' });
+            if (undoRes.ok) {
+              matrixData.access = matrixData.access.filter(a => !(a.room_id === roomId && a.principal_id === principalId));
+              renderAccessMatrix();
+            }
+          });
+        } catch (err) {
+          showAlert(err.message, true);
+          if (checkboxEl) checkboxEl.checked = false;
+        }
+      } else {
+        const confirmed = confirm(`Tem a certeza que deseja revogar o acesso de "${principalName}" à sala "#${roomName}"?`);
+        if (!confirmed) {
+          if (checkboxEl) checkboxEl.checked = true;
+          return;
+        }
+
+        const oldEntry = (matrixData.access || []).find(a => a.room_id === roomId && a.principal_id === principalId);
+        const oldRoleId = oldEntry ? oldEntry.role_id : null;
+        const oldCanWrite = oldEntry ? (oldEntry.can_write ?? 1) : 1;
+
+        try {
+          const res = await fetch(`/api/admin/rooms/${roomId}/access/${principalId}`, { method: 'DELETE' });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Erro ao revogar acesso');
+
+          matrixData.access = matrixData.access.filter(a => !(a.room_id === roomId && a.principal_id === principalId));
+          renderAccessMatrix();
+
+          showUndoToast(`Acesso revogado a ${principalName} na sala #${roomName}`, async () => {
+            const undoRes = await fetch(`/api/admin/rooms/${roomId}/access`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ principal_id: principalId, role_id: oldRoleId, can_write: oldCanWrite })
+            });
+            if (undoRes.ok) {
+              matrixData.access.push({ room_id: roomId, principal_id: principalId, role_id: oldRoleId, can_write: oldCanWrite });
+              renderAccessMatrix();
+            }
+          });
+        } catch (err) {
+          showAlert(err.message, true);
+          if (checkboxEl) checkboxEl.checked = true;
+        }
+      }
+    }
+
+    async function handleMatrixRoleChange(roomId, principalId, newRoleIdStr, roomName, principalName) {
+      const newRoleId = newRoleIdStr ? Number(newRoleIdStr) : null;
+      const oldEntry = (matrixData.access || []).find(a => a.room_id === roomId && a.principal_id === principalId);
+      const oldRoleId = oldEntry ? oldEntry.role_id : null;
+
+      try {
+        const res = await fetch(`/api/admin/rooms/${roomId}/access/${principalId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role_id: newRoleId })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao atualizar papel');
+
+        if (oldEntry) oldEntry.role_id = newRoleId;
+        renderAccessMatrix();
+
+        showUndoToast(`Papel de ${principalName} em #${roomName} alterado`, async () => {
+          const undoRes = await fetch(`/api/admin/rooms/${roomId}/access/${principalId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role_id: oldRoleId })
+          });
+          if (undoRes.ok) {
+            if (oldEntry) oldEntry.role_id = oldRoleId;
+            renderAccessMatrix();
+          }
+        });
+      } catch (err) {
+        showAlert(err.message, true);
+        renderAccessMatrix();
+      }
+    }
+
+    async function handleMatrixObserverToggle(roomId, principalId, roomName, principalName) {
+      const entry = (matrixData.access || []).find(a => a.room_id === roomId && a.principal_id === principalId);
+      if (!entry) return;
+      const oldCanWrite = entry.can_write ?? 1;
+      const newCanWrite = oldCanWrite ? 0 : 1;
+
+      try {
+        const res = await fetch(`/api/admin/rooms/${roomId}/access/${principalId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ can_write: newCanWrite })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao alternar permissão de escrita');
+
+        entry.can_write = newCanWrite;
+        renderAccessMatrix();
+
+        const modeName = newCanWrite ? 'leitura e escrita' : 'observador';
+        showUndoToast(`${principalName} em #${roomName} alterado para ${modeName}`, async () => {
+          const undoRes = await fetch(`/api/admin/rooms/${roomId}/access/${principalId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ can_write: oldCanWrite })
+          });
+          if (undoRes.ok) {
+            entry.can_write = oldCanWrite;
+            renderAccessMatrix();
+          }
+        });
+      } catch (err) {
+        showAlert(err.message, true);
       }
     }
 

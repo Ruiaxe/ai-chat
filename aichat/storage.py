@@ -278,6 +278,9 @@ class ChatStorage:
     def list_rooms_for_principal(self, *args, **kwargs):
         return self.v3.list_rooms_for_principal(*args, **kwargs)
 
+    def get_access_matrix(self, *args, **kwargs):
+        return self.v3.get_access_matrix(*args, **kwargs)
+
     def authorize(self, *args, **kwargs):
         return self.v3.authorize(*args, **kwargs)
 

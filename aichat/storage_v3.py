@@ -2325,6 +2325,55 @@ class StorageV3:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_access_matrix(self, include_archived: bool = True, include_humans: bool = True) -> dict[str, Any]:
+        """
+        Returns full data necessary to render the rooms x principals access matrix:
+        - rooms: list of rooms (optionally filtered by is_archived)
+        - principals: list of agents (and optionally humans), with default roles
+        - roles: catalog of agent roles
+        - access: list of room_access entries
+        """
+        conn = self._get_connection()
+        # 1. Rooms
+        r_query = "SELECT id, name, topic, is_archived FROM rooms"
+        if not include_archived:
+            r_query += " WHERE is_archived = 0"
+        r_query += " ORDER BY is_archived ASC, name ASC;"
+        rooms = [dict(r) for r in conn.execute(r_query).fetchall()]
+
+        # 2. Principals (agents, and humans if requested)
+        p_query = """
+            SELECT p.id, p.name, p.display_name, p.kind, p.status,
+                   a.default_role_id, ar.role_key as default_role_key, ar.display_name as default_role_display_name,
+                   h.access_role
+            FROM principals p
+            LEFT JOIN agents a ON p.id = a.principal_id
+            LEFT JOIN agent_roles ar ON a.default_role_id = ar.id
+            LEFT JOIN humans h ON p.id = h.principal_id
+            WHERE p.status = 'active'
+        """
+        if not include_humans:
+            p_query += " AND p.kind = 'agent'"
+        p_query += " ORDER BY p.kind ASC, p.name ASC;"
+        principals = [dict(r) for r in conn.execute(p_query).fetchall()]
+
+        # 3. Roles
+        roles = [dict(r) for r in conn.execute("SELECT id, role_key, display_name FROM agent_roles ORDER BY display_name ASC;").fetchall()]
+
+        # 4. Access entries
+        acc_query = """
+            SELECT ra.room_id, ra.principal_id, ra.role_id, ra.can_write
+            FROM room_access ra;
+        """
+        access = [dict(r) for r in conn.execute(acc_query).fetchall()]
+
+        return {
+            "rooms": rooms,
+            "principals": principals,
+            "roles": roles,
+            "access": access,
+        }
+
     def list_rooms_for_principal(self, principal: dict[str, Any], include_archived: bool = False) -> list[dict[str, Any]]:
         """
         Lists rooms accessible to a principal.
