@@ -258,14 +258,22 @@
         <!-- Message Input Bar -->
         <footer class="p-4 border-t border-slate-800/80 bg-slate-900/30 flex-shrink-0">
           <form id="chat-form" onsubmit="handleSendMessage(event)" class="max-w-5xl mx-auto flex flex-col space-y-2">
-            <div class="flex items-center space-x-2 px-1 text-xs">
+            <div class="flex items-center space-x-2 px-1 text-xs flex-wrap gap-y-1">
               <label for="message-to" class="text-slate-400 font-medium flex items-center gap-1 cursor-pointer">
                 <i data-lucide="at-sign" class="w-3.5 h-3.5 text-indigo-400"></i>
                 <span class="text-slate-300">Para:</span>
               </label>
-              <input type="text" id="message-to" value="all" placeholder="all, @developer, @Sentinel..."
-                class="bg-slate-950/80 border border-slate-800 rounded px-2.5 py-0.5 text-xs text-indigo-300 font-mono focus:border-indigo-500 focus:outline-none w-56 transition placeholder-slate-600"
+              <input type="text" id="message-to" value="all" list="to-suggestions" placeholder="all, @developer, @Sentinel..."
+                oninput="debouncedWakePreview()"
+                class="bg-slate-950/80 border border-slate-800 rounded px-2.5 py-0.5 text-xs text-indigo-300 font-mono focus:border-indigo-500 focus:outline-none w-52 transition placeholder-slate-600"
                 title="Destinatários da mensagem: 'all', '@papel', '@agente' ou lista separada por vírgula">
+              <datalist id="to-suggestions">
+                <option value="all">all (Todos os membros)</option>
+              </datalist>
+              <div id="wake-preview-container" class="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-950/60 border border-slate-800 text-[11px] text-slate-400 truncate max-w-lg transition">
+                <span id="wake-preview-dot" class="w-1.5 h-1.5 rounded-full bg-slate-500 shrink-0"></span>
+                <span id="wake-preview-text" class="truncate">Ninguém vai acordar</span>
+              </div>
             </div>
             <div class="flex items-end space-x-2">
               <div class="flex-1 relative bg-slate-900 border border-slate-800 rounded-xl focus-within:border-indigo-500 focus-within:ring-1 focus-within:ring-indigo-500 transition shadow-inner">
@@ -568,6 +576,26 @@
       </aside>
     </div>
   </main>
+
+  <!-- Modal: Mensagens Por Ler do Agente -->
+  <div id="modal-agent-unread" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <h3 class="font-bold text-white text-base flex items-center gap-2">
+          <span class="text-rose-400">🔴</span>
+          <span id="agent-unread-modal-title">Mensagens por ler</span>
+        </h3>
+        <button onclick="closeModal('modal-agent-unread')" class="text-slate-400 hover:text-white">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+      <p id="agent-unread-modal-desc" class="text-xs text-slate-400"></p>
+      <div id="agent-unread-modal-list" class="space-y-2 max-h-80 overflow-y-auto pr-1"></div>
+      <div class="flex justify-end pt-2">
+        <button onclick="closeModal('modal-agent-unread')" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition">Fechar</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Create Room Modal -->
   <div id="create-room-modal" class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
@@ -1589,6 +1617,16 @@
 
     function renderRoomItem(room, isArchived = false) {
       const isSelected = currentRoom && currentRoom.name === room.name;
+      const unreadDirected = room.unread_directed || 0;
+      const unreadTotal = room.unread_total || 0;
+
+      let unreadBadgeHtml = '';
+      if (unreadDirected > 0) {
+        unreadBadgeHtml = `<span class="px-1.5 py-0.2 rounded-full bg-indigo-600 text-white font-bold text-[10px] shadow-sm animate-pulse" title="${unreadDirected} mensagens dirigidas">${unreadDirected}</span>`;
+      } else if (unreadTotal > 0) {
+        unreadBadgeHtml = `<span class="w-2 h-2 rounded-full bg-indigo-400 shrink-0" title="${unreadTotal} novas mensagens"></span>`;
+      }
+
       return `
         <div data-room-name="${escapeHtml(room.name)}" onclick="selectRoom(this.dataset.roomName)" class="px-3 py-2.5 rounded-xl cursor-pointer transition flex items-center justify-between group ${
           isSelected 
@@ -1605,6 +1643,7 @@
             </div>
           </div>
           <div class="flex items-center space-x-1.5 flex-shrink-0 text-slate-500 text-[11px]">
+            ${unreadBadgeHtml}
             ${isArchived ? '<span class="text-[10px] text-rose-400/80 px-1 py-0.5 rounded bg-rose-500/10 border border-rose-500/20">Arquivada</span>' : ''}
             <span title="Total messages" class="px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-400 border border-slate-700/50">
               ${room.message_count || 0}
@@ -1803,6 +1842,11 @@
         if (password) {
           savePassword(room.name, password);
         }
+
+        if (lastSeenId > 0 && document.visibilityState === 'visible') {
+          advanceReadCursor(room.name, lastSeenId);
+        }
+        debouncedWakePreview();
 
         // Update Header
         document.getElementById('current-room-name').textContent = '#' + room.name;
@@ -2464,10 +2508,13 @@
           const data = JSON.parse(evt.data);
           if (data.type === 'new_message' && data.message) {
             const newMsg = data.message;
-            if (newMsg.room_name.toLowerCase() === currentRoom.name.toLowerCase()) {
+            if (currentRoom && newMsg.room_name.toLowerCase() === currentRoom.name.toLowerCase()) {
               if (!messages.some(m => m.id === newMsg.id)) {
                 messages.push(newMsg);
                 lastSeenId = Math.max(lastSeenId, newMsg.id);
+                if (document.visibilityState === 'visible') {
+                  advanceReadCursor(currentRoom.name, newMsg.id);
+                }
                 if (newMsg.metadata && newMsg.metadata.poll_id && !pollsMap[newMsg.metadata.poll_id]) {
                   fetchPollDetails(newMsg.metadata.poll_id);
                 }
@@ -2479,6 +2526,18 @@
                 if (ttsEnabled && newMsg.role === 'agent' && newMsg.sender.toLowerCase() !== getMyUsername().toLowerCase()) {
                   enqueueSpeech(newMsg);
                 }
+              }
+            } else {
+              const otherRoom = rooms.find(r => r.name.toLowerCase() === newMsg.room_name.toLowerCase());
+              if (otherRoom) {
+                otherRoom.unread_total = (otherRoom.unread_total || 0) + 1;
+                const myName = (getMyUsername() || '').toLowerCase();
+                const recips = newMsg.recipients || [];
+                const isForMe = recips.some(rec => rec.target_kind === 'principal' && (rec.target_name || '').toLowerCase() === myName);
+                if (isForMe) {
+                  otherRoom.unread_directed = (otherRoom.unread_directed || 0) + 1;
+                }
+                renderRoomsList(document.getElementById('room-search')?.value || '');
               }
             }
           } else if (data.type === 'reaction_updated' && data.data) {
@@ -3723,16 +3782,32 @@
     function renderTeamStatus(data) {
       if (!data) return;
       const team = data.team || [];
-      const listeningCount = team.filter(m => m.liveliness && m.liveliness.listening_now).length;
+      const totalMembers = team.length;
+      const listeningCount = team.filter(m => (m.liveliness && m.liveliness.listening_now) || m.state === 'listening').length;
+      const workingCount = team.filter(m => m.state === 'working').length;
+      const stalledCount = team.filter(m => m.state === 'stalled' || (m.liveliness && m.liveliness.unread_count > 0)).length;
+
       const countText = document.getElementById('presence-count-text');
       const sidebarCount = document.getElementById('sidebar-presence-count');
       const popoverCount = document.getElementById('presence-popover-count');
       const sidebarList = document.getElementById('sidebar-presence-list');
       const listContainer = document.getElementById('presence-listeners-list');
 
-      if (countText) countText.textContent = `${listeningCount} a escutar`;
-      if (sidebarCount) sidebarCount.textContent = listeningCount;
-      if (popoverCount) popoverCount.textContent = listeningCount;
+      let presenceHeaderText = `👥 ${totalMembers}`;
+      if (stalledCount > 0) {
+        presenceHeaderText += ` · 🔴 ${stalledCount}`;
+      } else if (workingCount > 0) {
+        presenceHeaderText += ` · 🔵 ${workingCount}`;
+      } else if (listeningCount > 0) {
+        presenceHeaderText += ` · 🟢 ${listeningCount}`;
+      }
+
+      if (countText) {
+        countText.textContent = presenceHeaderText;
+        countText.parentElement.title = `Membros da sala: ${totalMembers} total (🟢 ${listeningCount} a escutar, 🔵 ${workingCount} a trabalhar, 🔴 ${stalledCount} parados)`;
+      }
+      if (sidebarCount) sidebarCount.textContent = totalMembers;
+      if (popoverCount) popoverCount.textContent = totalMembers;
 
       const html = team.length === 0
         ? '<div class="text-slate-500 text-center py-2.5 text-[11px]">Nenhum membro detetado.</div>'
@@ -3756,8 +3831,9 @@
               dotColor = 'bg-amber-400/80';
             }
 
-            const unreadBadge = liv.unread_count > 0
-              ? `<span class="text-[9px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 font-semibold" title="${liv.unread_count} mensagens dirigidas por ler">${liv.unread_count} por ler</span>`
+            const unreadCount = (liv && liv.unread_count) || m.unread_directed_count || (m.unread_messages ? m.unread_messages.length : 0);
+            const unreadBadge = unreadCount > 0
+              ? `<button type="button" onclick="openAgentUnreadModal('${escapeJs(m.name)}', ${m.principal_id})" class="text-[9px] px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-300 border border-red-500/40 font-semibold hover:bg-red-500/30 transition cursor-pointer" title="Clique para ver ${unreadCount} mensagens por ler">🔴 ${unreadCount} por ler</button>`
               : '';
 
             const roleName = m.role_display_name || m.role || (isHuman ? 'Humano' : 'Agente');
@@ -3786,8 +3862,130 @@
 
       if (sidebarList) sidebarList.innerHTML = html;
       if (listContainer) listContainer.innerHTML = html;
+      updateToSuggestions(team);
+      debouncedWakePreview();
       lucide.createIcons();
     }
+
+    function openAgentUnreadModal(agentName, principalId) {
+      const member = currentPresence && currentPresence.team 
+        ? currentPresence.team.find(m => m.name === agentName || m.principal_id === principalId) 
+        : null;
+      const unreadList = member && member.unread_messages ? member.unread_messages : [];
+      
+      const modal = document.getElementById('modal-agent-unread');
+      const title = document.getElementById('agent-unread-modal-title');
+      const desc = document.getElementById('agent-unread-modal-desc');
+      const container = document.getElementById('agent-unread-modal-list');
+      if (!modal) return;
+
+      if (title) title.textContent = `Mensagens por ler de @${agentName}`;
+      if (desc) desc.textContent = `Sala #${currentRoom ? currentRoom.name : ''} · ${unreadList.length} mensagem(ns) pendente(s)`;
+
+      if (container) {
+        if (unreadList.length === 0) {
+          container.innerHTML = '<div class="p-6 text-center text-slate-500 text-xs">Nenhuma mensagem por ler no momento.</div>';
+        } else {
+          container.innerHTML = unreadList.map(msg => `
+            <div class="p-3 rounded-xl bg-slate-950/80 border border-slate-800 space-y-1.5 text-xs">
+              <div class="flex items-center justify-between text-[11px] text-slate-400">
+                <span class="font-bold text-slate-200">${escapeHtml(msg.sender || 'Sistema')}</span>
+                <span class="font-mono text-[10px] text-slate-500">${formatRelativeTime(msg.created_at)}</span>
+              </div>
+              <div class="text-slate-300 text-xs whitespace-pre-wrap leading-relaxed">${escapeHtml(msg.content)}</div>
+            </div>
+          `).join('');
+        }
+      }
+
+      modal.classList.remove('hidden');
+      if (window.lucide) lucide.createIcons();
+    }
+
+    function closeModal(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.add('hidden');
+    }
+
+    let wakePreviewTimeout = null;
+
+    function debouncedWakePreview() {
+      if (wakePreviewTimeout) clearTimeout(wakePreviewTimeout);
+      wakePreviewTimeout = setTimeout(fetchWakePreview, 250);
+    }
+
+    async function fetchWakePreview() {
+      if (!currentRoom) return;
+      const toInput = document.getElementById('message-to');
+      const dotEl = document.getElementById('wake-preview-dot');
+      const textEl = document.getElementById('wake-preview-text');
+      if (!toInput || !textEl) return;
+
+      const toVal = toInput.value.trim() || 'all';
+
+      try {
+        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/wake-preview`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to: toVal })
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'success') {
+          if (dotEl) {
+            dotEl.className = data.count > 0 ? 'w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0' : 'w-1.5 h-1.5 rounded-full bg-slate-500 shrink-0';
+          }
+          textEl.textContent = data.preview_text;
+          textEl.className = 'truncate text-slate-300';
+        } else {
+          if (dotEl) dotEl.className = 'w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0';
+          textEl.textContent = data.error || 'Erro na simulação';
+          textEl.className = 'truncate text-rose-400';
+        }
+      } catch (err) {
+        if (dotEl) dotEl.className = 'w-1.5 h-1.5 rounded-full bg-slate-600 shrink-0';
+        textEl.textContent = 'Indisponível';
+      }
+    }
+
+    function updateToSuggestions(team) {
+      const datalist = document.getElementById('to-suggestions');
+      if (!datalist) return;
+      let html = '<option value="all">all (Todos os membros)</option>';
+      if (team && Array.isArray(team)) {
+        team.forEach(m => {
+          html += `<option value="@${escapeHtml(m.name)}">@${escapeHtml(m.name)} (${escapeHtml(m.role || m.kind)})</option>`;
+          if (m.kind === 'agent') {
+            html += `<option value="@agent:${escapeHtml(m.name)}">@agent:${escapeHtml(m.name)}</option>`;
+          }
+        });
+      }
+      datalist.innerHTML = html;
+    }
+
+    async function advanceReadCursor(roomName, lastMessageId) {
+      if (!roomName || !lastMessageId) return;
+      try {
+        await fetch(`/api/rooms/${encodeURIComponent(roomName)}/read-cursor`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ last_message_id: lastMessageId })
+        });
+        const r = rooms.find(x => x.name.toLowerCase() === roomName.toLowerCase());
+        if (r) {
+          r.unread_total = 0;
+          r.unread_directed = 0;
+          renderRoomsList(document.getElementById('room-search')?.value || '');
+        }
+      } catch (e) {
+        console.warn('Failed to update read cursor:', e);
+      }
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && currentRoom && lastSeenId > 0) {
+        advanceReadCursor(currentRoom.name, lastSeenId);
+      }
+    });
 
     // Send Message
     async function handleSendMessage(e) {

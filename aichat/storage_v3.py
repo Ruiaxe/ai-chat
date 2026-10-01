@@ -1183,6 +1183,7 @@ class StorageV3:
                         "unread_count": len(unread),
                     },
                     "unread_directed_count": len(unread),
+                    "unread_messages": unread,
                     "last_activity_at": liv.get("last_activity_at"),
                     "last_listen_at": liv.get("last_listen_at"),
                 })
@@ -1203,6 +1204,7 @@ class StorageV3:
                         "unread_count": 0,
                     },
                     "unread_directed_count": 0,
+                    "unread_messages": [],
                     "last_activity_at": m.get("last_login_at"),
                     "last_listen_at": None,
                 })
@@ -2400,26 +2402,62 @@ class StorageV3:
                 d = dict(r)
                 d["is_protected"] = False
                 result.append(d)
-            return result
+        else:
+            # Regular user or agent
+            query = """
+                SELECT r.*, ra.can_write, ra.role_id, ar.role_key, ar.display_name as role_display_name,
+                       (SELECT COUNT(*) FROM room_access ra2 WHERE ra2.room_id = r.id) as member_count
+                FROM rooms r
+                JOIN room_access ra ON r.id = ra.room_id
+                LEFT JOIN agent_roles ar ON ra.role_id = ar.id
+                WHERE ra.principal_id = ?
+            """
+            if not include_archived:
+                query += " AND r.is_archived = 0"
+            query += " ORDER BY r.name ASC;"
+            rows = conn.execute(query, (pid,)).fetchall()
+            result = []
+            for r in rows:
+                d = dict(r)
+                d["is_protected"] = False
+                result.append(d)
 
-        # Regular user or agent
-        query = """
-            SELECT r.*, ra.can_write, ra.role_id, ar.role_key, ar.display_name as role_display_name,
-                   (SELECT COUNT(*) FROM room_access ra2 WHERE ra2.room_id = r.id) as member_count
-            FROM rooms r
-            JOIN room_access ra ON r.id = ra.room_id
-            LEFT JOIN agent_roles ar ON ra.role_id = ar.id
-            WHERE ra.principal_id = ?
-        """
-        if not include_archived:
-            query += " AND r.is_archived = 0"
-        query += " ORDER BY r.name ASC;"
-        rows = conn.execute(query, (pid,)).fetchall()
-        result = []
-        for r in rows:
-            d = dict(r)
-            d["is_protected"] = False
-            result.append(d)
+        # Compute unread counters if principal is human
+        if principal.get("kind") == "human":
+            cursor_rows = conn.execute(
+                "SELECT room_id, last_message_id FROM read_cursors WHERE principal_id = ?;",
+                (pid,),
+            ).fetchall()
+            cursor_map = {row["room_id"]: row["last_message_id"] for row in cursor_rows}
+
+            for r in result:
+                rid = r["id"]
+                last_mid = cursor_map.get(rid, 0)
+                tot_row = conn.execute(
+                    """
+                    SELECT COUNT(*) as cnt FROM messages
+                    WHERE room_id = ? AND id > ? AND (sender_id IS NULL OR sender_id != ?);
+                    """,
+                    (rid, last_mid, pid),
+                ).fetchone()
+                r["unread_total"] = tot_row["cnt"] if tot_row else 0
+
+                dir_row = conn.execute(
+                    """
+                    SELECT COUNT(DISTINCT m.id) as cnt
+                    FROM messages m
+                    JOIN message_recipients mr ON m.id = mr.message_id
+                    WHERE m.room_id = ? AND m.id > ? AND (m.sender_id IS NULL OR m.sender_id != ?)
+                      AND mr.target_kind = 'principal' AND mr.target_id = ?;
+                    """,
+                    (rid, last_mid, pid, pid),
+                ).fetchone()
+                r["unread_directed"] = dir_row["cnt"] if dir_row else 0
+        else:
+            for r in result:
+                r["unread_total"] = 0
+                r["unread_directed"] = 0
+
         return result
 
     # ------------------------------------------------------------------ Central Authorization

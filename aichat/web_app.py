@@ -3138,12 +3138,113 @@ async def endpoint_room_team_status(request: Request) -> Response:
     auth = get_request_auth(request)
     if not auth:
         return JSONResponse({"status": "error", "error": "Autenticação obrigatória"}, status_code=401)
+    principal = auth.get("principal")
     room_name = request.path_params.get("room_name", "")
+
+    if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
+        room = hub.storage.v3.get_room(room_name)
+        if not room:
+            return JSONResponse({"status": "error", "error": "Sala não encontrada"}, status_code=404)
+        if not hub.storage.v3.authorize(principal, "read_room", {"room_id": room["id"]}):
+            return JSONResponse({"status": "error", "error": "Acesso não autorizado: apenas membros da sala podem consultar o estado da equipa"}, status_code=403)
+
     try:
-        team = hub.get_room_team_status(room_name, requester_principal=auth.get("principal"))
+        team = hub.get_room_team_status(room_name, requester_principal=principal)
         return JSONResponse({"status": "success", "room": room_name, "team": team})
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=400)
+
+
+async def endpoint_room_wake_preview(request: Request) -> Response:
+    """Simulates message dispatch and returns which agents will wake up."""
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse({"status": "error", "error": "Autenticação obrigatória"}, status_code=401)
+    principal = auth.get("principal")
+    room_name = request.path_params.get("room_name", "")
+
+    if not (hasattr(hub.storage, "is_v3") and hub.storage.is_v3()):
+        return JSONResponse({"status": "error", "error": "Apenas suportado na v3"}, status_code=400)
+
+    room = hub.storage.v3.get_room(room_name)
+    if not room:
+        return JSONResponse({"status": "error", "error": "Sala não encontrada"}, status_code=404)
+
+    if not hub.storage.v3.authorize(principal, "read_room", {"room_id": room["id"]}):
+        return JSONResponse({"status": "error", "error": "Acesso não autorizado"}, status_code=403)
+
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+
+    to_val = data.get("to", "all")
+    try:
+        recipients = hub.storage.v3.resolve_recipients(to_val)
+    except ValueError as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=400)
+
+    members = hub.storage.v3.list_room_members(room["id"])
+    synthetic_msg = {
+        "sender_id": principal.get("id"),
+        "sender_name": principal.get("name"),
+        "room_id": room["id"],
+        "recipients": recipients,
+    }
+
+    waking_agents = []
+    for m in members:
+        if m.get("kind") != "agent":
+            continue
+        p = hub.storage.v3.get_principal_by_id(m["principal_id"])
+        if not p or p.get("status") != "active":
+            continue
+        if hub.storage.v3.is_message_for_principal(synthetic_msg, p, room_name_or_id=room["id"]):
+            waking_agents.append({
+                "id": p["id"],
+                "name": p["name"],
+                "display_name": p.get("display_name") or p["name"],
+            })
+
+    if waking_agents:
+        names_str = ", ".join(a["display_name"] for a in waking_agents)
+        preview_text = f"Vai acordar: {names_str}"
+    else:
+        preview_text = "Ninguém vai acordar"
+
+    return JSONResponse({
+        "status": "success",
+        "waking_agents": waking_agents,
+        "count": len(waking_agents),
+        "preview_text": preview_text,
+    })
+
+
+async def endpoint_room_update_read_cursor(request: Request) -> Response:
+    """Updates read cursor for the authenticated principal in a room."""
+    auth = get_request_auth(request)
+    if not auth:
+        return JSONResponse({"status": "error", "error": "Autenticação obrigatória"}, status_code=401)
+    principal = auth.get("principal")
+    room_name = request.path_params.get("room_name", "")
+
+    if not (hasattr(hub.storage, "is_v3") and hub.storage.is_v3()):
+        return JSONResponse({"status": "error", "error": "Apenas suportado na v3"}, status_code=400)
+
+    room = hub.storage.v3.get_room(room_name)
+    if not room:
+        return JSONResponse({"status": "error", "error": "Sala não encontrada"}, status_code=404)
+
+    if not hub.storage.v3.authorize(principal, "read_room", {"room_id": room["id"]}):
+        return JSONResponse({"status": "error", "error": "Acesso não autorizado"}, status_code=403)
+
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    last_mid = safe_int(data.get("last_message_id"), default=0)
+    hub.storage.v3.update_read_cursor(principal["id"], room["id"], last_mid)
+    return JSONResponse({"status": "success", "room": room_name, "last_message_id": last_mid})
 
 
 async def endpoint_serve_aichat_wait(request: Request) -> Response:
@@ -3337,6 +3438,8 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
         Route("/api/rooms/{room_name}/messages", endpoint=endpoint_get_messages, methods=["GET"]),
         Route("/api/rooms/{room_name}/messages", endpoint=endpoint_post_message, methods=["POST"]),
         Route("/api/rooms/{room_name}/team-status", endpoint=endpoint_room_team_status, methods=["GET"]),
+        Route("/api/rooms/{room_name}/wake-preview", endpoint=endpoint_room_wake_preview, methods=["POST"]),
+        Route("/api/rooms/{room_name}/read-cursor", endpoint=endpoint_room_update_read_cursor, methods=["POST"]),
         Route("/api/messages/{message_id:int}/reactions", endpoint=endpoint_toggle_reaction, methods=["POST"]),
         Route("/api/decisions/{message_id:int}/resolve", endpoint=endpoint_resolve_decision, methods=["POST"]),
         Route("/api/polls", endpoint=endpoint_create_poll, methods=["POST"]),
