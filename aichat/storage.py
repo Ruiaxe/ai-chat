@@ -402,6 +402,9 @@ class ChatStorage:
     def list_audit_log(self, *args, **kwargs):
         return self.v3.list_audit_log(*args, **kwargs)
 
+    def reset_human_password(self, *args, **kwargs):
+        return self.v3.reset_human_password(*args, **kwargs)
+
     def __getattr__(self, name: str) -> Any:
         if self.is_v3():
             return getattr(self.v3, name)

@@ -426,18 +426,18 @@
           <form onsubmit="handleSaveSettings(event)" class="space-y-4 text-xs">
             <div>
               <label class="block text-slate-300 font-semibold mb-1">
-                T_idle — Limite de Inatividade (segundos)
+                T_idle — Limite de Inatividade (minutos)
               </label>
-              <input type="number" id="setting-t-idle" min="30" max="3600" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-indigo-500">
-              <p class="text-[11px] text-slate-500 mt-1">Tempo máximo sem chamadas autenticadas antes de considerar o agente parado (se tiver mensagens por ler). Padrão: 180s.</p>
+              <input type="number" id="setting-t-idle" min="1" max="240" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-indigo-500">
+              <p class="text-[11px] text-slate-500 mt-1">Tempo máximo sem chamadas autenticadas antes de considerar o agente parado (se tiver mensagens por ler). Padrão: 3 min (180s). Mín: 1 min, Máx: 240 min (4h).</p>
             </div>
 
             <div>
               <label class="block text-slate-300 font-semibold mb-1">
-                T_unread — Limite de Mensagens por Ler (segundos)
+                T_unread — Limite de Mensagens por Ler (minutos)
               </label>
-              <input type="number" id="setting-t-unread" min="30" max="3600" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-indigo-500">
-              <p class="text-[11px] text-slate-500 mt-1">Idade mínima da mensagem dirigida mais antiga por ler para acionar alerta de agente parado. Padrão: 120s.</p>
+              <input type="number" id="setting-t-unread" min="1" max="240" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-indigo-500">
+              <p class="text-[11px] text-slate-500 mt-1">Idade mínima da mensagem dirigida mais antiga por ler para acionar alerta de agente parado. Padrão: 2 min (120s). Mín: 1 min, Máx: 240 min (4h).</p>
             </div>
 
             <div>
@@ -602,19 +602,50 @@
         </h3>
         <button onclick="closeModal('modal-reset-password')" class="text-slate-400 hover:text-white"><i data-lucide="x" class="w-4 h-4"></i></button>
       </div>
-      <p id="rp-username-label" class="text-xs text-slate-400"></p>
-      <form onsubmit="handleResetPassword(event)" class="space-y-3 text-xs">
+      <div id="rp-step-confirm" class="space-y-4 text-xs">
+        <p id="rp-username-label" class="text-xs text-slate-300 font-medium"></p>
+        <div class="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-300 text-[11px] leading-relaxed space-y-1">
+          <p class="font-semibold text-amber-200">Ações que serão executadas:</p>
+          <ul class="list-disc list-inside space-y-0.5 text-slate-300">
+            <li>Gera uma nova palavra-passe temporária aleatória forte.</li>
+            <li>Marca obrigatoriedade de alteração no próximo início de sessão.</li>
+            <li>Limpa bloqueios de IP e tentativas de login falhadas.</li>
+            <li>Exibe a palavra-passe <strong>uma única vez</strong> no ecrã.</li>
+          </ul>
+        </div>
         <input type="hidden" id="rp-principal-id">
-        <div>
-          <label class="block text-slate-400 font-medium mb-1">Nova Palavra-passe Provisória*</label>
-          <input type="password" id="rp-new-password" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-amber-500">
-          <span class="text-[10px] text-amber-400/80">O utilizador terá de alterá-la no próximo login. Bloqueios de IP e tentativas falhadas serão limpos.</span>
+        <div class="flex justify-end space-x-2 pt-1">
+          <button type="button" onclick="closeResetPasswordModal()" class="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition">Cancelar</button>
+          <button type="button" id="rp-btn-generate" onclick="handleGenerateResetPassword()" class="px-3.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold transition flex items-center gap-1.5 shadow-sm">
+            <i data-lucide="key" class="w-3.5 h-3.5"></i>
+            <span>Gerar e Repor Palavra-passe</span>
+          </button>
         </div>
-        <div class="flex justify-end space-x-2 pt-2">
-          <button type="button" onclick="closeModal('modal-reset-password')" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition">Cancelar</button>
-          <button type="submit" class="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold transition">Repor</button>
+      </div>
+
+      <div id="rp-step-result" class="space-y-4 text-xs hidden">
+        <div class="p-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-emerald-300 text-[11px] flex items-center gap-2">
+          <i data-lucide="check-circle" class="w-4 h-4 shrink-0"></i>
+          <span>Palavra-passe temporária gerada com sucesso!</span>
         </div>
-      </form>
+        <div class="p-3 bg-slate-950 border border-amber-500/40 rounded-xl space-y-2">
+          <div class="flex items-center justify-between text-[11px] text-slate-400 font-medium">
+            <span>Nova Palavra-passe Provisória:</span>
+            <span class="text-[10px] text-rose-400 font-semibold uppercase tracking-wider">Apenas uma vez</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <input type="text" id="rp-result-password" readonly class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-amber-300 font-mono text-sm font-bold tracking-wider select-all focus:outline-none">
+            <button type="button" id="rp-btn-copy" onclick="copyResetPassword()" class="px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold shrink-0 transition flex items-center gap-1 shadow-sm">
+              <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+              <span id="rp-btn-copy-text">Copiar</span>
+            </button>
+          </div>
+        </div>
+        <p class="text-[10px] text-slate-400 leading-normal">Copie e entregue esta palavra-passe de forma segura ao utilizador. A palavra-passe não ficou guardada em texto limpo e não poderá voltar a ser consultada.</p>
+        <div class="flex justify-end pt-1">
+          <button type="button" onclick="closeResetPasswordModal()" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold transition">Fechar</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1292,28 +1323,69 @@
     function openResetPasswordModal(userId, name) {
       document.getElementById('rp-principal-id').value = userId;
       document.getElementById('rp-username-label').textContent = `A repor palavra-passe para ${name} (#${userId})`;
-      document.getElementById('rp-new-password').value = '';
+      document.getElementById('rp-step-confirm').classList.remove('hidden');
+      document.getElementById('rp-step-result').classList.add('hidden');
+      document.getElementById('rp-result-password').value = '';
+      document.getElementById('rp-btn-copy-text').textContent = 'Copiar';
+      const btnGen = document.getElementById('rp-btn-generate');
+      if (btnGen) {
+        btnGen.disabled = false;
+        btnGen.innerHTML = '<i data-lucide="key" class="w-3.5 h-3.5"></i><span>Gerar e Repor Palavra-passe</span>';
+      }
       openModal('modal-reset-password');
+      lucide.createIcons();
     }
 
-    async function handleResetPassword(e) {
-      e.preventDefault();
+    async function handleGenerateResetPassword() {
       const userId = document.getElementById('rp-principal-id').value;
-      const newPassword = document.getElementById('rp-new-password').value.trim();
+      const btnGen = document.getElementById('rp-btn-generate');
+      if (btnGen) {
+        btnGen.disabled = true;
+        btnGen.innerHTML = '<span>A gerar palavra-passe segura...</span>';
+      }
       try {
-        const res = await fetch(`/api/admin/humans/${userId}`, {
-          method: 'PATCH',
+        const res = await fetch(`/api/admin/humans/${userId}/reset-password`, {
+          method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reset_password: newPassword })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro ao repor palavra-passe');
-        closeModal('modal-reset-password');
-        showAlert('Palavra-passe reposta com sucesso.');
-        loadUsers();
+
+        document.getElementById('rp-step-confirm').classList.add('hidden');
+        document.getElementById('rp-step-result').classList.remove('hidden');
+        document.getElementById('rp-result-password').value = data.temporary_password;
+        lucide.createIcons();
       } catch (err) {
         showAlert(err.message, true);
+        if (btnGen) {
+          btnGen.disabled = false;
+          btnGen.innerHTML = '<i data-lucide="key" class="w-3.5 h-3.5"></i><span>Gerar e Repor Palavra-passe</span>';
+          lucide.createIcons();
+        }
       }
+    }
+
+    function copyResetPassword() {
+      const pwdInput = document.getElementById('rp-result-password');
+      if (!pwdInput || !pwdInput.value) return;
+      navigator.clipboard.writeText(pwdInput.value).then(() => {
+        document.getElementById('rp-btn-copy-text').textContent = '✓ Copiado!';
+        setTimeout(() => {
+          const t = document.getElementById('rp-btn-copy-text');
+          if (t) t.textContent = 'Copiar';
+        }, 3000);
+      }).catch(() => {
+        pwdInput.select();
+        document.execCommand('copy');
+        document.getElementById('rp-btn-copy-text').textContent = '✓ Copiado!';
+      });
+    }
+
+    function closeResetPasswordModal() {
+      const pwdInput = document.getElementById('rp-result-password');
+      if (pwdInput) pwdInput.value = '';
+      closeModal('modal-reset-password');
+      loadUsers();
     }
 
     async function deleteUser(userId) {
@@ -1533,8 +1605,8 @@
         const tIdle = document.getElementById('setting-t-idle');
         const tUnread = document.getElementById('setting-t-unread');
         const maxTimeout = document.getElementById('setting-max-timeout');
-        if (tIdle) tIdle.value = s.t_idle_seconds ?? 180;
-        if (tUnread) tUnread.value = s.t_unread_seconds ?? 120;
+        if (tIdle) tIdle.value = s.t_idle_minutes ?? Math.max(1, Math.round((s.t_idle_seconds ?? 180) / 60));
+        if (tUnread) tUnread.value = s.t_unread_minutes ?? Math.max(1, Math.round((s.t_unread_seconds ?? 120) / 60));
         if (maxTimeout) maxTimeout.value = s.max_wake_timeout ?? 600;
       } catch (err) {
         showAlert(err.message, true);
@@ -1543,17 +1615,26 @@
 
     async function handleSaveSettings(e) {
       e.preventDefault();
-      const tIdle = parseInt(document.getElementById('setting-t-idle').value);
-      const tUnread = parseInt(document.getElementById('setting-t-unread').value);
+      const tIdleMin = parseInt(document.getElementById('setting-t-idle').value);
+      const tUnreadMin = parseInt(document.getElementById('setting-t-unread').value);
       const maxTimeout = parseInt(document.getElementById('setting-max-timeout').value);
+
+      if (isNaN(tIdleMin) || tIdleMin < 1 || tIdleMin > 240) {
+        showAlert('O tempo limite de inatividade deve estar entre 1 e 240 minutos (4 horas).', true);
+        return;
+      }
+      if (isNaN(tUnreadMin) || tUnreadMin < 1 || tUnreadMin > 240) {
+        showAlert('O tempo limite de mensagens não lidas deve estar entre 1 e 240 minutos (4 horas).', true);
+        return;
+      }
 
       try {
         const res = await fetch('/api/admin/settings', {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            t_idle_seconds: tIdle,
-            t_unread_seconds: tUnread,
+            t_idle_minutes: tIdleMin,
+            t_unread_minutes: tUnreadMin,
             max_wake_timeout: maxTimeout,
           })
         });

@@ -15,6 +15,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
+import secrets
+import string
 import threading
 from typing import Any
 
@@ -463,6 +465,50 @@ class StorageV3:
             )
             return cursor.rowcount > 0
 
+    def reset_human_password(
+        self,
+        principal_id: int,
+        actor_id: int | None = None,
+        actor_name: str = "admin",
+    ) -> str:
+        """
+        Resets human password with a secure random temporary password,
+        marks must_change_password=1, clears failed_logins and locked_until,
+        and logs audit without the password.
+        Returns the plaintext temporary password (to be shown once to admin).
+        """
+        p = self.get_principal_by_id(principal_id)
+        if not p or p.get("kind") != "human":
+            raise ValueError(f"Utilizador #{principal_id} não encontrado.")
+
+        alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+        temp_pwd = "Tmp-" + "".join(secrets.choice(alphabet) for _ in range(12))
+
+        pwd_hash = hash_password(temp_pwd)
+        conn = self._get_connection()
+        with conn:
+            conn.execute(
+                """
+                UPDATE humans
+                SET password_hash = ?,
+                    must_change_password = 1,
+                    failed_logins = 0,
+                    locked_until = NULL
+                WHERE principal_id = ?;
+                """,
+                (pwd_hash, principal_id),
+            )
+
+        self.log_audit(
+            actor_id=actor_id,
+            actor_name=actor_name,
+            action="reset_password",
+            target_type="principal",
+            target_id=principal_id,
+            details=f"password reposta pelo admin {actor_name} para o utilizador {p['name']}",
+        )
+        return temp_pwd
+
     def _record_ip_failure(self, client_ip: str | None) -> None:
         if not client_ip:
             return
@@ -885,6 +931,8 @@ class StorageV3:
             "t_idle_seconds": t_idle,
             "t_unread_seconds": t_unread,
             "max_wake_timeout": max_wake,
+            "t_idle_minutes": max(1, round(t_idle / 60)),
+            "t_unread_minutes": max(1, round(t_unread / 60)),
         }
 
     def is_agent_listening(self, principal_id: int | str) -> bool:
@@ -4472,8 +4520,9 @@ class StorageV3:
         action: str | None = None,
         room_id: int | None = None,
         target_type: str | None = None,
+        target_id: int | None = None,
     ) -> dict[str, Any]:
-        """Queries audit log entries with optional filters (who, what, room) and pagination."""
+        """Queries audit log entries with optional filters (who, what, room, target) and pagination."""
         conn = self._get_connection()
         where_clauses = ["1=1"]
         params: list[Any] = []
@@ -4489,6 +4538,9 @@ class StorageV3:
         if target_type and target_type.strip():
             where_clauses.append("target_type = ?")
             params.append(target_type.strip())
+        if target_id is not None:
+            where_clauses.append("target_id = ?")
+            params.append(target_id)
 
         where_sql = " AND ".join(where_clauses)
         count_row = conn.execute(f"SELECT COUNT(*) as cnt FROM audit_log WHERE {where_sql};", params).fetchone()

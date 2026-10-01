@@ -2417,6 +2417,30 @@ async def endpoint_admin_delete_human(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+async def endpoint_admin_reset_human_password(request: Request) -> Response:
+    """Resets a human user's password with a strong temporary password."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    principal_id = safe_int(request.path_params.get("principal_id"))
+    try:
+        temp_pwd = hub.storage.v3.reset_human_password(
+            principal_id=principal_id,
+            actor_id=principal.get("id"),
+            actor_name=principal.get("name", "admin"),
+        )
+        return JSONResponse({
+            "status": "success",
+            "principal_id": principal_id,
+            "temporary_password": temp_pwd,
+            "message": "Password reposta com sucesso. Copie a password agora pois não voltará a ser mostrada.",
+        })
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 async def endpoint_admin_list_agents(request: Request) -> Response:
     """Lists all agents with roles and credential hints."""
     principal, err = require_admin(request)
@@ -2920,6 +2944,8 @@ async def endpoint_admin_list_audit_log(request: Request) -> Response:
     room_id_param = request.query_params.get("room_id")
     room_id = safe_int(room_id_param) if room_id_param else None
     target_type = request.query_params.get("target_type")
+    target_id_param = request.query_params.get("target_id")
+    target_id = safe_int(target_id_param) if target_id_param else None
     limit = safe_int(request.query_params.get("limit", 50), default=50, min_val=1, max_val=200)
     offset = safe_int(request.query_params.get("offset", 0), default=0, min_val=0)
 
@@ -2931,6 +2957,7 @@ async def endpoint_admin_list_audit_log(request: Request) -> Response:
             action=action,
             room_id=room_id,
             target_type=target_type,
+            target_id=target_id,
         )
         return JSONResponse({"status": "success", **res})
     except Exception as e:
@@ -2989,7 +3016,7 @@ async def endpoint_admin_get_settings(request: Request) -> Response:
 
 
 async def endpoint_admin_patch_settings(request: Request) -> Response:
-    """Updates system thresholds (t_idle_seconds, t_unread_seconds, max_wake_timeout)."""
+    """Updates system thresholds (t_idle_minutes / seconds, t_unread_minutes / seconds, max_wake_timeout)."""
     principal, err = require_admin(request)
     if err:
         return err
@@ -2997,12 +3024,49 @@ async def endpoint_admin_patch_settings(request: Request) -> Response:
         return JSONResponse({"status": "error", "error": "Apenas suportado na v3"}, status_code=400)
     try:
         data = await request.json()
-        if "t_idle_seconds" in data:
-            hub.storage.v3.set_setting("t_idle_seconds", str(int(data["t_idle_seconds"])))
-        if "t_unread_seconds" in data:
-            hub.storage.v3.set_setting("t_unread_seconds", str(int(data["t_unread_seconds"])))
+    except Exception:
+        return JSONResponse({"status": "error", "error": "JSON inválido"}, status_code=400)
+
+    try:
+        # Validate and convert t_idle
+        if "t_idle_minutes" in data:
+            try:
+                m = int(data["t_idle_minutes"])
+            except (ValueError, TypeError):
+                return JSONResponse({"status": "error", "error": "Valor de minutos de inatividade inválido"}, status_code=400)
+            if m < 1 or m > 240:
+                return JSONResponse({"status": "error", "error": "O tempo limite de inatividade deve estar entre 1 e 240 minutos (4 horas)."}, status_code=400)
+            hub.storage.v3.set_setting("t_idle_seconds", str(m * 60))
+        elif "t_idle_seconds" in data:
+            try:
+                s = int(data["t_idle_seconds"])
+            except (ValueError, TypeError):
+                return JSONResponse({"status": "error", "error": "Valor de segundos de inatividade inválido"}, status_code=400)
+            if s < 60 or s > 14400:
+                return JSONResponse({"status": "error", "error": "O tempo limite de inatividade deve estar entre 1 e 240 minutos (60 a 14400 segundos)."}, status_code=400)
+            hub.storage.v3.set_setting("t_idle_seconds", str(s))
+
+        # Validate and convert t_unread
+        if "t_unread_minutes" in data:
+            try:
+                m = int(data["t_unread_minutes"])
+            except (ValueError, TypeError):
+                return JSONResponse({"status": "error", "error": "Valor de minutos de não lidas inválido"}, status_code=400)
+            if m < 1 or m > 240:
+                return JSONResponse({"status": "error", "error": "O tempo limite de mensagens não lidas deve estar entre 1 e 240 minutos (4 horas)."}, status_code=400)
+            hub.storage.v3.set_setting("t_unread_seconds", str(m * 60))
+        elif "t_unread_seconds" in data:
+            try:
+                s = int(data["t_unread_seconds"])
+            except (ValueError, TypeError):
+                return JSONResponse({"status": "error", "error": "Valor de segundos de não lidas inválido"}, status_code=400)
+            if s < 60 or s > 14400:
+                return JSONResponse({"status": "error", "error": "O tempo limite de mensagens não lidas deve estar entre 1 e 240 minutos (60 a 14400 segundos)."}, status_code=400)
+            hub.storage.v3.set_setting("t_unread_seconds", str(s))
+
         if "max_wake_timeout" in data:
             hub.storage.v3.set_setting("max_wake_timeout", str(int(data["max_wake_timeout"])))
+
         hub.storage.v3.log_audit(
             actor_id=principal.get("id"),
             actor_name=principal.get("name", "admin"),
@@ -3483,10 +3547,12 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
         Route("/api/admin/humans", endpoint=endpoint_admin_create_human, methods=["POST"]),
         Route("/api/admin/humans/{principal_id:int}", endpoint=endpoint_admin_update_human, methods=["PATCH", "PUT"]),
         Route("/api/admin/humans/{principal_id:int}", endpoint=endpoint_admin_delete_human, methods=["DELETE"]),
+        Route("/api/admin/humans/{principal_id:int}/reset-password", endpoint=endpoint_admin_reset_human_password, methods=["POST"]),
         Route("/api/admin/users", endpoint=endpoint_admin_list_humans, methods=["GET"]),
         Route("/api/admin/users", endpoint=endpoint_admin_create_human, methods=["POST"]),
         Route("/api/admin/users/{principal_id:int}", endpoint=endpoint_admin_update_human, methods=["PATCH", "PUT"]),
         Route("/api/admin/users/{principal_id:int}", endpoint=endpoint_admin_delete_human, methods=["DELETE"]),
+        Route("/api/admin/users/{principal_id:int}/reset-password", endpoint=endpoint_admin_reset_human_password, methods=["POST"]),
         Route("/api/admin/agents", endpoint=endpoint_admin_list_agents, methods=["GET"]),
         Route("/api/admin/agents", endpoint=endpoint_admin_create_agent, methods=["POST"]),
         Route("/api/admin/agents/{id:int}/approve", endpoint=endpoint_admin_approve_agent, methods=["POST"]),
