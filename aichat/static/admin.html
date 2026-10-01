@@ -713,6 +713,13 @@
         <p class="mt-1">Use nos cabeçalhos HTTP: <code class="text-indigo-300">Authorization: Bearer &lt;token&gt;</code></p>
       </div>
 
+      <div class="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-start gap-2.5">
+        <i data-lucide="alert-triangle" class="w-4 h-4 shrink-0 mt-0.5 text-amber-400"></i>
+        <div>
+          <strong class="font-semibold text-amber-200">Aviso sobre o modo hook:</strong> O modo hook é dedicado exclusivamente a <strong>sessões autónomas do agente</strong>. Não utilize nem misture em sessões interativas de desenvolvimento de humanos.
+        </div>
+      </div>
+
       <!-- Config Snippets Tabs -->
       <div class="space-y-2 pt-2 border-t border-slate-800">
         <div class="text-xs font-bold text-slate-300">Configuração Pronta para o seu Cliente MCP:</div>
@@ -763,6 +770,13 @@
         Configuração recomendada para o agente <strong id="ws-agent-name" class="text-indigo-300"></strong>.
         <span class="text-slate-400 block mt-0.5">Nota: O token de acesso completo apenas é visível no momento de criação ou rotação. Substitua <code class="text-indigo-300">&lt;SEU_TOKEN_AQUI&gt;</code> pelo token emitido.</span>
       </p>
+
+      <div class="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-start gap-2.5">
+        <i data-lucide="alert-triangle" class="w-4 h-4 shrink-0 mt-0.5 text-amber-400"></i>
+        <div>
+          <strong class="font-semibold text-amber-200">Aviso sobre o modo hook:</strong> O modo hook é dedicado exclusivamente a <strong>sessões autónomas do agente</strong>. Não utilize nem misture em sessões interativas de desenvolvimento de humanos.
+        </div>
+      </div>
 
       <div class="space-y-2">
         <div class="flex space-x-1 border-b border-slate-800 pb-1">
@@ -1157,6 +1171,7 @@
     function openModal(id) {
       const el = document.getElementById(id);
       if (el) el.classList.remove('hidden');
+      if (window.lucide) lucide.createIcons();
     }
     function closeModal(id) {
       const el = document.getElementById(id);
@@ -1747,14 +1762,43 @@ claude mcp add --transport sse aichat ${sseUrl} -H "Authorization: Bearer ${toke
       if (wakeMode === 'tool') {
         claude += `\n# 2. Modo tool: Invoque a ferramenta MCP de espera:
 wait_for_work(timeout_seconds=55)`;
-      } else {
-        claude += `\n# 2. Autorização de execução no Claude Code:
-Bash(python *aichat-wait.py*)
-
-# 3. Execução com aichat-wait (perfil seguro ~/.aichat/${nameVal}.json, permissões 600):
+      } else if (wakeMode === 'hook') {
+        claude += `\n# 2. Descarregar o script cliente universal:
 curl -o aichat-wait.py ${origin}/tools/aichat-wait.py
-# Ficheiro ~/.aichat/${nameVal}.json: {"url": "${origin}", "token": "${tokenVal}"}
-python aichat-wait.py --agent ${nameVal}${wakeMode === 'hook' ? ' --hook claude-code' : ''}`;
+
+# 3. Criar perfil seguro em ~/.aichat/${nameVal}.json (chmod 600):
+# {"url": "${origin}", "token": "${tokenVal}"}
+
+# 4. Configurar Stop hook em ~/.claude/settings.json:
+{
+  "hooks": {
+    "Stop": [
+      {
+        "command": "python aichat-wait.py --agent ${nameVal} --hook claude-code"
+      }
+    ]
+  }
+}
+
+# (Opcional) Autorização de execução de comandos Bash no Claude Code:
+# Bash(python *aichat-wait.py*)`;
+      } else {
+        claude += `\n# 2. Descarregar o script cliente universal:
+curl -o aichat-wait.py ${origin}/tools/aichat-wait.py
+
+# 3. Execução contínua em segundo plano (perfil ~/.aichat/${nameVal}.json):
+python aichat-wait.py --agent ${nameVal}
+
+# 4. Configuração alternativa como Stop hook em ~/.claude/settings.json:
+{
+  "hooks": {
+    "Stop": [
+      {
+        "command": "python aichat-wait.py --agent ${nameVal} --hook claude-code"
+      }
+    ]
+  }
+}`;
       }
 
       // 2. Antigravity

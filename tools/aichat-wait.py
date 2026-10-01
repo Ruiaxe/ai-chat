@@ -421,18 +421,37 @@ def run_selftest(args: argparse.Namespace, token: str, url: str) -> int:
 
 
 def format_claude_code_hook(data: Dict[str, Any], default_room: str) -> str:
-    """Formata mensagens para Claude Code hook."""
+    """Formata mensagens para Claude Code Stop Hook (JSON block decision)."""
     messages = data.get("messages", [])
     if not messages:
-        return ""
+        return json.dumps({
+            "decision": "allow",
+            "message": "Sem novas tarefas no ai-chat. A aguardar próximo ciclo.",
+        }, ensure_ascii=False)
 
     lines = ["Nova atividade no ai-chat:"]
+    role_reminder = data.get("role_reminder")
+    if role_reminder:
+        if isinstance(role_reminder, dict):
+            disp = role_reminder.get("display_name") or role_reminder.get("role_key") or "Agente"
+            rem = role_reminder.get("reminder_text", "")
+            lines.append(f"[Lembrete de Papel] {disp}: {rem}")
+        else:
+            lines.append(f"[Lembrete de Papel] {role_reminder}")
+
     for m in messages:
         sender = m.get("sender") or m.get("sender_name") or "alguém"
         room = m.get("room_name") or m.get("room") or default_room or "geral"
         content = m.get("content", "").strip()
-        lines.append(f"[ai-chat] [#{room}] @{sender}: {content}")
-    return "\n".join(lines)
+        lines.append(f"- [#{room}] @{sender}: {content}")
+
+    lines.append("\nProcessa estas mensagens e responde no ai-chat.")
+    reason_str = "\n".join(lines)
+
+    return json.dumps({
+        "decision": "block",
+        "reason": reason_str,
+    }, ensure_ascii=False, indent=2)
 
 
 def format_opencode_hook(data: Dict[str, Any], default_room: str) -> str:
@@ -484,6 +503,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         return run_selftest(args, token, base_url)
 
     if not token:
+        if args.hook == "claude-code":
+            print(
+                json.dumps({
+                    "decision": "allow",
+                    "message": "Aviso ai-chat: Token não configurado. Defina AICHAT_AGENT_TOKEN ou perfil em ~/.aichat/<agente>.json.",
+                }, ensure_ascii=False)
+            )
+            return EXIT_SUCCESS
         print(
             "[ERRO] Token do agente em falta. Defina a variável AICHAT_AGENT_TOKEN ou utilize --agent <callsign> com perfil em ~/.aichat/<agente>.json.",
             file=sys.stderr,
@@ -518,9 +545,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         code, data = make_request(base_url, "/api/wake", token, params=params, timeout_seconds=http_timeout)
     except ConnectionError as ce:
+        if args.hook == "claude-code":
+            print(
+                json.dumps({
+                    "decision": "allow",
+                    "message": f"Aviso ai-chat: Erro de rede ou servidor indisponível ({ce}). A aguardar próximo ciclo.",
+                }, ensure_ascii=False)
+            )
+            return EXIT_SUCCESS
         print(f"[ERRO] {ce}", file=sys.stderr)
         return EXIT_CONNECTION_ERROR
     except Exception as e:
+        if args.hook == "claude-code":
+            print(
+                json.dumps({
+                    "decision": "allow",
+                    "message": f"Aviso ai-chat: Erro inesperado na ligação ({e}). A aguardar próximo ciclo.",
+                }, ensure_ascii=False)
+            )
+            return EXIT_SUCCESS
         print(f"[ERRO] Erro inesperado na ligação: {e}", file=sys.stderr)
         return EXIT_GENERAL_ERROR
 
@@ -531,11 +574,27 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if code >= 500:
         err = data.get("error", f"Erro no servidor (HTTP {code})")
+        if args.hook == "claude-code":
+            print(
+                json.dumps({
+                    "decision": "allow",
+                    "message": f"Aviso ai-chat: Servidor indisponível ({err}). A aguardar próximo ciclo.",
+                }, ensure_ascii=False)
+            )
+            return EXIT_SUCCESS
         print(f"[ERRO] {err}", file=sys.stderr)
         return EXIT_CONNECTION_ERROR
 
     if code != 200:
         err = data.get("error", f"Código HTTP inesperado: {code}")
+        if args.hook == "claude-code":
+            print(
+                json.dumps({
+                    "decision": "allow",
+                    "message": f"Aviso ai-chat: Resposta inesperada ({err}). A aguardar próximo ciclo.",
+                }, ensure_ascii=False)
+            )
+            return EXIT_SUCCESS
         print(f"[ERRO] {err}", file=sys.stderr)
         return EXIT_CONNECTION_ERROR
 
@@ -545,15 +604,32 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if status == "error":
         err_msg = data.get("error", "Erro retornado pelo servidor")
-        print(f"[ERRO] Servidor devolveu erro: {err_msg}", file=sys.stderr)
         err_lower = err_msg.lower()
+        if args.hook == "claude-code":
+            print(
+                json.dumps({
+                    "decision": "allow",
+                    "message": f"Aviso ai-chat: Servidor reportou erro ({err_msg}). A aguardar próximo ciclo.",
+                }, ensure_ascii=False)
+            )
+            return EXIT_SUCCESS
         if any(w in err_lower for w in ("autenticação", "acesso negado", "token", "desativado", "unauthorized", "forbidden")):
+            print(f"[ERRO] Servidor devolveu erro: {err_msg}", file=sys.stderr)
             return EXIT_AUTH_ERROR
+        print(f"[ERRO] Servidor devolveu erro: {err_msg}", file=sys.stderr)
         return EXIT_CONNECTION_ERROR
 
     # Se atingiu timeout sem novo trabalho
     if status in ("timeout", "no_work") or (not messages and status not in ("new_work", "new_messages")):
-        if args.format == "json" and args.hook == "none":
+        if args.hook == "claude-code":
+            print(
+                json.dumps({
+                    "decision": "allow",
+                    "message": "Sem novas tarefas no ai-chat. A aguardar próximo ciclo.",
+                }, ensure_ascii=False)
+            )
+            return EXIT_SUCCESS
+        elif args.format == "json" and args.hook == "none":
             print(json.dumps(data, ensure_ascii=False, indent=2))
         elif args.verbose:
             print("Tempo limite esgotado sem novas mensagens.", file=sys.stderr)
