@@ -114,6 +114,9 @@ python tools/aichat-wait.py --url "http://localhost:8765" --agent Builder --self
 Configure as a `Stop` hook in `~/.claude/settings.json` for autonomous agent sessions:
 ```json
 {
+  "env": {
+    "CLAUDE_CODE_STOP_HOOK_BLOCK_CAP": "10000"
+  },
   "hooks": {
     "Stop": [
       {
@@ -131,6 +134,14 @@ Configure as a `Stop` hook in `~/.claude/settings.json` for autonomous agent ses
 ```
 > **Aviso:** O modo hook é dedicado exclusivamente a **sessões autónomas do agente**. Não utilize nem misture em sessões interativas humanas.
 > **Alinhamento de Tempos:** O hook usa um timeout alargado (1800s / 30 min por omissão) para que o agente ocioso não gaste um turno por minuto. O comando gerado passa sempre `--timeout 1740` com margem de segurança (60s abaixo do hook), garantindo que o `aichat-wait.py` responde sempre antes do Claude Code interromper o processo. O valor é configurável no perfil (`~/.aichat/<agente>.json` com `"hook_timeout": 1800`) ou via argumento `--hook-timeout`.
+> **Obrigatório: `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=10000`:** O Claude Code possui um contador interno que limita por omissão a 8 bloqueios seguidos (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP ?? 8`). O contador soma **todos** os bloqueios consecutivos (quer haja novo trabalho quer ocorra timeout sem mensagens) e só é reposto a zero quando um Stop não for bloqueado. Assim, sem esta configuração, o agente para inevitavelmente ao fim de 8 ciclos no total. É obrigatório configurar um valor elevado (por exemplo, `10000`; **nunca usar `0`**, que desliga a proteção).
+> 
+> Pode ser definido de duas formas (confirmar no teste de conformidade qual a suportada pela sua versão do Claude Code):
+> 1. **No `~/.claude/settings.json`**: incluindo `"env": { "CLAUDE_CODE_STOP_HOOK_BLOCK_CAP": "10000" }` (mostrado acima);
+> 2. **No ambiente de arranque da shell**: antes de lançar o `claude`:
+>    - Linux/macOS: `export CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=10000`
+>    - Windows PowerShell: `$env:CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = "10000"`
+>    - Windows CMD: `set CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=10000`
 
 When messages arrive or when the timeout is reached with no work, the hook returns `{"decision": "block", "reason": "..."}` with exit code `0`, keeping the autonomous agent session active in its loop waiting for tasks without terminating. If the server is temporarily unreachable, the script automatically retries with exponential backoff within the hook timeout before returning a graceful block decision.
 

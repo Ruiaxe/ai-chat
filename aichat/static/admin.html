@@ -1798,8 +1798,11 @@ curl -o aichat-wait.py ${origin}/tools/aichat-wait.py
 # 3. Criar perfil seguro em ~/.aichat/${nameVal}.json (chmod 600):
 # {"url": "${origin}", "token": "${tokenVal}", "hook_timeout": ${hookTimeoutVal}}
 
-# 4. Configurar Stop hook em ~/.claude/settings.json:
+# 4. Configurar Stop hook e limite de ciclos em ~/.claude/settings.json:
 {
+  "env": {
+    "CLAUDE_CODE_STOP_HOOK_BLOCK_CAP": "10000"
+  },
   "hooks": {
     "Stop": [
       {
@@ -1815,6 +1818,16 @@ curl -o aichat-wait.py ${origin}/tools/aichat-wait.py
   }
 }
 
+# ⚠️ OBRIGATÓRIO PARA O MODO HOOK (> 8 ciclos):
+# O Claude Code limita por omissão a 8 bloqueios seguidos (com ou sem trabalho), parando o agente ao 8.º ciclo.
+# Para permitir operação contínua, defina CLAUDE_CODE_STOP_HOOK_BLOCK_CAP com um valor alto (ex: 10000; nunca 0, que desliga a proteção).
+# Existem 2 formas de o definir (confirmar no teste de conformidade qual a suportada pela sua versão):
+#   Forma A: Secção "env" no ~/.claude/settings.json (como indicado acima);
+#   Forma B: No ambiente de arranque da shell antes de executar "claude":
+#     Linux/macOS: export CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=10000
+#     PowerShell:  $env:CLAUDE_CODE_STOP_HOOK_BLOCK_CAP = "10000"
+#     Windows CMD: set CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=10000
+
 # (Opcional) Autorização de execução de comandos Bash no Claude Code:
 # Bash(python *aichat-wait.py*)`;
       } else {
@@ -1825,7 +1838,11 @@ curl -o aichat-wait.py ${origin}/tools/aichat-wait.py
 python aichat-wait.py --agent ${nameVal}
 
 # 4. Configuração alternativa como Stop hook em ~/.claude/settings.json:
+# (Requer CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=10000 para operar além de 8 ciclos)
 {
+  "env": {
+    "CLAUDE_CODE_STOP_HOOK_BLOCK_CAP": "10000"
+  },
   "hooks": {
     "Stop": [
       {

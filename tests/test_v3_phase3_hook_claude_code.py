@@ -511,6 +511,22 @@ class TestV3Phase3ClaudeCodeHook(unittest.TestCase):
         parsed = json.loads(result.stdout)
         self.assertEqual(parsed.get("decision"), "block")
 
+    def test_15_claude_code_block_cap_in_documentation_and_snippets(self):
+        """Verifies CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=10000 is included in admin snippets and README."""
+        readme_path = ROOT / "README.md"
+        admin_path = ROOT / "aichat" / "static" / "admin.html"
+
+        readme_content = readme_path.read_text(encoding="utf-8")
+        self.assertIn("CLAUDE_CODE_STOP_HOOK_BLOCK_CAP", readme_content)
+        self.assertIn("10000", readme_content)
+        self.assertIn("8 bloqueios", readme_content)
+        self.assertIn("export CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=10000", readme_content)
+
+        admin_content = admin_path.read_text(encoding="utf-8")
+        self.assertIn("CLAUDE_CODE_STOP_HOOK_BLOCK_CAP", admin_content)
+        self.assertIn("10000", admin_content)
+        self.assertIn("OBRIGATÓRIO PARA O MODO HOOK", admin_content)
+
 
 if __name__ == "__main__":
     unittest.main()
