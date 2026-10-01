@@ -1735,11 +1735,63 @@ class StorageV3:
         row = conn.execute("SELECT * FROM agent_roles WHERE role_key = ? COLLATE NOCASE;", (role_key.strip(),)).fetchone()
         return dict(row) if row else None
 
+    def get_role_usage(self, role_id: int) -> dict[str, Any]:
+        """
+        Returns details of where a role is used:
+        - default_agents: agents having this as default role
+        - room_agents: agents having this role in specific rooms
+        """
+        role = self.get_role_by_id(role_id)
+        if not role:
+            raise ValueError(f"Papel #{role_id} não encontrado.")
+        conn = self._get_connection()
+        def_rows = conn.execute(
+            """
+            SELECT p.id, p.name, p.display_name, p.status
+            FROM agents a
+            JOIN principals p ON a.principal_id = p.id
+            WHERE a.default_role_id = ?
+            ORDER BY p.name ASC;
+            """,
+            (role_id,),
+        ).fetchall()
+        default_agents = [dict(r) for r in def_rows]
+
+        room_rows = conn.execute(
+            """
+            SELECT p.id as principal_id, p.name as agent_name, p.display_name as agent_display_name,
+                   r.id as room_id, r.name as room_name, r.is_archived
+            FROM room_access ra
+            JOIN principals p ON ra.principal_id = p.id
+            JOIN rooms r ON ra.room_id = r.id
+            WHERE ra.role_id = ?
+            ORDER BY r.name ASC, p.name ASC;
+            """,
+            (role_id,),
+        ).fetchall()
+        room_agents = [dict(r) for r in room_rows]
+
+        total_uses = len(default_agents) + len(room_agents)
+        return {
+            "role_id": role["id"],
+            "role_key": role["role_key"],
+            "display_name": role["display_name"],
+            "default_agents": default_agents,
+            "room_agents": room_agents,
+            "total_uses": total_uses,
+            "in_use": total_uses > 0,
+        }
+
     def list_roles(self) -> list[dict[str, Any]]:
-        """Lists all agent roles."""
+        """Lists all agent roles with usage summary."""
         conn = self._get_connection()
         rows = conn.execute("SELECT * FROM agent_roles ORDER BY id ASC;").fetchall()
-        return [dict(r) for r in rows]
+        roles = []
+        for r in rows:
+            d = dict(r)
+            d["usage"] = self.get_role_usage(d["id"])
+            roles.append(d)
+        return roles
 
     def create_role(
         self,
@@ -1819,12 +1871,25 @@ class StorageV3:
         return self.get_role_by_id(role_id)  # type: ignore
 
     def delete_role(self, role_id: int, actor_id: int | None = None, actor_name: str = "admin") -> bool:
-        """Deletes an agent role if it's not a builtin role."""
+        """Deletes an agent role if it's not a builtin role and not in use."""
         role = self.get_role_by_id(role_id)
         if not role:
             return False
         if role.get("is_builtin"):
             raise ValueError(f"Papel do sistema '{role['role_key']}' não pode ser removido.")
+
+        usage = self.get_role_usage(role_id)
+        if usage["in_use"]:
+            details_list = []
+            if usage["default_agents"]:
+                names = ", ".join(a.get("display_name") or a["name"] for a in usage["default_agents"])
+                details_list.append(f"papel por defeito de: {names}")
+            if usage["room_agents"]:
+                rooms_info = ", ".join(f"{a.get('agent_display_name') or a['agent_name']} em #{a['room_name']}" for a in usage["room_agents"])
+                details_list.append(f"atribuído na(s) sala(s): {rooms_info}")
+            reason = "; ".join(details_list)
+            raise ValueError(f"Papel '{role['display_name']}' está em uso ({reason}) e não pode ser removido.")
+
         conn = self._get_connection()
         with conn:
             cur = conn.execute("DELETE FROM agent_roles WHERE id = ?;", (role_id,))

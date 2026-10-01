@@ -393,6 +393,9 @@ class ChatStorage:
     def delete_role(self, *args, **kwargs):
         return self.v3.delete_role(*args, **kwargs)
 
+    def get_role_usage(self, *args, **kwargs):
+        return self.v3.get_role_usage(*args, **kwargs)
+
     def bulk_grant_room_access(self, *args, **kwargs):
         return self.v3.bulk_grant_room_access(*args, **kwargs)
 

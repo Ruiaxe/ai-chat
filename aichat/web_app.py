@@ -2894,6 +2894,21 @@ async def endpoint_admin_delete_role(request: Request) -> Response:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+async def endpoint_admin_get_role_usage(request: Request) -> Response:
+    """Returns agents and rooms using a specific role."""
+    principal, err = require_admin(request)
+    if err:
+        return err
+    role_id = safe_int(request.path_params.get("role_id"))
+    try:
+        usage = hub.storage.v3.get_role_usage(role_id)
+        return JSONResponse({"status": "success", "usage": usage})
+    except ValueError as ve:
+        return JSONResponse({"error": str(ve)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 async def endpoint_admin_list_audit_log(request: Request) -> Response:
     """Queries the audit log with filters and pagination."""
     principal, err = require_admin(request)
@@ -3494,6 +3509,7 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
         Route("/api/admin/roles", endpoint=endpoint_admin_create_role, methods=["POST"]),
         Route("/api/admin/roles/{role_id:int}", endpoint=endpoint_admin_update_role, methods=["PATCH", "PUT"]),
         Route("/api/admin/roles/{role_id:int}", endpoint=endpoint_admin_delete_role, methods=["DELETE"]),
+        Route("/api/admin/roles/{role_id:int}/usage", endpoint=endpoint_admin_get_role_usage, methods=["GET"]),
         Route("/api/admin/audit", endpoint=endpoint_admin_list_audit_log, methods=["GET"]),
         Route("/api/admin/system", endpoint=endpoint_admin_system, methods=["GET"]),
         Route("/api/admin/agents/{principal_id:int}/rooms", endpoint=endpoint_admin_get_agent_rooms, methods=["GET"]),

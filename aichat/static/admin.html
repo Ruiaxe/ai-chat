@@ -332,6 +332,7 @@
                 <tr>
                   <th class="py-3 px-4">Identificador</th>
                   <th class="py-3 px-4">Nome de Apresentação</th>
+                  <th class="py-3 px-4">Quem tem este papel</th>
                   <th class="py-3 px-4">Descrição</th>
                   <th class="py-3 px-4">Texto de Lembrete</th>
                   <th class="py-3 px-4">Tipo</th>
@@ -339,7 +340,7 @@
                 </tr>
               </thead>
               <tbody id="roles-table-body" class="divide-y divide-slate-800/60">
-                <tr><td colspan="6" class="py-8 text-center text-slate-500">A carregar papéis...</td></tr>
+                <tr><td colspan="7" class="py-8 text-center text-slate-500">A carregar papéis...</td></tr>
               </tbody>
             </table>
           </div>
@@ -993,20 +994,39 @@
         <input type="hidden" id="ro-id">
         <div>
           <label class="block text-slate-400 font-medium mb-1">Chave do Papel (role_key)*</label>
-          <input type="text" id="ro-key" placeholder="Ex: developer, qa, security" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+          <input type="text" id="ro-key" oninput="updateRoleReminderPreview()" placeholder="Ex: developer, qa, security" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
         </div>
         <div>
           <label class="block text-slate-400 font-medium mb-1">Nome de Apresentação*</label>
-          <input type="text" id="ro-display-name" placeholder="Ex: Programador" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
+          <input type="text" id="ro-display-name" oninput="updateRoleReminderPreview()" placeholder="Ex: Programador" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500">
         </div>
         <div>
           <label class="block text-slate-400 font-medium mb-1">Descrição</label>
           <textarea id="ro-description" rows="2" placeholder="Responsabilidades e tarefas do papel" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500"></textarea>
         </div>
         <div>
-          <label class="block text-slate-400 font-medium mb-1">Texto de Lembrete (reminder_text)*</label>
-          <textarea id="ro-reminder-text" rows="3" placeholder="Mensagem enviada a cada ativação do agente" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500"></textarea>
+          <label class="block text-slate-400 font-medium mb-1">Texto de Lembrete (reminder_text)</label>
+          <textarea id="ro-reminder-text" oninput="updateRoleReminderPreview()" rows="3" placeholder="Mensagem enviada a cada ativação do agente" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500"></textarea>
           <span class="text-[10px] text-slate-500">Lembrete injetado pelo servidor quando o agente acorda.</span>
+        </div>
+        <div class="pt-2 border-t border-slate-800 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
+              <i data-lucide="eye" class="w-3.5 h-3.5 text-indigo-400"></i>
+              Pré-visualização do Lembrete no Wake-up
+            </span>
+            <span id="role-preview-char-count" class="text-[10px] font-mono text-indigo-300 bg-indigo-500/10 px-2 py-0.5 rounded">
+              0 caracteres
+            </span>
+          </div>
+          <div class="space-y-1">
+            <div class="text-[10px] text-slate-400 font-medium">Formatação exata que o agente recebe:</div>
+            <div id="role-preview-text" class="p-2.5 rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] text-amber-300 break-words whitespace-pre-wrap select-all">Papel: —</div>
+          </div>
+          <div class="space-y-1">
+            <div class="text-[10px] text-slate-400 font-medium">Formatação JSON no campo <code>role_reminder</code>:</div>
+            <pre id="role-preview-json" class="p-2 rounded-lg bg-slate-950 border border-slate-800 font-mono text-[10px] text-slate-300 overflow-x-auto whitespace-pre-wrap">{}</pre>
+          </div>
         </div>
         <div class="flex justify-end space-x-2 pt-2">
           <button type="button" onclick="closeModal('modal-role')" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition">Cancelar</button>
@@ -2851,11 +2871,29 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'}`;
         if (!tbody) return;
         tbody.innerHTML = '';
         rolesCache.forEach(r => {
+          const usage = r.usage || { default_agents: [], room_agents: [], in_use: false };
+          let usageHtml = '';
+          if (usage.in_use) {
+            let parts = [];
+            if (usage.default_agents && usage.default_agents.length > 0) {
+              const defNames = usage.default_agents.map(a => escapeHtml(a.display_name || a.name)).join(', ');
+              parts.push(`<div><span class="text-indigo-400 font-semibold">🏷️ Defeito:</span> <span class="text-slate-200">${defNames}</span></div>`);
+            }
+            if (usage.room_agents && usage.room_agents.length > 0) {
+              const roomItems = usage.room_agents.map(a => `${escapeHtml(a.agent_display_name || a.agent_name)} <span class="text-slate-400 font-mono text-[10px]">(#${escapeHtml(a.room_name)})</span>`).join(', ');
+              parts.push(`<div><span class="text-emerald-400 font-semibold">🏠 Salas:</span> <span class="text-slate-200">${roomItems}</span></div>`);
+            }
+            usageHtml = `<div class="space-y-1 text-[11px] max-w-xs">${parts.join('')}</div>`;
+          } else {
+            usageHtml = `<span class="text-slate-500 italic text-[11px]">Nenhum agente</span>`;
+          }
+
           const tr = document.createElement('tr');
           tr.className = 'hover:bg-slate-800/30 transition';
           tr.innerHTML = `
             <td class="py-3 px-4 font-mono text-[11px] font-bold text-indigo-300">${escapeHtml(r.role_key)}</td>
-            <td class="py-3 px-4 font-semibold text-white">${escapeHtml(r.display_name)}</td>
+            <td class="py-3 px-4 font-semibold text-white whitespace-nowrap">${escapeHtml(r.display_name)}</td>
+            <td class="py-3 px-4">${usageHtml}</td>
             <td class="py-3 px-4 text-slate-300 max-w-xs truncate" title="${escapeHtml(r.description)}">${escapeHtml(r.description || '—')}</td>
             <td class="py-3 px-4 text-slate-400 max-w-sm truncate text-[11px] font-mono" title="${escapeHtml(r.reminder_text)}">${escapeHtml(r.reminder_text || '—')}</td>
             <td class="py-3 px-4">
@@ -2863,12 +2901,12 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'}`;
                 ${r.is_builtin ? 'Sistema' : 'Custom'}
               </span>
             </td>
-            <td class="py-3 px-4 text-right space-x-1">
+            <td class="py-3 px-4 text-right space-x-1 whitespace-nowrap">
               <button onclick="openEditRoleModal(${r.id})" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">
                 Editar
               </button>
               ${!r.is_builtin ? `
-                <button onclick="deleteRole(${r.id})" class="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
+                <button onclick="deleteRole(${r.id})" class="px-2 py-1 rounded ${usage.in_use ? 'bg-slate-800 hover:bg-slate-700 text-slate-400' : 'bg-rose-500/10 hover:bg-rose-500/20 text-rose-400'} text-[10px] font-medium transition" title="${usage.in_use ? 'Papel em uso (ver detalhes ao clicar)' : 'Eliminar papel'}">
                   Eliminar
                 </button>
               ` : ''}
@@ -2882,6 +2920,37 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'}`;
       }
     }
 
+    function updateRoleReminderPreview() {
+      const dispName = (document.getElementById('ro-display-name')?.value || '').trim() || 'Nome do Papel';
+      const roleKey = (document.getElementById('ro-key')?.value || '').trim() || 'chave';
+      const reminderText = (document.getElementById('ro-reminder-text')?.value || '').trim();
+
+      const previewTextEl = document.getElementById('role-preview-text');
+      const previewJsonEl = document.getElementById('role-preview-json');
+      const countEl = document.getElementById('role-preview-char-count');
+
+      if (!previewTextEl || !previewJsonEl || !countEl) return;
+
+      const charLen = reminderText.length;
+      countEl.textContent = `${charLen} caractere${charLen === 1 ? '' : 's'}`;
+
+      if (reminderText) {
+        previewTextEl.textContent = `Papel: ${dispName} - ${reminderText}`;
+        previewJsonEl.textContent = JSON.stringify({
+          role_key: roleKey,
+          display_name: dispName,
+          reminder_text: reminderText
+        }, null, 2);
+      } else {
+        previewTextEl.textContent = `(Sem lembrete configurado para este papel)`;
+        previewJsonEl.textContent = JSON.stringify({
+          role_key: roleKey,
+          display_name: dispName,
+          reminder_text: ""
+        }, null, 2);
+      }
+    }
+
     function openCreateRoleModal() {
       document.getElementById('role-modal-title').textContent = 'Novo Papel de Agente';
       document.getElementById('ro-id').value = '';
@@ -2890,6 +2959,7 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'}`;
       document.getElementById('ro-display-name').value = '';
       document.getElementById('ro-description').value = '';
       document.getElementById('ro-reminder-text').value = '';
+      updateRoleReminderPreview();
       openModal('modal-role');
     }
 
@@ -2903,6 +2973,7 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'}`;
       document.getElementById('ro-display-name').value = r.display_name;
       document.getElementById('ro-description').value = r.description || '';
       document.getElementById('ro-reminder-text').value = r.reminder_text || '';
+      updateRoleReminderPreview();
       openModal('modal-role');
     }
 
@@ -2940,7 +3011,19 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'}`;
     }
 
     async function deleteRole(roleId) {
-      if (!confirm('Deseja eliminar este papel?')) return;
+      const r = rolesCache.find(x => x.id === roleId);
+      if (r && r.usage && r.usage.in_use) {
+        let details = [];
+        if (r.usage.default_agents && r.usage.default_agents.length > 0) {
+          details.push('• Papel por defeito de: ' + r.usage.default_agents.map(a => a.display_name || a.name).join(', '));
+        }
+        if (r.usage.room_agents && r.usage.room_agents.length > 0) {
+          details.push('• Atribuído nas salas: ' + r.usage.room_agents.map(a => `${a.agent_display_name || a.agent_name} em #${a.room_name}`).join(', '));
+        }
+        alert(`Não é possível eliminar o papel "${r.display_name}" porque está em uso:\n\n${details.join('\n')}\n\nReatribua ou remova estes agentes antes de eliminar.`);
+        return;
+      }
+      if (!confirm(`Deseja eliminar o papel "${r ? r.display_name : roleId}"?`)) return;
       try {
         const res = await fetch(`/api/admin/roles/${roleId}`, { method: 'DELETE' });
         const data = await res.json();
