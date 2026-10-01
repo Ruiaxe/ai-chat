@@ -303,6 +303,214 @@ class TestV3Phase3ClaudeCodeHook(unittest.TestCase):
         self.assertEqual(parsed.get("decision"), "block")
         self.assertIn("Sucesso após retry!", parsed.get("reason", ""))
 
+    def test_10_hook_timeout_warning_and_clamp_when_timeout_not_less_than_hook(self):
+        """Verifies warning emitted and timeout clamped when --timeout >= --hook-timeout."""
+        recorded_url = []
+
+        class MockResponse:
+            def getcode(self):
+                return 200
+
+            def read(self):
+                return json.dumps({"status": "timeout", "messages": []}).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        def mock_urlopen(req, timeout=None):
+            recorded_url.append(req.get_full_url())
+            return MockResponse()
+
+        out_buf = io.StringIO()
+        err_buf = io.StringIO()
+        with patch.dict(os.environ, {"AICHAT_AGENT_TOKEN": "token_qa"}), \
+             patch("urllib.request.urlopen", side_effect=mock_urlopen), \
+             patch("sys.stdout", out_buf), \
+             patch("sys.stderr", err_buf):
+            code = aichat_wait.main([
+                "--url", "http://testserver",
+                "--agent", "qa-bot",
+                "--hook", "claude-code",
+                "--hook-timeout", "1800",
+                "--timeout", "1800",
+            ])
+
+        self.assertEqual(code, aichat_wait.EXIT_SUCCESS)
+        stderr_text = err_buf.getvalue()
+        self.assertIn("[AVISO]", stderr_text)
+        self.assertIn("1800s", stderr_text)
+        self.assertIn("1740s", stderr_text)
+        # Verify clamped timeout_seconds was sent in request query
+        self.assertTrue(any("timeout_seconds=1740" in u for u in recorded_url))
+        parsed = json.loads(out_buf.getvalue())
+        self.assertEqual(parsed.get("decision"), "block")
+
+    def test_11_no_warning_when_timeout_is_strictly_less(self):
+        """Verifies NO warning is emitted when --timeout is strictly less than --hook-timeout."""
+        recorded_url = []
+
+        class MockResponse:
+            def getcode(self):
+                return 200
+
+            def read(self):
+                return json.dumps({"status": "timeout", "messages": []}).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        def mock_urlopen(req, timeout=None):
+            recorded_url.append(req.get_full_url())
+            return MockResponse()
+
+        out_buf = io.StringIO()
+        err_buf = io.StringIO()
+        with patch.dict(os.environ, {"AICHAT_AGENT_TOKEN": "token_qa"}), \
+             patch("urllib.request.urlopen", side_effect=mock_urlopen), \
+             patch("sys.stdout", out_buf), \
+             patch("sys.stderr", err_buf):
+            code = aichat_wait.main([
+                "--url", "http://testserver",
+                "--agent", "qa-bot",
+                "--hook", "claude-code",
+                "--hook-timeout", "1800",
+                "--timeout", "1740",
+            ])
+
+        self.assertEqual(code, aichat_wait.EXIT_SUCCESS)
+        stderr_text = err_buf.getvalue()
+        self.assertNotIn("[AVISO]", stderr_text)
+        self.assertTrue(any("timeout_seconds=1740" in u for u in recorded_url))
+
+    def test_12_profile_hook_timeout_loaded_and_clamps(self):
+        """Verifies hook_timeout is loaded from ~/.aichat/<agent>.json profile and warns/clamps."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            profile_file = tmppath / "custom_bot.json"
+            profile_file.write_text(
+                json.dumps({
+                    "url": "http://testserver",
+                    "token": "tok_from_profile",
+                    "hook_timeout": 600,
+                }),
+                encoding="utf-8",
+            )
+
+            recorded_url = []
+
+            class MockResponse:
+                def getcode(self):
+                    return 200
+
+                def read(self):
+                    return json.dumps({"status": "timeout", "messages": []}).encode("utf-8")
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    pass
+
+            def mock_urlopen(req, timeout=None):
+                recorded_url.append(req.get_full_url())
+                return MockResponse()
+
+            out_buf = io.StringIO()
+            err_buf = io.StringIO()
+            with patch.dict(os.environ, {}, clear=True), \
+                 patch.object(aichat_wait, "get_aichat_dir", return_value=tmppath), \
+                 patch("urllib.request.urlopen", side_effect=mock_urlopen), \
+                 patch("sys.stdout", out_buf), \
+                 patch("sys.stderr", err_buf):
+                code = aichat_wait.main([
+                    "--agent", "custom_bot",
+                    "--hook", "claude-code",
+                    "--timeout", "600",
+                ])
+
+            self.assertEqual(code, aichat_wait.EXIT_SUCCESS)
+            stderr_text = err_buf.getvalue()
+            self.assertIn("[AVISO]", stderr_text)
+            self.assertIn("600s", stderr_text)
+            self.assertIn("540s", stderr_text)
+            self.assertTrue(any("timeout_seconds=540" in u for u in recorded_url))
+
+    def test_13_responds_strictly_before_n_seconds(self):
+        """Verifies that with a hook of N seconds, aichat-wait always finishes strictly before N."""
+        import time
+
+        hook_n = 2
+        # Margin for N=2 is 1s, clamped timeout is 1s
+        class MockServerDelayResponse:
+            def getcode(self):
+                return 200
+
+            def read(self):
+                return json.dumps({"status": "timeout", "messages": []}).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        def mock_delayed_urlopen(req, timeout=None):
+            # Server delays by poll_timeout (clamped to 1s)
+            time.sleep(0.5)
+            return MockServerDelayResponse()
+
+        out_buf = io.StringIO()
+        t0 = time.monotonic()
+        with patch.dict(os.environ, {"AICHAT_AGENT_TOKEN": "token_qa"}), \
+             patch("urllib.request.urlopen", side_effect=mock_delayed_urlopen), \
+             patch("sys.stdout", out_buf):
+            code = aichat_wait.main([
+                "--url", "http://testserver",
+                "--agent", "qa-bot",
+                "--hook", "claude-code",
+                "--hook-timeout", str(hook_n),
+                "--timeout", str(hook_n),
+            ])
+        elapsed = time.monotonic() - t0
+
+        self.assertEqual(code, aichat_wait.EXIT_SUCCESS)
+        self.assertLess(elapsed, float(hook_n), f"Response took {elapsed:.3f}s, expected strictly < {hook_n}s")
+        parsed = json.loads(out_buf.getvalue())
+        self.assertEqual(parsed.get("decision"), "block")
+
+    def test_14_subprocess_cli_responds_before_n_seconds(self):
+        """Verifies real subprocess CLI execution against offline server responds strictly before N seconds."""
+        import time
+
+        hook_n = 2
+        cmd = [
+            sys.executable,
+            str(TOOLS_SCRIPT),
+            "--url", "http://127.0.0.1:59996",
+            "--agent", "test-agent",
+            "--hook", "claude-code",
+            "--hook-timeout", str(hook_n),
+            "--timeout", str(hook_n),
+        ]
+        env = dict(os.environ)
+        env["AICHAT_AGENT_TOKEN"] = "test-token-1234"
+
+        t0 = time.monotonic()
+        result = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=5)
+        elapsed = time.monotonic() - t0
+
+        self.assertEqual(result.returncode, 0, f"Expected 0 but got {result.returncode}. Stderr: {result.stderr}")
+        self.assertLess(elapsed, float(hook_n), f"Subprocess took {elapsed:.3f}s, expected strictly < {hook_n}s")
+        self.assertIn("[AVISO]", result.stderr)
+        parsed = json.loads(result.stdout)
+        self.assertEqual(parsed.get("decision"), "block")
+
 
 if __name__ == "__main__":
     unittest.main()

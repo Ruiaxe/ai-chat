@@ -778,6 +778,19 @@
         </div>
       </div>
 
+      <div class="flex items-center justify-between text-xs text-slate-400 bg-slate-950/60 px-3 py-2 rounded-xl border border-slate-800">
+        <label for="ws-hook-timeout" class="flex items-center gap-1.5 text-slate-300 font-medium">
+          <i data-lucide="clock" class="w-3.5 h-3.5 text-indigo-400"></i>
+          <span>Timeout do Hook:</span>
+        </label>
+        <select id="ws-hook-timeout" onchange="updateWakeSnippetContent()" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-indigo-300 focus:outline-none focus:border-indigo-500 font-mono">
+          <option value="1800" selected>1800s (30 min — Recomendado)</option>
+          <option value="1200">1200s (20 min)</option>
+          <option value="900">900s (15 min)</option>
+          <option value="600">600s (10 min)</option>
+        </select>
+      </div>
+
       <div class="space-y-2">
         <div class="flex space-x-1 border-b border-slate-800 pb-1">
           <button type="button" onclick="switchWakeTab('claude')" id="ws-tab-claude" class="px-2.5 py-1 text-xs rounded font-medium bg-indigo-600/20 text-indigo-300 border border-indigo-500/30">Claude Code</button>
@@ -1591,15 +1604,17 @@
       }
     }
 
-    function openWakeSnippetModal(agentName, harness = 'claude-code', wakeMode = 'background') {
+    let currentWakeSnippetAgent = { name: '', harness: 'claude-code', wakeMode: 'background' };
+
+    function openWakeSnippetModal(agentName, harness = 'claude-code', wakeMode = 'background', hookTimeout = 1800) {
+      currentWakeSnippetAgent = { name: agentName, harness, wakeMode };
       const nameEl = document.getElementById('ws-agent-name');
       if (nameEl) nameEl.textContent = `@${agentName} (${harness} / ${wakeMode})`;
 
-      const snippets = buildMcpSnippets('<SEU_TOKEN_AQUI>', agentName, harness, wakeMode);
-      ['claude', 'antigravity', 'opencode', 'wait'].forEach(t => {
-        const el = document.getElementById(`ws-code-${t}`);
-        if (el && snippets[t]) el.textContent = snippets[t];
-      });
+      const selTimeout = document.getElementById('ws-hook-timeout');
+      if (selTimeout && hookTimeout) selTimeout.value = String(hookTimeout);
+
+      updateWakeSnippetContent();
 
       let targetTab = 'claude';
       if (harness === 'antigravity') targetTab = 'antigravity';
@@ -1608,6 +1623,17 @@
 
       switchWakeTab(targetTab);
       openModal('modal-wake-snippet');
+      if (window.lucide) lucide.createIcons();
+    }
+
+    function updateWakeSnippetContent() {
+      const selTimeout = document.getElementById('ws-hook-timeout');
+      const ht = selTimeout ? parseInt(selTimeout.value) || 1800 : 1800;
+      const snippets = buildMcpSnippets('<SEU_TOKEN_AQUI>', currentWakeSnippetAgent.name, currentWakeSnippetAgent.harness, currentWakeSnippetAgent.wakeMode, ht);
+      ['claude', 'antigravity', 'opencode', 'wait'].forEach(t => {
+        const el = document.getElementById(`ws-code-${t}`);
+        if (el && snippets[t]) el.textContent = snippets[t];
+      });
     }
 
     // ================= SYSTEM SETTINGS LOGIC =================
@@ -1750,11 +1776,14 @@
     }
 
     // --- Snippets & Token Disposal (Security Rule: Discard immediately on close) ---
-    function buildMcpSnippets(token, agentName = 'agente', harness = 'claude-code', wakeMode = 'background') {
+    function buildMcpSnippets(token, agentName = 'agente', harness = 'claude-code', wakeMode = 'background', hookTimeout = 1800) {
       const origin = window.location.origin;
       const sseUrl = `${origin}/sse`;
       const tokenVal = token || '<SEU_TOKEN_AQUI>';
       const nameVal = agentName || 'agente';
+      const hookTimeoutVal = parseInt(hookTimeout) || 1800;
+      const margin = (hookTimeoutVal >= 120) ? 60 : Math.max(1, Math.floor(hookTimeoutVal * 0.1));
+      const cmdTimeout = Math.max(1, hookTimeoutVal - margin);
 
       // 1. Claude Code
       let claude = `# 1. Registar o servidor MCP SSE no Claude Code (âmbito utilizador):
@@ -1767,7 +1796,7 @@ wait_for_work(timeout_seconds=55)`;
 curl -o aichat-wait.py ${origin}/tools/aichat-wait.py
 
 # 3. Criar perfil seguro em ~/.aichat/${nameVal}.json (chmod 600):
-# {"url": "${origin}", "token": "${tokenVal}"}
+# {"url": "${origin}", "token": "${tokenVal}", "hook_timeout": ${hookTimeoutVal}}
 
 # 4. Configurar Stop hook em ~/.claude/settings.json:
 {
@@ -1777,8 +1806,8 @@ curl -o aichat-wait.py ${origin}/tools/aichat-wait.py
         "hooks": [
           {
             "type": "command",
-            "command": "python aichat-wait.py --agent ${nameVal} --hook claude-code",
-            "timeout": 60
+            "command": "python aichat-wait.py --agent ${nameVal} --hook claude-code --timeout ${cmdTimeout}",
+            "timeout": ${hookTimeoutVal}
           }
         ]
       }
@@ -1803,8 +1832,8 @@ python aichat-wait.py --agent ${nameVal}
         "hooks": [
           {
             "type": "command",
-            "command": "python aichat-wait.py --agent ${nameVal} --hook claude-code",
-            "timeout": 60
+            "command": "python aichat-wait.py --agent ${nameVal} --hook claude-code --timeout ${cmdTimeout}",
+            "timeout": ${hookTimeoutVal}
           }
         ]
       }
@@ -1831,7 +1860,7 @@ wait_for_work(timeout_seconds=55)`;
       } else {
         antigravity += `\n# Recomendação Antigravity: usar modo background via aichat-wait.py
 curl -o aichat-wait.py ${origin}/tools/aichat-wait.py
-# Perfil ~/.aichat/${nameVal}.json (permissões 600): {"url": "${origin}", "token": "${tokenVal}"}
+# Perfil ~/.aichat/${nameVal}.json (permissões 600): {"url": "${origin}", "token": "${tokenVal}", "hook_timeout": ${hookTimeoutVal}}
 python aichat-wait.py --agent ${nameVal}`;
       }
 
@@ -1856,7 +1885,7 @@ wait_for_work(timeout_seconds=55)`;
       } else {
         opencode += `\n# Execução via aichat-wait.py:
 curl -o aichat-wait.py ${origin}/tools/aichat-wait.py
-# Perfil ~/.aichat/${nameVal}.json (permissões 600): {"url": "${origin}", "token": "${tokenVal}"}
+# Perfil ~/.aichat/${nameVal}.json (permissões 600): {"url": "${origin}", "token": "${tokenVal}", "hook_timeout": ${hookTimeoutVal}}
 python aichat-wait.py --agent ${nameVal}${wakeMode === 'hook' ? ' --hook opencode' : ''}`;
       }
 
@@ -1869,7 +1898,8 @@ mkdir -p ~/.aichat && chmod 700 ~/.aichat
 cat << 'EOF' > ~/.aichat/${nameVal}.json
 {
   "url": "${origin}",
-  "token": "${tokenVal}"
+  "token": "${tokenVal}",
+  "hook_timeout": ${hookTimeoutVal}
 }
 EOF
 chmod 600 ~/.aichat/${nameVal}.json
@@ -1878,19 +1908,19 @@ chmod 600 ~/.aichat/${nameVal}.json
 python aichat-wait.py --agent ${nameVal}`;
       if (wakeMode === 'hook') {
         wait += `\n\n# Ou como hook no fecho do turno:
-python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'}`;
+python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'} --timeout ${cmdTimeout}`;
       }
 
       return { claude, antigravity, opencode, wait };
     }
 
-    function showGeneratedToken(token, hint, agentName = '', harness = 'claude-code', wakeMode = 'background') {
+    function showGeneratedToken(token, hint, agentName = '', harness = 'claude-code', wakeMode = 'background', hookTimeout = 1800) {
       document.getElementById('td-token-value').textContent = token;
       document.getElementById('td-token-hint').textContent = hint || (token ? token.slice(-4) : '');
       const copyBtn = document.getElementById('td-copy-btn-text');
       if (copyBtn) copyBtn.textContent = 'Copiar';
 
-      const snippets = buildMcpSnippets(token, agentName, harness, wakeMode);
+      const snippets = buildMcpSnippets(token, agentName, harness, wakeMode, hookTimeout);
       ['claude', 'antigravity', 'opencode', 'wait'].forEach(t => {
         const el = document.getElementById(`td-snippet-${t}`);
         if (el && snippets[t]) el.textContent = snippets[t];

@@ -120,8 +120,8 @@ Configure as a `Stop` hook in `~/.claude/settings.json` for autonomous agent ses
         "hooks": [
           {
             "type": "command",
-            "command": "python tools/aichat-wait.py --agent Builder --hook claude-code",
-            "timeout": 60
+            "command": "python tools/aichat-wait.py --agent Builder --hook claude-code --timeout 1740",
+            "timeout": 1800
           }
         ]
       }
@@ -130,6 +130,7 @@ Configure as a `Stop` hook in `~/.claude/settings.json` for autonomous agent ses
 }
 ```
 > **Aviso:** O modo hook é dedicado exclusivamente a **sessões autónomas do agente**. Não utilize nem misture em sessões interativas humanas.
+> **Alinhamento de Tempos:** O hook usa um timeout alargado (1800s / 30 min por omissão) para que o agente ocioso não gaste um turno por minuto. O comando gerado passa sempre `--timeout 1740` com margem de segurança (60s abaixo do hook), garantindo que o `aichat-wait.py` responde sempre antes do Claude Code interromper o processo. O valor é configurável no perfil (`~/.aichat/<agente>.json` com `"hook_timeout": 1800`) ou via argumento `--hook-timeout`.
 
 When messages arrive or when the timeout is reached with no work, the hook returns `{"decision": "block", "reason": "..."}` with exit code `0`, keeping the autonomous agent session active in its loop waiting for tasks without terminating. If the server is temporarily unreachable, the script automatically retries with exponential backoff within the hook timeout before returning a graceful block decision.
 

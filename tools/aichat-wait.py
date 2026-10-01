@@ -58,13 +58,13 @@ def get_aichat_dir() -> Path:
     return p
 
 
-def resolve_credentials(agent_name: str = "", base_url: str = "") -> Tuple[str, str]:
+def resolve_credentials(agent_name: str = "", base_url: str = "") -> Tuple[str, str, Optional[int]]:
     """
-    Resolve o token e url a partir de:
-    1. Variável de ambiente (AICHAT_AGENT_TOKEN, AICHAT_TOKEN, AI_CHAT_TOKEN)
+    Resolve o token, url e hook_timeout a partir de:
+    1. Variável de ambiente (AICHAT_AGENT_TOKEN, AICHAT_TOKEN, AI_CHAT_TOKEN, AICHAT_HOOK_TIMEOUT)
     2. Perfil do agente (~/.aichat/<agent>.json)
     3. Perfil padrão (~/.aichat/config.json)
-    Devolve (token, resolved_url).
+    Devolve (token, resolved_url, profile_hook_timeout).
     """
     env_token = (
         os.environ.get("AICHAT_AGENT_TOKEN")
@@ -80,6 +80,12 @@ def resolve_credentials(agent_name: str = "", base_url: str = "") -> Tuple[str, 
 
     token = env_token
     resolved_url = base_url or env_url
+    profile_hook_timeout: Optional[int] = None
+    if os.environ.get("AICHAT_HOOK_TIMEOUT"):
+        try:
+            profile_hook_timeout = int(os.environ["AICHAT_HOOK_TIMEOUT"])
+        except (ValueError, TypeError):
+            pass
 
     aichat_dir = get_aichat_dir()
     profiles_to_check: list[Path] = []
@@ -95,7 +101,12 @@ def resolve_credentials(agent_name: str = "", base_url: str = "") -> Tuple[str, 
                     token = (cfg.get("token") or cfg.get("agent_token") or "").strip()
                 if not resolved_url and cfg.get("url"):
                     resolved_url = cfg.get("url").strip()
-                if token:
+                if profile_hook_timeout is None and cfg.get("hook_timeout") is not None:
+                    try:
+                        profile_hook_timeout = int(cfg["hook_timeout"])
+                    except (ValueError, TypeError):
+                        pass
+                if token and profile_hook_timeout is not None:
                     break
             except Exception:
                 pass
@@ -103,7 +114,7 @@ def resolve_credentials(agent_name: str = "", base_url: str = "") -> Tuple[str, 
     if not resolved_url:
         resolved_url = "http://localhost:8000"
 
-    return token, resolved_url
+    return token, resolved_url, profile_hook_timeout
 
 
 def get_last_batch_id(agent_name: str = "") -> str:
@@ -196,6 +207,12 @@ Exemplos:
         type=int,
         default=default_timeout,
         help=f"Tempo limite em segundos para long-polling (padrão: {default_timeout}s)",
+    )
+    parser.add_argument(
+        "--hook-timeout",
+        type=int,
+        default=None,
+        help="Timeout do hook configurado no harness em segundos (ex: 1800). No modo --hook, --timeout deve ser inferior.",
     )
     parser.add_argument(
         "--ack",
@@ -346,6 +363,7 @@ def run_register(callsign: str, base_url: str) -> int:
             "url": base_url,
             "token": token,
             "status": resp.get("status", "pending"),
+            "hook_timeout": 1800,
         }
         prof_file.write_text(json.dumps(profile_data, indent=2, ensure_ascii=False), encoding="utf-8")
         status_msg = resp.get("message") or "Pedido de registo submetido. Aguarda aprovação em /admin."
@@ -498,7 +516,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.register:
         return run_register(args.register, args.url)
 
-    token, base_url = resolve_credentials(agent_name=args.agent, base_url=args.url)
+    token, base_url, profile_hook_timeout = resolve_credentials(agent_name=args.agent, base_url=args.url)
 
     if args.selftest:
         return run_selftest(args, token, base_url)
@@ -532,7 +550,35 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.room:
         params["room"] = args.room
 
-    hook_timeout = float(max(0, args.timeout))
+    effective_hook_timeout: Optional[int] = None
+    if args.hook_timeout is not None and args.hook_timeout > 0:
+        effective_hook_timeout = args.hook_timeout
+    elif profile_hook_timeout is not None and profile_hook_timeout > 0:
+        effective_hook_timeout = profile_hook_timeout
+
+    effective_timeout = max(0, args.timeout)
+
+    if args.hook != "none" and effective_hook_timeout is not None:
+        if effective_hook_timeout >= 120:
+            margin = 60
+        elif effective_hook_timeout >= 10:
+            margin = max(2, int(effective_hook_timeout * 0.1))
+        elif effective_hook_timeout > 1:
+            margin = 1
+        else:
+            margin = 0
+        safe_timeout = max(0, effective_hook_timeout - margin)
+
+        if args.timeout >= effective_hook_timeout:
+            print(
+                f"[AVISO] No modo --hook ({args.hook}), o --timeout ({args.timeout}s) deve ser inferior ao timeout do hook ({effective_hook_timeout}s). A ajustar tempo de espera para {safe_timeout}s.",
+                file=sys.stderr,
+            )
+            effective_timeout = safe_timeout
+        elif args.timeout > safe_timeout and safe_timeout > 0:
+            effective_timeout = safe_timeout
+
+    hook_timeout = float(max(0, effective_timeout))
     start_time = time.monotonic()
     backoff = 1.0
     max_backoff = 16.0
@@ -540,13 +586,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     while True:
         elapsed = time.monotonic() - start_time
         remaining = max(0.0, hook_timeout - elapsed)
+        if args.hook == "claude-code" and hook_timeout > 0 and remaining <= 0:
+            print(
+                json.dumps({
+                    "decision": "block",
+                    "reason": "Sem novas mensagens no ai-chat. Continua à escuta e aguarda novas tarefas no próximo ciclo.",
+                }, ensure_ascii=False, indent=2)
+            )
+            return EXIT_SUCCESS
+
         if args.hook == "claude-code":
-            poll_timeout = int(remaining)
+            poll_timeout = max(0, int(round(remaining)))
         else:
-            poll_timeout = max(0, args.timeout)
+            poll_timeout = max(0, effective_timeout)
 
         params["timeout_seconds"] = poll_timeout
-        http_timeout = max(30.0, float(poll_timeout) + 30.0)
+        if effective_hook_timeout is not None and args.hook == "claude-code":
+            http_timeout = max(1.0, min(float(poll_timeout) + 15.0, float(effective_hook_timeout) - elapsed - 0.5))
+        else:
+            http_timeout = max(30.0, float(poll_timeout) + 30.0)
 
         if args.verbose:
             masked = mask_token(token)
