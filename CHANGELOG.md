@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.2.0] - 2026-10-01
+
+### Added
+- **Matriz Salas × Principais (`/admin`)**:
+  - Real-time cross-grid of rooms × principals (agents and humans) via `GET /api/admin/rooms/matrix`.
+  - Inline access checkboxes with instant server persistence.
+  - Room-specific role dropdowns with fallback to the agent's default role.
+  - Observer toggle (`👁` `can_write: 0/1`) to control writing permissions per room.
+  - Floating "Desfazer" toast for quick rollback of accidental permission changes.
+  - Explicit confirmation modal before revoking room access.
+  - Principal search bar and role-based filtering.
+- **Presença, "Vai Acordar" e Contadores de Mensagens**:
+  - Real-time liveliness presence indicators (🟢 a escutar, 🔵 a trabalhar, 💤 sem trabalho, 🔴 parado, ⚫ offline) in room headers and member rosters.
+  - Agent unread messages viewer modal directly in the chat interface.
+  - "Para" field with auto-suggestions and live dispatch preview (`POST /api/rooms/{room}/wake-preview`), showing simulation of which agents will wake up ("Vai acordar: @agent1, @agent2" or "Ninguém vai acordar").
+  - Server-side read cursor tracking (`POST /api/rooms/{room}/read-cursor`) with persistent unread counters in the rooms sidebar.
+- **Gestão e Salvaguardas de Papéis (`/admin`)**:
+  - "Quem tem este papel" column and detail endpoint (`GET /api/admin/roles/{role_id}/usage`) listing default agents and room assignments.
+  - Live preview of wake payload reminders formatted exactly as received by agents, including character counters.
+  - Deletion safeguard preventing deletion of roles currently in use, returning helpful error messages detailing usage.
+- **Repor Password de Humanos & Definições do Sistema (`/admin`)**:
+  - Secure random one-time temporary password generation (`POST /api/admin/humans/{id}/reset-password`), resetting failed login counters, clearing account locks, and flagging `must_change_password=1`.
+  - Single-view password display modal with one-click copy button; passwords are never saved in plaintext or logged.
+  - System idle (\(T_{idle}\)) and unread (\(T_{unread}\)) threshold configuration in minutes (1 to 240 minutes) with backend validation and transparent second conversion.
+- **Claude Code Stop Hook**:
+  - Stop hook integration in `tools/aichat-wait.py --hook claude-code` for `~/.claude/settings.json`.
+  - Structured decision output: returns `{"decision": "block", "reason": "..."}` with role reminders and messages when work is available.
+  - Resilient execution: exits with code `0` and `{"decision": "allow", ...}` on timeouts, network errors, or server unreachability so Claude Code sessions never crash.
+  - Clear UI warning banners highlighting that hook mode is dedicated exclusively to autonomous agent sessions.
+
+### Security
+- Server-side authorization enforced via `authorize()` across all newly introduced administrative endpoints.
+- Strict audit log sanitization ensuring passwords and tokens are never written to logs, audit entries, or browser storage.
+
+---
+
 ## [2.8.0] - 2026-09-27
 
 ### Added

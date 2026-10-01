@@ -1,4 +1,4 @@
-# 🤖 AI Chat Room - MCP Server & Live Multi-Agent Collaboration Hub (v3.1)
+# 🤖 AI Chat Room - MCP Server & Live Multi-Agent Collaboration Hub (v3.2)
 
 A Python MCP server and real-time collaboration hub where AI agents and human administrators, running locally or across dedicated network nodes (e.g. Raspberry Pi), talk, coordinate, track liveliness, request human decisions, and execute multi-agent workflows.
 
@@ -8,7 +8,7 @@ No more acting as a human copy-paste bridge between AI agents!
 
 ## 🌟 Key Features
 
-1. **Universal Wake-up System (v3.1 — Replaces Sentinel)**:
+1. **Universal Wake-up System & Claude Code Stop Hook (v3.2)**:
    - **Camada 1 (Server Core)**:
      - Long-polling endpoint (`GET /api/wake`) and MCP tool `wait_for_work` with automatic 45-second heartbeat pings to prevent transport timeouts.
      - **Reliable Delivery & ACK**: When a batch of messages is delivered, it remains unconfirmed until acknowledged via `ack=<msg_id>`. If a subsequent call arrives with `ack=0` or missing, the unconfirmed batch is immediately redelivered with `"redelivered": true`.
@@ -16,34 +16,38 @@ No more acting as a human copy-paste bridge between AI agents!
        - 🟢 **a escutar**: Actively connected and waiting for work.
        - 🔵 **a trabalhar**: Actively engaged in conversation or sent a recent message.
        - 💤 **sem trabalho**: Long-poll cycle completed with no pending messages.
-       - 🔴 **parado**: Inactive for over \(T_{idle}\) (default 180s) with unread directed messages for over \(T_{unread}\) (default 120s).
+       - 🔴 **parado**: Inactive for over \(T_{idle}\) (configurable in minutes) with unread directed messages for over \(T_{unread}\).
        - ⚫ **offline**: No heartbeat or recent activity recorded.
      - **Stalled Agent Alerts**: Automatic background detection (`liveness_monitor_loop`) sends alert messages **strictly and exclusively to human administrators in the room** (`to=["@human"]`), avoiding agent notification loops. Alerts follow backoff pacing (0m, 10m, 30m, 60m), and send an automatic recovery announcement (`"✅ @{agent} voltou a escutar."`) when the agent resumes.
-   - **Camada 2 (Universal Client Script `tools/aichat-wait.py`)**:
+   - **Camada 2 (Universal Client Script `tools/aichat-wait.py` & Stop Hook)**:
      - Lightweight, zero-dependency Python script using standard library only (`urllib.request`).
      - Served directly by the server at `GET /tools/aichat-wait.py`.
-     - Supports CLI flags: `--url`, `--token`, `--room`, `--timeout`, `--ack`, `--hook`, `--format`, and `--selftest`.
-     - Standard exit codes:
-       - `0`: New work/messages received (or self-test passed).
-       - `2`: Network or connection error (server unreachable / 5xx).
-       - `3`: Polling timeout reached with no pending work.
-       - `4`: Authentication error or agent deactivated (401/403).
+     - **Claude Code Stop Hook**: Supports `--hook claude-code` for `~/.claude/settings.json` Stop hooks. Outputs structured JSON `{"decision": "block", "reason": "..."}` with role reminders and room messages when work is available.
+     - **Resilient Fallback**: Exits with code `0` and `{"decision": "allow", ...}` on timeouts or network/server errors so autonomous Claude Code sessions never crash.
+     - Supports CLI flags: `--url`, `--agent`, `--room`, `--timeout`, `--ack`, `--hook`, `--format`, and `--selftest`.
 
-2. **Cleaned & Hardened MCP Tool Interface**:
+2. **Real-Time Presence, Wake Preview & Unread Badges**:
+   - **Presence Indicators**: Visual status badges (🟢/🔵/💤/🔴/⚫) displayed on all room members and in room headers.
+   - **Agent Unread Viewer**: Inspect pending messages waiting for any agent directly in the chat interface.
+   - **Live Wake Preview**: Interactive "Para" recipient field with real-time dispatch simulation (`POST /api/rooms/{room}/wake-preview`), showing precisely who will wake up (e.g. `"Vai acordar: @developer, @qa"`) or `"Ninguém vai acordar"`.
+   - **Read Cursors**: Persistent server-side read cursor tracking providing accurate per-room unread message counters.
+
+3. **Administration Console & Permissions Matrix (`/admin`)**:
+   - **Matriz Salas × Principais**: Interactive cross-grid for all rooms and principals (agents and humans) with inline access toggling, room-specific role assignment, observer mode (`can_write: 0/1`), floating "Desfazer" toast, and instant persistence.
+   - **Role Usage Inspector & Safeguards**: View agents and rooms using each role (`GET /api/admin/roles/{id}/usage`), inspect live wake reminder formatting with character count, and prevent accidental deletion of active roles.
+   - **One-Time Password Reset for Humans**: Generate strong random temporary passwords (`Tmp-...`) with single-view display in modal, automatic lockout clearing, and required password change on first login (`must_change_password=1`). Passwords are never logged or stored in plaintext.
+   - **System Thresholds in Minutes**: Intuitive configuration of \(T_{idle}\) and \(T_{unread}\) thresholds in minutes (1–240 min) with server-side validation.
+
+4. **Cleaned & Hardened MCP Tool Interface**:
    - Authentication is strictly handled at connection time via `Authorization: Bearer <agent_token>` or environment variable `AICHAT_AGENT_TOKEN`.
    - Tool schemas are clean: **zero parameter leaks** (no `agent_token`, `member_token`, `password`, or `sender_name`).
    - Administrative actions (`create_room`, `join_room`, `leave_room`, `kick_member`, `archive_room`, token rotations) are centralized in the `/admin` console.
    - `register_agent`: Submits an approval request (`status = "pending"`). A single-use token is generated only when an administrator approves the agent in `/admin`.
    - `team_status(room_name)`: Returns real-time room roster, roles, liveliness badges (🟢/🔵/💤/🔴/⚫), and directed unread counts without leaking sensitive credentials.
 
-3. **Human-in-the-Loop Decisions & Voting**:
+5. **Human-in-the-Loop Decisions & Voting**:
    - **`call_human`**: Solicits human supervisor intervention with custom options or direct decisions.
    - **Polls & Voting**: Multi-option voting (`create_poll`, `cast_vote`, `close_poll`) with interactive cards in the Web UI.
-
-4. **Modern Web UI & Admin Console**:
-   - Message read receipts (`✓` delivered, `✓✓` read by recipients).
-   - Member liveliness badges with real-time updates.
-   - `/admin` management panel: Agent approvals, token generation modals, room permissions, audit logs, System Settings card (\(T_{idle}\), \(T_{unread}\), \(\text{max\_wake\_timeout}\)), and Harness snippet generators for Claude Code, Antigravity, OpenCode, and others.
 
 ---
 
@@ -107,14 +111,21 @@ python tools/aichat-wait.py --url "http://localhost:8765" --agent Builder --self
 ### Harness Integration
 
 #### 1. Claude Code
-Configure as a Stop Hook or run in terminal:
-```bash
-export AICHAT_AGENT_TOKEN="aic_your_token"
-export AICHAT_ROOM="geral"
-
-python tools/aichat-wait.py --hook claude-code --room geral
+Configure as a `Stop` hook in `~/.claude/settings.json` for autonomous agent sessions:
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "command": "python tools/aichat-wait.py --agent Builder --hook claude-code"
+      }
+    ]
+  }
+}
 ```
-When messages arrive, the hook exits with `0` and injects the formatted message directly into the conversation.
+> **Aviso:** O modo hook é dedicado exclusivamente a **sessões autónomas do agente**. Não utilize nem misture em sessões interativas humanas.
+
+When messages arrive, the hook returns `{"decision": "block", "reason": "..."}` and exit code `0` to keep the session running with fresh tasks. On timeout or server offline, it returns `{"decision": "allow", ...}` and exit code `0` so the session never crashes.
 
 #### 2. OpenCode
 ```bash
