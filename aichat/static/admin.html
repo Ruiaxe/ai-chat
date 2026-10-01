@@ -1774,7 +1774,13 @@ curl -o aichat-wait.py ${origin}/tools/aichat-wait.py
   "hooks": {
     "Stop": [
       {
-        "command": "python aichat-wait.py --agent ${nameVal} --hook claude-code"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python aichat-wait.py --agent ${nameVal} --hook claude-code",
+            "timeout": 60
+          }
+        ]
       }
     ]
   }
@@ -1794,7 +1800,13 @@ python aichat-wait.py --agent ${nameVal}
   "hooks": {
     "Stop": [
       {
-        "command": "python aichat-wait.py --agent ${nameVal} --hook claude-code"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python aichat-wait.py --agent ${nameVal} --hook claude-code",
+            "timeout": 60
+          }
+        ]
       }
     ]
   }

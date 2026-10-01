@@ -2792,6 +2792,47 @@ class StorageV3:
 
         return resolved
 
+    def validate_room_recipients(
+        self,
+        room_name_or_id: int | str | dict[str, Any],
+        recipients: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """
+        Validates that all targeted recipients have access to the room (or that targeted roles
+        are assigned to at least one member with access). Raises ValueError on failure.
+        """
+        room = room_name_or_id if isinstance(room_name_or_id, dict) else self._resolve_room(room_name_or_id)
+        if not room:
+            raise ValueError(f"Sala '{room_name_or_id}' não encontrada.")
+
+        for r in recipients:
+            t_kind = r.get("target_kind")
+            t_id = r.get("target_id")
+            t_name = r.get("target_name") or ""
+            if t_kind == "principal":
+                if t_id == 0:
+                    continue
+                p_recip = self.get_principal_by_id(t_id)
+                if p_recip and p_recip.get("kind") == "human" and p_recip.get("access_role") == "admin":
+                    continue
+                access = self.get_room_access(room["id"], t_id)
+                if not access:
+                    raise ValueError(f"Destinatário '@{t_name}' não tem acesso à sala '{room['name']}'.")
+            elif t_kind == "role":
+                conn = self._get_connection()
+                has_member = conn.execute(
+                    """
+                    SELECT 1 FROM room_access ra
+                    LEFT JOIN agents a ON ra.principal_id = a.principal_id
+                    WHERE ra.room_id = ? AND (ra.role_id = ? OR (ra.role_id IS NULL AND a.default_role_id = ?));
+                    """,
+                    (room["id"], t_id, t_id),
+                ).fetchone()
+                if not has_member:
+                    raise ValueError(f"O papel '@{t_name}' não está atribuído a nenhum membro com acesso à sala '{room['name']}'.")
+
+        return recipients
+
     @staticmethod
     def _format_to_list(recipients: list[dict[str, Any]]) -> list[str]:
         if not recipients:
@@ -2891,33 +2932,7 @@ class StorageV3:
         verified_int = 1 if is_verified else 0
 
         target_list = self.resolve_recipients(to if to is not None else recipients)
-
-        # Validate that targeted recipients have access to the room
-        for r in target_list:
-            t_kind = r.get("target_kind")
-            t_id = r.get("target_id")
-            t_name = r.get("target_name") or ""
-            if t_kind == "principal":
-                if t_id == 0:
-                    continue
-                p_recip = self.get_principal_by_id(t_id)
-                if p_recip and p_recip.get("kind") == "human" and p_recip.get("access_role") == "admin":
-                    continue
-                access = self.get_room_access(room["id"], t_id)
-                if not access:
-                    raise ValueError(f"Destinatário '@{t_name}' não tem acesso à sala '{room['name']}'.")
-            elif t_kind == "role":
-                conn = self._get_connection()
-                has_member = conn.execute(
-                    """
-                    SELECT 1 FROM room_access ra
-                    LEFT JOIN agents a ON ra.principal_id = a.principal_id
-                    WHERE ra.room_id = ? AND (ra.role_id = ? OR (ra.role_id IS NULL AND a.default_role_id = ?));
-                    """,
-                    (room["id"], t_id, t_id),
-                ).fetchone()
-                if not has_member:
-                    raise ValueError(f"O papel '@{t_name}' não está atribuído a nenhum membro com acesso à sala '{room['name']}'.")
+        self.validate_room_recipients(room, target_list)
 
         conn = self._get_connection()
         with conn:
@@ -3144,7 +3159,9 @@ class StorageV3:
         row = cur.fetchone()
         return row[0] if row else 0
 
-    def update_read_cursor(self, principal_id: int | str, room_name_or_id: int | str, last_message_id: int) -> None:
+    get_max_message_id_in_room = get_max_message_id
+
+    def update_read_cursor(self, principal_id: int | str, room_name_or_id: int | str, last_message_id: int, clamp_to_max: bool = False) -> None:
         """Updates or sets read position for a principal in a room."""
         room = self._resolve_room(room_name_or_id)
         p_id = principal_id
@@ -3157,6 +3174,10 @@ class StorageV3:
             return
         conn = self._get_connection()
         now_str = utc_now()
+        effective_mid = int(last_message_id)
+        if clamp_to_max:
+            max_mid = self.get_max_message_id(room["id"])
+            effective_mid = min(max(0, effective_mid), max_mid)
         with conn:
             conn.execute(
                 """
@@ -3166,7 +3187,7 @@ class StorageV3:
                     last_message_id = MAX(read_cursors.last_message_id, excluded.last_message_id),
                     updated_at = excluded.updated_at;
                 """,
-                (int(p_id), room["id"], last_message_id, now_str),
+                (int(p_id), room["id"], effective_mid, now_str),
             )
 
     def get_read_cursor(self, principal_id: int | str, room_name_or_id: int | str) -> int:

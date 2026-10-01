@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Real-time liveliness presence indicators (🟢 a escutar, 🔵 a trabalhar, 💤 sem trabalho, 🔴 parado, ⚫ offline) in room headers and member rosters.
   - Agent unread messages viewer modal directly in the chat interface.
   - "Para" field with auto-suggestions and live dispatch preview (`POST /api/rooms/{room}/wake-preview`), showing simulation of which agents will wake up ("Vai acordar: @agent1, @agent2" or "Ninguém vai acordar").
-  - Server-side read cursor tracking (`POST /api/rooms/{room}/read-cursor`) with persistent unread counters in the rooms sidebar.
+  - Shared recipient validation between `wake-preview` and `add_message` via common `validate_room_recipients()`, ensuring identical HTTP 400 validation errors for inaccessible recipients and empty roles.
+  - Server-side read cursor tracking (`POST /api/rooms/{room}/read-cursor`) with persistent unread counters; restricted strictly to human users (rejecting agents with 403) and automatically clamped to the room's maximum message ID to prevent cursor overruns.
 - **Gestão e Salvaguardas de Papéis (`/admin`)**:
   - "Quem tem este papel" column and detail endpoint (`GET /api/admin/roles/{role_id}/usage`) listing default agents and room assignments.
   - Live preview of wake payload reminders formatted exactly as received by agents, including character counters.
@@ -32,9 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Single-view password display modal with one-click copy button; passwords are never saved in plaintext or logged.
   - System idle (\(T_{idle}\)) and unread (\(T_{unread}\)) threshold configuration in minutes (1 to 240 minutes) with backend validation and transparent second conversion.
 - **Claude Code Stop Hook**:
-  - Stop hook integration in `tools/aichat-wait.py --hook claude-code` for `~/.claude/settings.json`.
+  - Stop hook integration in `tools/aichat-wait.py --hook claude-code` following official schema: `"Stop": [ { "hooks": [ { "type": "command", "command": "...", "timeout": 60 } ] } ]`.
   - Structured decision output: returns `{"decision": "block", "reason": "..."}` with role reminders and messages when work is available.
-  - Resilient execution: exits with code `0` and `{"decision": "allow", ...}` on timeouts, network errors, or server unreachability so Claude Code sessions never crash.
+  - Continuous autonomous loop: returns `{"decision": "block", "reason": "..."}` with instructions to continue listening on timeouts, keeping the autonomous session active rather than stopping prematurely.
+  - Resilient network backoff: retries transient connection errors and 5xx responses with exponential backoff within the hook timeout before exiting cleanly with code 0 (preventing session crashes).
   - Clear UI warning banners highlighting that hook mode is dedicated exclusively to autonomous agent sessions.
 
 ### Security

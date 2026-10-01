@@ -117,7 +117,13 @@ Configure as a `Stop` hook in `~/.claude/settings.json` for autonomous agent ses
   "hooks": {
     "Stop": [
       {
-        "command": "python tools/aichat-wait.py --agent Builder --hook claude-code"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python tools/aichat-wait.py --agent Builder --hook claude-code",
+            "timeout": 60
+          }
+        ]
       }
     ]
   }
@@ -125,7 +131,7 @@ Configure as a `Stop` hook in `~/.claude/settings.json` for autonomous agent ses
 ```
 > **Aviso:** O modo hook é dedicado exclusivamente a **sessões autónomas do agente**. Não utilize nem misture em sessões interativas humanas.
 
-When messages arrive, the hook returns `{"decision": "block", "reason": "..."}` and exit code `0` to keep the session running with fresh tasks. On timeout or server offline, it returns `{"decision": "allow", ...}` and exit code `0` so the session never crashes.
+When messages arrive or when the timeout is reached with no work, the hook returns `{"decision": "block", "reason": "..."}` with exit code `0`, keeping the autonomous agent session active in its loop waiting for tasks without terminating. If the server is temporarily unreachable, the script automatically retries with exponential backoff within the hook timeout before returning a graceful block decision.
 
 #### 2. OpenCode
 ```bash

@@ -26,6 +26,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -425,9 +426,9 @@ def format_claude_code_hook(data: Dict[str, Any], default_room: str) -> str:
     messages = data.get("messages", [])
     if not messages:
         return json.dumps({
-            "decision": "allow",
-            "message": "Sem novas tarefas no ai-chat. A aguardar próximo ciclo.",
-        }, ensure_ascii=False)
+            "decision": "block",
+            "reason": "Sem novas mensagens no ai-chat. Continua à escuta e aguarda novas tarefas no próximo ciclo.",
+        }, ensure_ascii=False, indent=2)
 
     lines = ["Nova atividade no ai-chat:"]
     role_reminder = data.get("role_reminder")
@@ -506,9 +507,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.hook == "claude-code":
             print(
                 json.dumps({
-                    "decision": "allow",
-                    "message": "Aviso ai-chat: Token não configurado. Defina AICHAT_AGENT_TOKEN ou perfil em ~/.aichat/<agente>.json.",
-                }, ensure_ascii=False)
+                    "decision": "block",
+                    "reason": "Aviso ai-chat: Token não configurado. Defina AICHAT_AGENT_TOKEN ou perfil em ~/.aichat/<agente>.json.",
+                }, ensure_ascii=False, indent=2)
             )
             return EXIT_SUCCESS
         print(
@@ -524,7 +525,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         effective_ack = get_last_batch_id(args.agent)
 
     params: Dict[str, Any] = {
-        "timeout_seconds": max(0, args.timeout),
         "format": "json",
     }
     if effective_ack:
@@ -532,67 +532,89 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.room:
         params["room"] = args.room
 
-    # Timeout HTTP um pouco maior que o timeout de long-polling para permitir resposta do servidor
-    http_timeout = max(30.0, float(args.timeout) + 30.0)
+    hook_timeout = float(max(0, args.timeout))
+    start_time = time.monotonic()
+    backoff = 1.0
+    max_backoff = 16.0
 
-    if args.verbose:
-        masked = mask_token(token)
-        print(
-            f"[DEBUG] A escutar {base_url}/api/wake (timeout={args.timeout}s, room={args.room or 'todas'}, ack={effective_ack or 'none'}, token={masked})",
-            file=sys.stderr,
-        )
+    while True:
+        elapsed = time.monotonic() - start_time
+        remaining = max(0.0, hook_timeout - elapsed)
+        if args.hook == "claude-code":
+            poll_timeout = int(remaining)
+        else:
+            poll_timeout = max(0, args.timeout)
 
-    try:
-        code, data = make_request(base_url, "/api/wake", token, params=params, timeout_seconds=http_timeout)
-    except ConnectionError as ce:
-        if args.hook == "claude-code":
+        params["timeout_seconds"] = poll_timeout
+        http_timeout = max(30.0, float(poll_timeout) + 30.0)
+
+        if args.verbose:
+            masked = mask_token(token)
             print(
-                json.dumps({
-                    "decision": "allow",
-                    "message": f"Aviso ai-chat: Erro de rede ou servidor indisponível ({ce}). A aguardar próximo ciclo.",
-                }, ensure_ascii=False)
+                f"[DEBUG] A escutar {base_url}/api/wake (timeout={poll_timeout}s, room={args.room or 'todas'}, ack={effective_ack or 'none'}, token={masked})",
+                file=sys.stderr,
             )
-            return EXIT_SUCCESS
-        print(f"[ERRO] {ce}", file=sys.stderr)
-        return EXIT_CONNECTION_ERROR
-    except Exception as e:
-        if args.hook == "claude-code":
-            print(
-                json.dumps({
-                    "decision": "allow",
-                    "message": f"Aviso ai-chat: Erro inesperado na ligação ({e}). A aguardar próximo ciclo.",
-                }, ensure_ascii=False)
-            )
-            return EXIT_SUCCESS
-        print(f"[ERRO] Erro inesperado na ligação: {e}", file=sys.stderr)
-        return EXIT_GENERAL_ERROR
+
+        try:
+            code, data = make_request(base_url, "/api/wake", token, params=params, timeout_seconds=http_timeout)
+            if code >= 500:
+                err = data.get("error", f"Erro no servidor (HTTP {code})")
+                raise ConnectionError(f"Servidor indisponível ({err})")
+            break
+        except (ConnectionError, urllib.error.URLError, OSError) as ce:
+            if args.hook != "claude-code":
+                print(f"[ERRO] {ce}", file=sys.stderr)
+                return EXIT_CONNECTION_ERROR
+
+            elapsed = time.monotonic() - start_time
+            remaining = hook_timeout - elapsed
+            if remaining <= 0 or hook_timeout <= 0:
+                print(
+                    json.dumps({
+                        "decision": "block",
+                        "reason": f"Aviso ai-chat: Servidor indisponível ({ce}) após tentativas com backoff. Continua à escuta no próximo ciclo.",
+                    }, ensure_ascii=False, indent=2)
+                )
+                return EXIT_SUCCESS
+
+            sleep_duration = min(backoff, remaining)
+            if args.verbose:
+                print(f"[DEBUG] Servidor indisponível ({ce}). Nova tentativa em {sleep_duration:.1f}s...", file=sys.stderr)
+            time.sleep(sleep_duration)
+            backoff = min(backoff * 2.0, max_backoff)
+        except Exception as e:
+            if args.hook == "claude-code":
+                print(
+                    json.dumps({
+                        "decision": "block",
+                        "reason": f"Aviso ai-chat: Erro inesperado na ligação ({e}). Continua à escuta no próximo ciclo.",
+                    }, ensure_ascii=False, indent=2)
+                )
+                return EXIT_SUCCESS
+            print(f"[ERRO] Erro inesperado na ligação: {e}", file=sys.stderr)
+            return EXIT_GENERAL_ERROR
 
     if code in (401, 403):
         err = data.get("error", "Não autorizado ou agente desativado")
-        print(f"[ERRO] Acesso negado ({code}): {err}", file=sys.stderr)
-        return EXIT_AUTH_ERROR
-
-    if code >= 500:
-        err = data.get("error", f"Erro no servidor (HTTP {code})")
         if args.hook == "claude-code":
             print(
                 json.dumps({
-                    "decision": "allow",
-                    "message": f"Aviso ai-chat: Servidor indisponível ({err}). A aguardar próximo ciclo.",
-                }, ensure_ascii=False)
+                    "decision": "block",
+                    "reason": f"Aviso ai-chat: Acesso negado ({code}: {err}). Verifica as credenciais.",
+                }, ensure_ascii=False, indent=2)
             )
             return EXIT_SUCCESS
-        print(f"[ERRO] {err}", file=sys.stderr)
-        return EXIT_CONNECTION_ERROR
+        print(f"[ERRO] Acesso negado ({code}): {err}", file=sys.stderr)
+        return EXIT_AUTH_ERROR
 
     if code != 200:
         err = data.get("error", f"Código HTTP inesperado: {code}")
         if args.hook == "claude-code":
             print(
                 json.dumps({
-                    "decision": "allow",
-                    "message": f"Aviso ai-chat: Resposta inesperada ({err}). A aguardar próximo ciclo.",
-                }, ensure_ascii=False)
+                    "decision": "block",
+                    "reason": f"Aviso ai-chat: Resposta inesperada do servidor ({err}). Continua à escuta no próximo ciclo.",
+                }, ensure_ascii=False, indent=2)
             )
             return EXIT_SUCCESS
         print(f"[ERRO] {err}", file=sys.stderr)
@@ -608,9 +630,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.hook == "claude-code":
             print(
                 json.dumps({
-                    "decision": "allow",
-                    "message": f"Aviso ai-chat: Servidor reportou erro ({err_msg}). A aguardar próximo ciclo.",
-                }, ensure_ascii=False)
+                    "decision": "block",
+                    "reason": f"Aviso ai-chat: Servidor reportou erro ({err_msg}). Continua à escuta no próximo ciclo.",
+                }, ensure_ascii=False, indent=2)
             )
             return EXIT_SUCCESS
         if any(w in err_lower for w in ("autenticação", "acesso negado", "token", "desativado", "unauthorized", "forbidden")):
@@ -624,9 +646,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.hook == "claude-code":
             print(
                 json.dumps({
-                    "decision": "allow",
-                    "message": "Sem novas tarefas no ai-chat. A aguardar próximo ciclo.",
-                }, ensure_ascii=False)
+                    "decision": "block",
+                    "reason": "Sem novas mensagens no ai-chat. Continua à escuta e aguarda novas tarefas no próximo ciclo.",
+                }, ensure_ascii=False, indent=2)
             )
             return EXIT_SUCCESS
         elif args.format == "json" and args.hook == "none":

@@ -70,13 +70,13 @@ class TestV3Phase3ClaudeCodeHook(unittest.TestCase):
         self.assertIn("Processa estas mensagens e responde no ai-chat.", reason)
 
     def test_02_format_hook_without_work(self):
-        """Verifies JSON allow format when messages list is empty."""
+        """Verifies JSON block format with minimal waiting instruction when messages list is empty."""
         data = {"status": "timeout", "messages": []}
         output = aichat_wait.format_claude_code_hook(data, default_room="geral")
         parsed = json.loads(output)
 
-        self.assertEqual(parsed.get("decision"), "allow")
-        self.assertIn("Sem novas tarefas", parsed.get("message", ""))
+        self.assertEqual(parsed.get("decision"), "block")
+        self.assertIn("Sem novas mensagens", parsed.get("reason", ""))
 
     def test_03_main_hook_with_work(self):
         """Verifies main() returns 0 and outputs block JSON when work is returned."""
@@ -133,7 +133,7 @@ class TestV3Phase3ClaudeCodeHook(unittest.TestCase):
         self.assertIn("Verificar se o Stop hook está operacional.", parsed.get("reason", ""))
 
     def test_04_main_hook_timeout_no_work(self):
-        """Verifies main() returns 0 and outputs allow JSON on timeout."""
+        """Verifies main() returns 0 and outputs block JSON on timeout to keep agent loop active."""
         fake_response_data = {
             "status": "timeout",
             "messages": [],
@@ -167,11 +167,11 @@ class TestV3Phase3ClaudeCodeHook(unittest.TestCase):
         self.assertEqual(code, aichat_wait.EXIT_SUCCESS)
         output = out_buf.getvalue()
         parsed = json.loads(output)
-        self.assertEqual(parsed.get("decision"), "allow")
-        self.assertIn("Sem novas tarefas", parsed.get("message", ""))
+        self.assertEqual(parsed.get("decision"), "block")
+        self.assertIn("Sem novas mensagens", parsed.get("reason", ""))
 
     def test_05_main_hook_network_error_resilience(self):
-        """Verifies main() exits 0 and outputs allow JSON when network fails (no crash)."""
+        """Verifies main() exits 0 and outputs block JSON when network fails (no crash, keeps loop active)."""
         out_buf = io.StringIO()
         with patch.dict(os.environ, {"AICHAT_AGENT_TOKEN": "token_qa"}), \
              patch("urllib.request.urlopen", side_effect=urllib.error.URLError("Connection refused")), \
@@ -186,24 +186,11 @@ class TestV3Phase3ClaudeCodeHook(unittest.TestCase):
         self.assertEqual(code, aichat_wait.EXIT_SUCCESS)
         output = out_buf.getvalue()
         parsed = json.loads(output)
-        self.assertEqual(parsed.get("decision"), "allow")
-        self.assertIn("indisponível", parsed.get("message", "").lower())
+        self.assertEqual(parsed.get("decision"), "block")
+        self.assertIn("indisponível", parsed.get("reason", "").lower())
 
     def test_06_main_hook_server_500_resilience(self):
-        """Verifies main() exits 0 and outputs allow JSON when server returns 500 error."""
-        class Mock500Response:
-            def getcode(self):
-                return 500
-
-            def read(self):
-                return json.dumps({"error": "Erro interno de teste"}).encode("utf-8")
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                pass
-
+        """Verifies main() exits 0 and outputs block JSON when server returns 500 error."""
         out_buf = io.StringIO()
         err_500 = urllib.error.HTTPError(
             "http://testserver/api/wake",
@@ -225,10 +212,10 @@ class TestV3Phase3ClaudeCodeHook(unittest.TestCase):
         self.assertEqual(code, aichat_wait.EXIT_SUCCESS)
         output = out_buf.getvalue()
         parsed = json.loads(output)
-        self.assertEqual(parsed.get("decision"), "allow")
+        self.assertEqual(parsed.get("decision"), "block")
 
     def test_07_main_hook_missing_token_resilience(self):
-        """Verifies main() exits 0 and outputs allow JSON when token is missing in hook mode."""
+        """Verifies main() exits 0 and outputs block JSON when token is missing in hook mode."""
         out_buf = io.StringIO()
         with patch.dict(os.environ, {}, clear=True), patch("sys.stdout", out_buf):
             os.environ.pop("AICHAT_AGENT_TOKEN", None)
@@ -242,11 +229,11 @@ class TestV3Phase3ClaudeCodeHook(unittest.TestCase):
         self.assertEqual(code, aichat_wait.EXIT_SUCCESS)
         output = out_buf.getvalue()
         parsed = json.loads(output)
-        self.assertEqual(parsed.get("decision"), "allow")
-        self.assertIn("Token não configurado", parsed.get("message", ""))
+        self.assertEqual(parsed.get("decision"), "block")
+        self.assertIn("Token não configurado", parsed.get("reason", ""))
 
     def test_08_cli_subprocess_offline_server(self):
-        """Verifies actual subprocess execution against a closed port exits cleanly with code 0."""
+        """Verifies actual subprocess execution against a closed port exits cleanly with code 0 and decision block."""
         cmd = [
             sys.executable,
             str(TOOLS_SCRIPT),
@@ -261,7 +248,60 @@ class TestV3Phase3ClaudeCodeHook(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, f"Expected 0 but got {result.returncode}. Stderr: {result.stderr}")
         parsed = json.loads(result.stdout)
-        self.assertEqual(parsed.get("decision"), "allow")
+        self.assertEqual(parsed.get("decision"), "block")
+
+    def test_09_hook_retry_with_backoff_on_transient_failure(self):
+        """Verifies that transient connection failures trigger retries with increasing sleep intervals within hook timeout."""
+        calls = 0
+
+        class MockTransientResponse:
+            def getcode(self):
+                return 200
+
+            def read(self):
+                return json.dumps({
+                    "status": "new_work",
+                    "messages": [{"id": 99, "sender": "rui", "content": "Sucesso após retry!"}],
+                }).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+        def side_effect_urlopen(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise urllib.error.URLError("Temporary connection glitch")
+            return MockTransientResponse()
+
+        sleep_calls = []
+
+        def mock_sleep(seconds):
+            sleep_calls.append(seconds)
+
+        out_buf = io.StringIO()
+        with patch.dict(os.environ, {"AICHAT_AGENT_TOKEN": "token_qa"}), \
+             patch("urllib.request.urlopen", side_effect=side_effect_urlopen), \
+             patch("time.sleep", side_effect=mock_sleep), \
+             patch("sys.stdout", out_buf):
+            code = aichat_wait.main([
+                "--url", "http://testserver",
+                "--agent", "qa-bot",
+                "--timeout", "10",
+                "--hook", "claude-code",
+            ])
+
+        self.assertEqual(code, aichat_wait.EXIT_SUCCESS)
+        self.assertEqual(calls, 3)
+        # Verify increasing intervals
+        self.assertGreaterEqual(len(sleep_calls), 2)
+        self.assertGreater(sleep_calls[1], sleep_calls[0])
+        parsed = json.loads(out_buf.getvalue())
+        self.assertEqual(parsed.get("decision"), "block")
+        self.assertIn("Sucesso após retry!", parsed.get("reason", ""))
 
 
 if __name__ == "__main__":

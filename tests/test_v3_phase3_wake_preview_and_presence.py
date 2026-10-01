@@ -176,8 +176,8 @@ class TestV3Phase3WakePreviewAndPresence(unittest.TestCase):
         self.assertIn(self.agent_qa_id, waking_ids)
         self.assertEqual(data["count"], 1)
 
-        # 6. Message to human only -> "Ninguém vai acordar"
-        res = self.client.post("/api/rooms/main-room/wake-preview", json={"to": "@user_two"}, headers=self.user1_headers)
+        # 6. Message to human with access -> "Ninguém vai acordar"
+        res = self.client.post("/api/rooms/main-room/wake-preview", json={"to": "@admin_user"}, headers=self.user1_headers)
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertEqual(data["count"], 0)
@@ -240,3 +240,117 @@ class TestV3Phase3WakePreviewAndPresence(unittest.TestCase):
         main_r = next(r for r in rooms if r["id"] == self.main_room["id"])
         self.assertEqual(main_r["unread_total"], 0)
         self.assertEqual(main_r["unread_directed"], 0)
+
+    def test_05_wake_preview_matches_send_message_validation(self):
+        """Verifies wake-preview and send_message apply identical recipient validations with matching errors."""
+        # Setup an agent without access to main-room
+        outsider_id, outsider_token = hub.storage.v3.create_agent(
+            "outsider_bot", "Outsider Bot", default_role_id=self.role_dev["id"]
+        )
+        # Setup a role that is NOT assigned to any member of main-room
+        orphan_role = hub.storage.v3.create_role("orphan_role", "Orphan Role", "Sem membros")
+
+        cases = [
+            # Case 1: Agent with no access to main-room
+            {
+                "to": "@outsider_bot",
+                "expect_error": True,
+            },
+            # Case 2: Role with no members in main-room
+            {
+                "to": f"@role:{orphan_role['role_key']}",
+                "expect_error": True,
+            },
+            # Case 3: Valid agent in main-room
+            {
+                "to": "@agent_dev",
+                "expect_error": False,
+            },
+            # Case 4: Valid role in main-room
+            {
+                "to": "@role:qa",
+                "expect_error": False,
+            },
+            # Case 5: 'all' broadcast
+            {
+                "to": "all",
+                "expect_error": False,
+            },
+        ]
+
+        for case in cases:
+            to_val = case["to"]
+            expect_err = case["expect_error"]
+
+            preview_res = self.client.post(
+                "/api/rooms/main-room/wake-preview",
+                json={"to": to_val},
+                headers=self.user1_headers,
+            )
+            send_res = self.client.post(
+                "/api/rooms/main-room/messages",
+                json={"content": f"Test message for {to_val}", "to": to_val},
+                headers=self.user1_headers,
+            )
+
+            if expect_err:
+                self.assertEqual(preview_res.status_code, 400, f"Expected 400 for wake-preview with to={to_val}")
+                self.assertEqual(send_res.status_code, 400, f"Expected 400 for send_message with to={to_val}")
+                # Exact equality of error message between preview and send
+                preview_err = preview_res.json()["error"]
+                send_err = send_res.json()["error"]
+                self.assertEqual(
+                    preview_err,
+                    send_err,
+                    f"Error mismatch for to={to_val}: preview='{preview_err}' vs send='{send_err}'",
+                )
+            else:
+                self.assertEqual(preview_res.status_code, 200, f"Expected 200 for wake-preview with to={to_val}")
+                self.assertEqual(send_res.status_code, 201, f"Expected 201 for send_message with to={to_val}")
+
+    def test_06_read_cursor_human_only_and_clamping(self):
+        """Verifies POST /api/rooms/{room}/read-cursor accepts only humans and clamps to max message ID."""
+        # 1. Agent tries to call read-cursor -> rejected with 403 Forbidden
+        agent_res = self.client.post(
+            "/api/rooms/main-room/read-cursor",
+            json={"last_message_id": 1},
+            headers=self.agent_dev_headers,
+        )
+        self.assertEqual(agent_res.status_code, 403)
+        self.assertIn("Apenas utilizadores humanos", agent_res.json()["error"])
+
+        # 2. Human sends gigantic last_message_id = 10^9
+        # Get actual max_mid in main-room
+        max_mid = hub.storage.v3.get_max_message_id(self.main_room["id"])
+        self.assertGreater(max_mid, 0)
+
+        huge_id = 1_000_000_000
+        human_res = self.client.post(
+            "/api/rooms/main-room/read-cursor",
+            json={"last_message_id": huge_id},
+            headers=self.user1_headers,
+        )
+        self.assertEqual(human_res.status_code, 200)
+        saved_mid = human_res.json()["last_message_id"]
+        # Clamped to room's max message ID!
+        self.assertEqual(saved_mid, max_mid)
+
+        # Confirm in storage
+        cursor_in_db = hub.storage.v3.get_read_cursor(self.user1_id, self.main_room["id"])
+        self.assertEqual(cursor_in_db, max_mid)
+        self.assertNotEqual(cursor_in_db, huge_id)
+
+        # 3. New message arrives -> user1 should have unread_total = 1 (not blocked forever)
+        post_new = self.client.post(
+            "/api/rooms/main-room/messages",
+            json={"content": "New message after clamping test", "to": "all"},
+            headers=self.admin_headers,
+        )
+        self.assertEqual(post_new.status_code, 201)
+        new_msg_id = post_new.json()["id"]
+        self.assertGreater(new_msg_id, max_mid)
+
+        # Query user1 room list: unread_total should be 1
+        rooms_res = self.client.get("/api/rooms", headers=self.user1_headers)
+        main_r = next(r for r in rooms_res.json() if r["id"] == self.main_room["id"])
+        self.assertEqual(main_r["unread_total"], 1)

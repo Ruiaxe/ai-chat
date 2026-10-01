@@ -3260,6 +3260,7 @@ async def endpoint_room_wake_preview(request: Request) -> Response:
     to_val = data.get("to", "all")
     try:
         recipients = hub.storage.v3.resolve_recipients(to_val)
+        hub.storage.v3.validate_room_recipients(room, recipients)
     except ValueError as e:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=400)
 
@@ -3300,7 +3301,7 @@ async def endpoint_room_wake_preview(request: Request) -> Response:
 
 
 async def endpoint_room_update_read_cursor(request: Request) -> Response:
-    """Updates read cursor for the authenticated principal in a room."""
+    """Updates read cursor for the authenticated principal in a room (humans only, clamped to max message ID)."""
     auth = get_request_auth(request)
     if not auth:
         return JSONResponse({"status": "error", "error": "Autenticação obrigatória"}, status_code=401)
@@ -3309,6 +3310,12 @@ async def endpoint_room_update_read_cursor(request: Request) -> Response:
 
     if not (hasattr(hub.storage, "is_v3") and hub.storage.is_v3()):
         return JSONResponse({"status": "error", "error": "Apenas suportado na v3"}, status_code=400)
+
+    if not principal or principal.get("kind") != "human":
+        return JSONResponse(
+            {"status": "error", "error": "Apenas utilizadores humanos podem atualizar o cursor de leitura diretamente."},
+            status_code=403,
+        )
 
     room = hub.storage.v3.get_room(room_name)
     if not room:
@@ -3321,9 +3328,11 @@ async def endpoint_room_update_read_cursor(request: Request) -> Response:
         data = await request.json()
     except Exception:
         data = {}
-    last_mid = safe_int(data.get("last_message_id"), default=0)
-    hub.storage.v3.update_read_cursor(principal["id"], room["id"], last_mid)
-    return JSONResponse({"status": "success", "room": room_name, "last_message_id": last_mid})
+    raw_mid = safe_int(data.get("last_message_id"), default=0)
+    max_mid = hub.storage.v3.get_max_message_id(room["id"])
+    clamped_mid = min(max(0, raw_mid), max_mid)
+    hub.storage.v3.update_read_cursor(principal["id"], room["id"], clamped_mid)
+    return JSONResponse({"status": "success", "room": room_name, "last_message_id": clamped_mid})
 
 
 async def endpoint_serve_aichat_wait(request: Request) -> Response:
