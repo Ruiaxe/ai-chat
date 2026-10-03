@@ -3497,10 +3497,33 @@ async def app_lifespan(app: Starlette):
 def create_app(allowed_hosts: list[str] | None = None) -> Any:
     """Builds and returns the combined Starlette ASGI application with security middleware."""
     if allowed_hosts is None:
-        is_testing = os.environ.get("AICHAT_TESTING") == "1"
-        allowed_hosts = ["127.0.0.1", "localhost"] + (["testserver"] if is_testing else [])
+        env_allowed = os.environ.get("AICHAT_ALLOWED_HOSTS", "").strip()
+        if env_allowed:
+            if env_allowed == "*":
+                allowed_hosts = ["*"]
+            else:
+                allowed_hosts = [h.strip() for h in env_allowed.split(",") if h.strip()]
+        else:
+            is_testing = os.environ.get("AICHAT_TESTING") == "1"
+            allowed_hosts = ["127.0.0.1", "localhost"] + (["testserver"] if is_testing else [])
+
+    if "*" in allowed_hosts:
+        allowed_hosts = ["*"]
+        mcp.settings.transport_security.enable_dns_rebinding_protection = False
     else:
-        allowed_hosts = [h.split(":")[0] for h in allowed_hosts]
+        mcp.settings.transport_security.enable_dns_rebinding_protection = True
+        allowed_hosts = [h.split(":")[0].strip() for h in allowed_hosts if h.strip()]
+        for default_h in ["127.0.0.1", "localhost"]:
+            if default_h not in allowed_hosts:
+                allowed_hosts.append(default_h)
+        if os.environ.get("AICHAT_TESTING") == "1" and "testserver" not in allowed_hosts:
+            allowed_hosts.append("testserver")
+
+        # Sync allowed hosts to FastMCP transport security
+        for h in allowed_hosts:
+            clean_h = h.split(":")[0]
+            if clean_h not in mcp.settings.transport_security.allowed_hosts:
+                mcp.settings.transport_security.allowed_hosts.extend([clean_h, f"{clean_h}:*"])
 
     # FastMCP SSE app routes (/sse, /messages)
     mcp_sse = mcp.sse_app()

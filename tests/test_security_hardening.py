@@ -8,6 +8,7 @@ os.environ["AICHAT_TESTING"] = "1"
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 import tempfile
 import shutil
@@ -18,7 +19,7 @@ from starlette.websockets import WebSocketDisconnect
 from aichat.hub import ChatHub
 from aichat.storage import ChatStorage
 from aichat.web_app import create_app
-from aichat.mcp_server import hub as global_hub
+from aichat.mcp_server import hub as global_hub, mcp
 
 
 class TestSecurityHardening(unittest.TestCase):
@@ -56,6 +57,34 @@ class TestSecurityHardening(unittest.TestCase):
 
         resp_loopback = self.client.get("/", headers={"Host": "127.0.0.1"})
         self.assertEqual(resp_loopback.status_code, 200)
+
+    def test_allowed_hosts_environment_variable(self):
+        """AICHAT_ALLOWED_HOSTS environment variable allows configured hostnames."""
+        with patch.dict(os.environ, {"AICHAT_ALLOWED_HOSTS": "custom.lan, 192.168.1.197"}):
+            app = create_app()
+            client = TestClient(app, base_url="http://testserver")
+
+            resp_custom = client.get("/", headers={"Host": "custom.lan"})
+            self.assertEqual(resp_custom.status_code, 200)
+
+            resp_ip = client.get("/", headers={"Host": "192.168.1.197"})
+            self.assertEqual(resp_ip.status_code, 200)
+
+            resp_evil = client.get("/", headers={"Host": "evil.attacker.com"})
+            self.assertEqual(resp_evil.status_code, 400)
+
+    def test_allowed_hosts_wildcard(self):
+        """Wildcard allowed_hosts accepts any Host header and disables DNS rebinding protection."""
+        app = create_app(allowed_hosts=["*"])
+        client = TestClient(app, base_url="http://testserver")
+
+        resp = client.get("/", headers={"Host": "arbitrary.domain.net"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(mcp.settings.transport_security.enable_dns_rebinding_protection)
+
+        # Restore default state
+        _ = create_app()
+        self.assertTrue(mcp.settings.transport_security.enable_dns_rebinding_protection)
 
     # D2: Origin Validation (SecurityHardeningMiddleware)
     def test_cross_origin_mutating_requests_blocked_with_403(self):
@@ -167,6 +196,14 @@ class TestSecurityHardening(unittest.TestCase):
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent))
         self.assertEqual(result.returncode, 1)
         self.assertIn("ERRO DE SEGURANÇA", result.stdout + result.stderr)
+
+    def test_run_server_accepts_allow_remote(self):
+        """run_server.py does not exit with ERRO DE SEGURANÇA when --allow-remote is provided."""
+        env = {k: v for k, v in os.environ.items() if k != "AICHAT_TESTING"}
+        cmd = [sys.executable, "run_server.py", "--allow-remote", "--db", "non_existent_fake_path_12345.db", "--no-browser"]
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent.parent), env=env)
+        self.assertNotIn("ERRO DE SEGURANÇA", result.stdout + result.stderr)
+        self.assertIn("A base de dados não existe", result.stdout + result.stderr)
 
     # Item 1: Master token rejected in URL ?auth= and in human_session cookie
     def test_master_token_in_url_and_cookie_rejected(self):

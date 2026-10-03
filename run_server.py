@@ -126,6 +126,8 @@ def main():
     args = parser.parse_args()
 
     host = args.host
+    if args.allow_remote and host == "127.0.0.1":
+        host = "0.0.0.0"
     is_loopback = host in ("127.0.0.1", "localhost", "::1")
     if not is_loopback and not args.allow_remote:
         print(f"\n❌ ERRO DE SEGURANÇA: Recusa de ligação à interface '{host}'.")
@@ -174,23 +176,16 @@ def main():
     if not args.no_browser:
         open_browser_delayed(f"http://{host}:{port}/?auth={one_time_code}")
 
-    if args.allow_remote and not is_loopback:
-        if args.allowed_hosts:
-            allowed_hosts = list(args.allowed_hosts) + ["127.0.0.1", "localhost"]
-        elif host != "0.0.0.0":
+    if args.allowed_hosts:
+        allowed_hosts = list(args.allowed_hosts)
+    elif os.environ.get("AICHAT_ALLOWED_HOSTS"):
+        allowed_hosts = None  # Parsed inside create_app via os.environ
+    elif args.allow_remote or not is_loopback:
+        if host != "0.0.0.0" and not is_loopback:
             allowed_hosts = [host, "127.0.0.1", "localhost"]
         else:
-            print("⚠️  Aviso: Ao utilizar --host 0.0.0.0 sem --allowed-hosts, a validação de Host é desativada (*). Recomenda-se especificar os hostnames permitidos com --allowed-hosts.\n")
+            print("⚠️  Aviso: Ao utilizar --allow-remote sem --allowed-hosts, a validação de Host é desativada (*). Recomenda-se especificar os hostnames permitidos com --allowed-hosts.\n")
             allowed_hosts = ["*"]
-
-        # Sync allowed hosts to FastMCP transport security
-        if "*" in allowed_hosts:
-            mcp.settings.transport_security.enable_dns_rebinding_protection = False
-        else:
-            for h in allowed_hosts:
-                clean_h = h.split(":")[0]
-                if clean_h not in mcp.settings.transport_security.allowed_hosts:
-                    mcp.settings.transport_security.allowed_hosts.extend([clean_h, f"{clean_h}:*"])
     else:
         allowed_hosts = None
 
