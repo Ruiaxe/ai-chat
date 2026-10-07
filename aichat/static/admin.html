@@ -2501,7 +2501,7 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'} --ti
     }
 
     async function openEditMemberModal(principalId) {
-      await refreshRolesList();
+      await loadRoles();
       const m = (currentRoomMembers || []).find(x => x.principal_id === principalId);
       if (!m) return;
 
@@ -2570,7 +2570,7 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'} --ti
 
     async function openAddMemberModal() {
       await refreshPrincipalsList();
-      await refreshRolesList();
+      await loadRoles();
       const pSel = document.getElementById('am-principal-id');
       if (pSel) {
         const existingIds = new Set((currentRoomMembers || []).map(m => m.principal_id));
@@ -2696,6 +2696,10 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'} --ti
       } catch (e) {
         console.warn('Failed to refresh principals:', e);
       }
+    }
+
+    async function refreshRolesList() {
+      await loadRoles();
     }
 
     // ================= ACCESS MATRIX LOGIC =================
