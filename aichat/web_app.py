@@ -25,6 +25,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 import edge_tts
 
 from aichat.config import STATIC_DIR, DATA_DIR, get_git_commit
+from aichat.storage_v3 import validate_callsign
 from aichat.mcp_server import (
     current_auth_token,
     current_principal,
@@ -2169,6 +2170,8 @@ async def endpoint_register_agent(request: Request) -> Response:
     callsign = (data.get("callsign") or "").strip()
     if not callsign:
         return JSONResponse({"error": "callsign is required"}, status_code=400)
+    if not validate_callsign(callsign):
+        return JSONResponse({"error": "Callsign inválido. Deve conter entre 1 e 64 caracteres alfanuméricos, espaços, hífen, underscore, ponto ou parênteses."}, status_code=400)
     role = (data.get("role") or "agent").strip()
     token = (data.get("token") or "").strip() or None
     is_system = bool(data.get("is_system", False))
@@ -2206,6 +2209,8 @@ async def endpoint_self_register_agent(request: Request) -> Response:
     description = (data.get("description") or data.get("role") or "").strip()
     if not callsign:
         return JSONResponse({"error": "callsign is required"}, status_code=400)
+    if not validate_callsign(callsign):
+        return JSONResponse({"error": "Callsign inválido. Deve conter entre 1 e 64 caracteres alfanuméricos, espaços, hífen, underscore, ponto ou parênteses."}, status_code=400)
 
     try:
         res = hub.self_register_agent(callsign=callsign, description=description)
@@ -2464,6 +2469,8 @@ async def endpoint_admin_create_agent(request: Request) -> Response:
     callsign = (data.get("callsign") or data.get("name") or "").strip()
     if not callsign:
         return JSONResponse({"error": "Callsign do agente é obrigatório"}, status_code=400)
+    if not validate_callsign(callsign):
+        return JSONResponse({"error": "Callsign inválido. Deve conter entre 1 e 64 caracteres alfanuméricos, espaços, hífen, underscore, ponto ou parênteses."}, status_code=400)
     display_name = (data.get("display_name") or "").strip()
     role_key = (data.get("role_key") or "").strip() or None
     default_role_id = data.get("default_role_id")

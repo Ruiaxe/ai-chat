@@ -1233,8 +1233,11 @@ class ChatStorage:
         clean_callsign = (callsign or "").strip()
         if not clean_callsign:
             raise ValueError("Callsign do agente não pode estar vazio.")
-        if len(clean_callsign) > 40:
-            raise ValueError("Callsign do agente não pode exceder 40 caracteres.")
+        if len(clean_callsign) > 64:
+            raise ValueError("Callsign do agente não pode exceder 64 caracteres.")
+        from aichat.storage_v3 import validate_callsign
+        if not validate_callsign(clean_callsign):
+            raise ValueError("Callsign inválido. Deve conter entre 1 e 64 caracteres alfanuméricos, espaços, hífen, underscore, ponto ou parênteses.")
 
         if is_self_registration and self.count_pending_agents() >= 5:
             raise ValueError("Limite de pedidos de registo pendentes atingido (máximo 5). Aguarde pela aprovação de um administrador.")

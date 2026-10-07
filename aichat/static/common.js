@@ -16,25 +16,6 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
-/**
- * Escapes special characters for safe embedding in inline JS attribute strings.
- * Escapes backslashes, quotes, ampersands, angle brackets, and newlines to prevent
- * HTML entity decoding breakouts (e.g. x&#39;);window.pwned=1;//).
- * @param {*} str - String or value to escape
- * @returns {string} Escaped JS string
- */
-function escapeJs(str) {
-  if (str === null || str === undefined) return '';
-  return String(str)
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "\\'")
-    .replace(/"/g, '\\"')
-    .replace(/&/g, '\\u0026')
-    .replace(/</g, '\\u003c')
-    .replace(/>/g, '\\u003e')
-    .replace(/\r/g, '\\r')
-    .replace(/\n/g, '\\n');
-}
 
 /**
  * Formats an ISO datetime string into human-readable relative time in Portuguese.

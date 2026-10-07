@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from aichat.storage import ChatStorage, is_test_environment
+from aichat.storage_v3 import validate_callsign
 
 
 def _format_id_ranges(ids: list[int]) -> list[str]:
@@ -466,6 +467,8 @@ class ChatHub:
         clean_callsign = (callsign or "").strip()
         if not clean_callsign:
             raise ValueError("Callsign do agente não pode estar vazio.")
+        if not validate_callsign(clean_callsign):
+            raise ValueError("Callsign inválido. Deve conter entre 1 e 64 caracteres alfanuméricos, espaços, hífen, underscore, ponto ou parênteses.")
         if clean_callsign.lower() in self.RESERVED_HUMAN_NAMES:
             raise ValueError(f"O nome '{clean_callsign}' está reservado para o utilizador humano. Agentes devem usar outro nome.")
 

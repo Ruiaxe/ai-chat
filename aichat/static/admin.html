@@ -1251,13 +1251,13 @@
               ${u.must_change_password ? '<span class="text-amber-400 font-medium">Troca obrigatória</span>' : '<span class="text-slate-500">OK</span>'}
             </td>
             <td class="py-3 px-4 text-right space-x-1">
-              <button onclick="toggleUserAdmin(${u.id}, '${isAdmin ? 'user' : 'admin'}')" title="Mudar papel" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">
+              <button data-role="${isAdmin ? 'user' : 'admin'}" onclick="toggleUserAdmin(${u.id}, this.dataset.role)" title="Mudar papel" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">
                 ${isAdmin ? 'Tornar User' : 'Tornar Admin'}
               </button>
-              <button onclick="toggleUserStatus(${u.id}, '${isActive ? 'inactive' : 'active'}')" title="Ativar/Desativar" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">
+              <button data-status="${isActive ? 'inactive' : 'active'}" onclick="toggleUserStatus(${u.id}, this.dataset.status)" title="Ativar/Desativar" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">
                 ${isActive ? 'Desativar' : 'Ativar'}
               </button>
-              <button onclick="openResetPasswordModal(${u.id}, '${escapeHtml(u.name)}')" title="Repor Palavra-passe" class="px-2 py-1 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-[10px] font-medium transition">
+              <button data-username="${escapeHtml(u.name)}" onclick="openResetPasswordModal(${u.id}, this.dataset.username)" title="Repor Palavra-passe" class="px-2 py-1 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-[10px] font-medium transition">
                 Repor Senha
               </button>
               <button onclick="deleteUser(${u.id})" title="Remover utilizador" class="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
@@ -1495,7 +1495,7 @@
                   <option value="background" ${curWakeMode === 'background' ? 'selected' : ''}>Background</option>
                   <option value="tool" ${curWakeMode === 'tool' ? 'selected' : ''}>Tool</option>
                 </select>
-                <button onclick="openWakeSnippetModal('${escapeHtml(a.name)}', document.getElementById('hn-${a.id}').value, document.getElementById('wm-${a.id}').value)" title="Snippet de Configuração" class="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-indigo-400 hover:text-indigo-300 text-[10px] font-medium border border-slate-700 flex items-center gap-1">
+                <button data-agent-name="${escapeHtml(a.name)}" onclick="openWakeSnippetModal(this.dataset.agentName, document.getElementById('hn-${a.id}').value, document.getElementById('wm-${a.id}').value)" title="Snippet de Configuração" class="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-indigo-400 hover:text-indigo-300 text-[10px] font-medium border border-slate-700 flex items-center gap-1">
                   <i data-lucide="code-2" class="w-3 h-3"></i>
                   <span>Snippet</span>
                 </button>
@@ -1506,25 +1506,25 @@
             </td>
             <td class="py-3 px-4 text-right space-x-1">
               ${isPending ? `
-                <button onclick="approveAgent(${a.id}, '${escapeHtml(a.name)}')" title="Aprovar Agente e Emitir Token" class="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-semibold transition shadow-sm">
+                <button data-agent-name="${escapeHtml(a.name)}" onclick="approveAgent(${a.id}, this.dataset.agentName)" title="Aprovar Agente e Emitir Token" class="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-semibold transition shadow-sm">
                   Aprovar
                 </button>
-                <button onclick="deleteAgent(${a.id}, '${escapeHtml(a.name)}')" title="Rejeitar Pedido" class="px-2.5 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
+                <button data-agent-name="${escapeHtml(a.name)}" onclick="deleteAgent(${a.id}, this.dataset.agentName)" title="Rejeitar Pedido" class="px-2.5 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
                   Rejeitar
                 </button>
               ` : `
-                <button onclick="openAgentRoomsModal(${a.id}, '${escapeHtml(a.name)}')" title="Gerir Salas do Agente" class="px-2 py-1 rounded bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 text-[10px] font-medium transition">
+                <button data-agent-name="${escapeHtml(a.name)}" onclick="openAgentRoomsModal(${a.id}, this.dataset.agentName)" title="Gerir Salas do Agente" class="px-2 py-1 rounded bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 text-[10px] font-medium transition">
                   Salas
                 </button>
-                <button onclick="rotateAgentToken(${a.id}, '${escapeHtml(a.name)}')" title="Rodar Token" class="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-medium transition">
+                <button data-agent-name="${escapeHtml(a.name)}" onclick="rotateAgentToken(${a.id}, this.dataset.agentName)" title="Rodar Token" class="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-medium transition">
                   Rodar
                 </button>
                 ${activeCreds.length > 0 ? `
-                  <button onclick="revokeAgentToken(${a.id}, '${activeCreds[0].token_hint}')" title="Revogar Token Atual" class="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
+                  <button data-token-hint="${escapeHtml(activeCreds[0].token_hint)}" onclick="revokeAgentToken(${a.id}, this.dataset.tokenHint)" title="Revogar Token Atual" class="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
                     Revogar
                   </button>
                 ` : ''}
-                <button onclick="toggleAgentStatus(${a.id}, '${isActive ? 'inactive' : 'active'}')" title="Ativar/Desativar" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">
+                <button data-status="${isActive ? 'inactive' : 'active'}" onclick="toggleAgentStatus(${a.id}, this.dataset.status)" title="Ativar/Desativar" class="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium transition">
                   ${isActive ? 'Desativar' : 'Ativar'}
                 </button>
               `}
@@ -2048,7 +2048,7 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'} --ti
                   </select>
                 </td>
                 <td class="py-2.5 px-3 text-right">
-                  <button onclick="removeAgentFromRoom(${agentId}, ${r.id}, '${escapeHtml(r.name)}')" class="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
+                  <button data-room-name="${escapeHtml(r.name)}" onclick="removeAgentFromRoom(${agentId}, ${r.id}, this.dataset.roomName)" class="px-2 py-1 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-medium transition">
                     Remover
                   </button>
                 </td>

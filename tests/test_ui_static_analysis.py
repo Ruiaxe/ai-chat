@@ -2,7 +2,7 @@
 tests/test_ui_static_analysis.py
 Static analysis tests for HTML and JavaScript UI assets.
 Verifies that:
-1. /static/common.js is included and provides shared utilities (escapeHtml, escapeJs, formatRelativeTime, copyTextToClipboard).
+1. /static/common.js is included and provides shared utilities (escapeHtml, formatRelativeTime, copyTextToClipboard).
 2. All functions invoked in HTML event handlers (onclick, onchange, etc.) and in JS template literals are defined.
 3. No bare function calls refer to undefined functions.
 4. No variable assignments occur to undeclared variables (prevents regressions like missing 'let agentsCache = []').
@@ -410,7 +410,6 @@ class TestUIStaticAnalysis(unittest.TestCase):
         common_content = (STATIC_DIR / "common.js").read_text(encoding="utf-8")
         required_functions = [
             "escapeHtml",
-            "escapeJs",
             "formatRelativeTime",
             "copyTextToClipboard",
             "fallbackCopyText",
@@ -520,41 +519,35 @@ class TestUIStaticAnalysis(unittest.TestCase):
         self.assertEqual(violations[0]["nested_id"], "nested-child-modal")
         self.assertIn("parent-modal", violations[0]["parent_overlays"])
 
-    def test_09_escape_js_xss_protection(self):
-        """Verifies that escapeJs prevents XSS payloads such as x&#39;);window.pwned=1;// from breaking out."""
-        common_content = (STATIC_DIR / "common.js").read_text(encoding="utf-8")
+    def test_09_no_string_interpolation_in_inline_handlers(self):
+        """
+        Verifies that no inline on* event handler in static HTML files interpolates JS strings
+        using '${' or "${', preventing XSS breakouts. Dynamic strings must use data-* attributes.
+        """
+        handler_pattern = re.compile(r'\bon[a-zA-Z]+\s*=\s*\\?(["\'])(.*?)\\?\1')
+        html_files = [STATIC_DIR / "index.html", STATIC_DIR / "admin.html"]
+        violations = []
+        for html_file in html_files:
+            content = html_file.read_text(encoding="utf-8")
+            for m in handler_pattern.finditer(content):
+                handler_body = m.group(2)
+                if "'${" in handler_body or '"${' in handler_body:
+                    violations.append(f"{html_file.name}: {m.group(0)}")
 
-        # 1. Static validation of escapeJs implementation rules
-        self.assertIn(r"\u0026", common_content, "escapeJs must escape '&' to '\\u0026' to prevent entity unescaping XSS")
-        self.assertIn(r"\u003c", common_content, "escapeJs must escape '<' to '\\u003c'")
-        self.assertIn(r"\u003e", common_content, "escapeJs must escape '>' to '\\u003e'")
+        self.assertEqual(
+            violations,
+            [],
+            f"Found inline on* handlers interpolating JS strings with '${{' or '\"${{': {violations}"
+        )
 
-        # 2. Dynamic execution validation if Node.js is present
-        node_bin = shutil.which("node")
-        if node_bin:
-            js_test_script = """
-            const fs = require('fs');
-            const code = fs.readFileSync(process.argv[1], 'utf8');
-            eval(code);
-            const payload = "x&#39;);window.pwned=1;//";
-            const res = escapeJs(payload);
-            if (res.includes('&')) {
-                console.error("FAIL: unescaped & found in " + res);
-                process.exit(1);
-            }
-            if (!res.includes('\\\\u0026')) {
-                console.error("FAIL: expected \\\\u0026 in " + res);
-                process.exit(2);
-            }
-            console.log("OK:" + res);
-            """
-            result = subprocess.run(
-                [node_bin, "-e", js_test_script, str(STATIC_DIR / "common.js")],
-                capture_output=True,
-                text=True
-            )
-            self.assertEqual(result.returncode, 0, f"Node escapeJs test failed: {result.stderr}")
-            self.assertIn("OK:x\\u0026#39;);window.pwned=1;//", result.stdout)
+        # Negative test: ensure this test catches string interpolation in on* attributes
+        mock_html = '<button onclick="approveAgent(\'${escapeHtml(agent.callsign)}\')">Approve</button>'
+        mock_matches = [
+            m.group(0)
+            for m in handler_pattern.finditer(mock_html)
+            if "'${" in m.group(2) or '"${' in m.group(2)
+        ]
+        self.assertEqual(len(mock_matches), 1, "Static rule must catch '${...}' inside inline handlers")
 
 
 if __name__ == "__main__":

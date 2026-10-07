@@ -6,6 +6,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP, Context
 
 from aichat.hub import ChatHub
+from aichat.storage_v3 import validate_callsign
 
 mcp = FastMCP("ai-chat-room")
 # Allow loopback with or without explicit port in Host header
@@ -209,6 +210,8 @@ def register_agent(callsign: str, description: str = "", display_name: str = "")
         clean_callsign = (callsign or "").strip()
         if not clean_callsign:
             return json.dumps({"status": "error", "error": "Callsign não pode ser vazio."}, indent=2)
+        if not validate_callsign(clean_callsign):
+            return json.dumps({"status": "error", "error": "Callsign inválido. Deve conter entre 1 e 64 caracteres alfanuméricos, espaços, hífen, underscore, ponto ou parênteses."}, indent=2)
         desc = (description or display_name or "").strip()
         if hasattr(hub.storage, "is_v3") and hub.storage.is_v3():
             res = hub.self_register_agent(clean_callsign, description=desc)

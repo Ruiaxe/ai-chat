@@ -382,6 +382,84 @@ class TestUISmokePlaywright(unittest.TestCase):
         self.assertEqual(page_errors, [])
         self.assertEqual(console_errors, [], f"Console errors: {console_errors}, Failed responses: {failed_responses}")
 
+    def test_05_xss_protection_agent_callsign(self):
+        """
+        Verifies defense-in-depth protection against XSS breakout via agent callsign:
+        1. API rejection: hub.self_register_agent rejects malicious callsigns like 'x');window.pwned=1;//'.
+        2. UI resilience: even if a callsign containing 'x');window.pwned=1;//' exists in the database,
+           rendering it and clicking Aprovar/Rejeitar/Rodar does not execute JS (window.pwned remains undefined).
+        """
+        xss_callsign = "x');window.pwned=1;//"
+
+        # 1. Server validation must reject registration
+        with self.assertRaises(ValueError):
+            hub.self_register_agent(xss_callsign)
+
+        # 2. Insert malicious pending agent directly into DB to test UI resilience
+        conn = hub.storage.v3._get_connection()
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO principals (kind, name, display_name, status, is_system, is_legacy, created_at) VALUES (?, ?, ?, ?, ?, ?, ?);",
+                ("agent", xss_callsign, xss_callsign, "pending", 0, 0, "2026-10-07 12:00:00")
+            )
+            xss_agent_id = cur.lastrowid
+            conn.execute(
+                "INSERT INTO agents (principal_id, harness, wake_mode) VALUES (?, ?, ?);",
+                (xss_agent_id, "other", "tool")
+            )
+
+        context = self.browser.new_context()
+        context.add_cookies([{
+            "name": "human_session",
+            "value": self.admin_token,
+            "domain": "127.0.0.1",
+            "path": "/"
+        }])
+        page = context.new_page()
+
+        console_errors = []
+        page_errors = []
+        page.on("console", lambda msg: (
+            console_errors.append(f"[{msg.type}] {msg.text}")
+            if msg.type == "error" and "favicon.ico" not in msg.text
+            else None
+        ))
+        page.on("pageerror", lambda err: page_errors.append(str(err)))
+        page.on("dialog", lambda dialog: dialog.dismiss())
+
+        # Load /admin and go to agents tab
+        resp = page.goto(f"{self.base_url}/admin", wait_until="networkidle")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp.status, 200)
+
+        page.evaluate("switchTab('agents')")
+        page.wait_for_selector("button:has-text('Aprovar')", timeout=5000)
+
+        # Locate row containing the XSS callsign
+        row = page.locator("tr", has_text="window.pwned")
+        self.assertTrue(row.is_visible())
+
+        # Ensure window.pwned is undefined initially
+        self.assertIsNone(page.evaluate("window.pwned"))
+
+        # Click Aprovar button
+        approve_btn = row.locator("button", has_text="Aprovar")
+        self.assertTrue(approve_btn.is_visible())
+        approve_btn.click()
+
+        # Assert XSS was NOT executed
+        self.assertIsNone(page.evaluate("window.pwned"), "XSS vulnerability detected: window.pwned was executed!")
+
+        # Click Rejeitar button
+        reject_btn = row.locator("button", has_text="Rejeitar")
+        if reject_btn.is_visible():
+            reject_btn.click()
+
+        self.assertIsNone(page.evaluate("window.pwned"), "XSS vulnerability detected on delete button!")
+
+        context.close()
+        self.assertEqual(page_errors, [])
+
 
 if __name__ == "__main__":
     unittest.main()

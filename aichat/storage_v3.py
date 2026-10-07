@@ -31,8 +31,27 @@ from aichat.crypto import (
     utc_now,
 )
 
+import re
+
 SCHEMA_FILE = Path(__file__).resolve().parent.parent / "migrations" / "v3" / "schema_v3.sql"
 DEFAULT_V3_DB = DATA_DIR / "chat_v3.db"
+
+CALLSIGN_REGEX = re.compile(r"^[\w\s.\-()]{1,64}$", re.UNICODE)
+
+
+def validate_callsign(callsign: str) -> bool:
+    """
+    Validates an agent callsign.
+    Allows letters, digits, spaces, hyphens, underscores, dots, and parentheses up to 64 chars.
+    Rejects special characters like quotes, semicolons, angle brackets, slashes, etc.
+    """
+    if not callsign or not isinstance(callsign, str):
+        return False
+    clean = callsign.strip()
+    if not clean or len(clean) > 64:
+        return False
+    return bool(CALLSIGN_REGEX.match(clean))
+
 
 _UNSET = object()
 
@@ -721,7 +740,11 @@ class StorageV3:
         """
         conn = self._get_connection()
         now_str = utc_now()
-        clean_callsign = callsign.strip()
+        clean_callsign = (callsign or "").strip()
+        if not clean_callsign:
+            raise ValueError("Callsign não pode ser vazio.")
+        if not validate_callsign(clean_callsign):
+            raise ValueError("Callsign inválido. Deve conter entre 1 e 64 caracteres alfanuméricos, espaços, hífen, underscore, ponto ou parênteses.")
 
         target_role_id = default_role_id
         if target_role_id is None and role_key:
@@ -782,6 +805,8 @@ class StorageV3:
         clean_callsign = (callsign or "").strip()
         if not clean_callsign:
             raise ValueError("Callsign não pode ser vazio.")
+        if not validate_callsign(clean_callsign):
+            raise ValueError("Callsign inválido. Deve conter entre 1 e 64 caracteres alfanuméricos, espaços, hífen, underscore, ponto ou parênteses.")
         existing = self.get_principal_by_name(clean_callsign)
         if existing:
             raise ValueError(f"Agente ou utilizador com o nome '{clean_callsign}' já existe.")
