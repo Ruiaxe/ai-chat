@@ -11,6 +11,9 @@ Verifies that:
 import os
 os.environ["AICHAT_TESTING"] = "1"
 import re
+from html.parser import HTMLParser
+import subprocess
+import shutil
 import unittest
 from pathlib import Path
 from bs4 import BeautifulSoup
@@ -333,6 +336,61 @@ def run_static_analysis(html_path: Path):
     return missing_calls, undeclared_assignments
 
 
+class OverlayTagStackParser(HTMLParser):
+    """
+    HTML parser using a tag stack to detect invalid modal nesting.
+    Ensures that modal overlays (elements with Tailwind 'fixed inset-0')
+    are never nested inside another overlay container.
+    """
+    VOID_TAGS = {
+        'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'
+    }
+
+    def __init__(self):
+        super().__init__()
+        self.stack = []  # entries: (tag, element_id, is_overlay)
+        self.overlay_depth = 0
+        self.violations = []
+
+    def handle_starttag(self, tag, attrs):
+        tag_lower = tag.lower()
+        if tag_lower in self.VOID_TAGS:
+            return
+
+        attr_dict = dict(attrs)
+        classes = attr_dict.get('class', '').split()
+        element_id = attr_dict.get('id', '')
+        is_overlay = 'fixed' in classes and 'inset-0' in classes
+
+        if is_overlay:
+            if self.overlay_depth > 0:
+                parent_overlays = [item[1] or f"<{item[0]}>" for item in self.stack if item[2]]
+                self.violations.append({
+                    'nested_id': element_id or f"<{tag_lower}>",
+                    'parent_overlays': parent_overlays
+                })
+            self.overlay_depth += 1
+
+        self.stack.append((tag_lower, element_id, is_overlay))
+
+    def handle_endtag(self, tag):
+        tag_lower = tag.lower()
+        for idx in range(len(self.stack) - 1, -1, -1):
+            if self.stack[idx][0] == tag_lower:
+                popped = self.stack[idx:]
+                self.stack = self.stack[:idx]
+                for item in popped:
+                    if item[2]:
+                        self.overlay_depth = max(0, self.overlay_depth - 1)
+                break
+
+
+def find_nested_overlays(html_content: str) -> list[dict]:
+    parser = OverlayTagStackParser()
+    parser.feed(html_content)
+    return parser.violations
+
+
 class TestUIStaticAnalysis(unittest.TestCase):
     """Unit tests verifying UI code integrity and static correctness."""
 
@@ -434,6 +492,69 @@ class TestUIStaticAnalysis(unittest.TestCase):
         finally:
             if tmp_admin.exists():
                 tmp_admin.unlink()
+
+    def test_07_no_nested_overlay_modals(self):
+        """Verifies that no modal overlay ('fixed inset-0') is nested inside another overlay container."""
+        for filename in ["index.html", "admin.html"]:
+            html_content = (STATIC_DIR / filename).read_text(encoding="utf-8")
+            violations = find_nested_overlays(html_content)
+            self.assertEqual(
+                violations,
+                [],
+                f"{filename} contains nested modal overlays: {violations}"
+            )
+
+    def test_08_analyzer_detects_nested_overlay_modals(self):
+        """Verifies that OverlayTagStackParser detects nested modal overlays (mutation test)."""
+        mutated_html = """
+        <div id="parent-modal" class="fixed inset-0 z-50 flex items-center justify-center hidden">
+          <div class="bg-slate-900 p-4">
+            <div id="nested-child-modal" class="fixed inset-0 z-50 flex items-center justify-center">
+              <span>Nested</span>
+            </div>
+          </div>
+        </div>
+        """
+        violations = find_nested_overlays(mutated_html)
+        self.assertEqual(len(violations), 1, "Parser must detect nested modal overlay")
+        self.assertEqual(violations[0]["nested_id"], "nested-child-modal")
+        self.assertIn("parent-modal", violations[0]["parent_overlays"])
+
+    def test_09_escape_js_xss_protection(self):
+        """Verifies that escapeJs prevents XSS payloads such as x&#39;);window.pwned=1;// from breaking out."""
+        common_content = (STATIC_DIR / "common.js").read_text(encoding="utf-8")
+
+        # 1. Static validation of escapeJs implementation rules
+        self.assertIn(r"\u0026", common_content, "escapeJs must escape '&' to '\\u0026' to prevent entity unescaping XSS")
+        self.assertIn(r"\u003c", common_content, "escapeJs must escape '<' to '\\u003c'")
+        self.assertIn(r"\u003e", common_content, "escapeJs must escape '>' to '\\u003e'")
+
+        # 2. Dynamic execution validation if Node.js is present
+        node_bin = shutil.which("node")
+        if node_bin:
+            js_test_script = """
+            const fs = require('fs');
+            const code = fs.readFileSync(process.argv[1], 'utf8');
+            eval(code);
+            const payload = "x&#39;);window.pwned=1;//";
+            const res = escapeJs(payload);
+            if (res.includes('&')) {
+                console.error("FAIL: unescaped & found in " + res);
+                process.exit(1);
+            }
+            if (!res.includes('\\\\u0026')) {
+                console.error("FAIL: expected \\\\u0026 in " + res);
+                process.exit(2);
+            }
+            console.log("OK:" + res);
+            """
+            result = subprocess.run(
+                [node_bin, "-e", js_test_script, str(STATIC_DIR / "common.js")],
+                capture_output=True,
+                text=True
+            )
+            self.assertEqual(result.returncode, 0, f"Node escapeJs test failed: {result.stderr}")
+            self.assertIn("OK:x\\u0026#39;);window.pwned=1;//", result.stdout)
 
 
 if __name__ == "__main__":

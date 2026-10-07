@@ -2855,12 +2855,16 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'} --ti
             <td class="border-b border-r border-slate-800/60 p-2 text-center align-middle bg-slate-950/40 hover:bg-slate-800/30 transition">
               <div class="flex items-center justify-center gap-2">
                 <input type="checkbox" ${hasAccess ? 'checked' : ''}
-                  onchange="handleMatrixAccessChange(${r.id}, ${p.id}, this.checked, '${escapeJs(r.name)}', '${escapeJs(p.name)}', this)"
+                  data-room-name="${escapeHtml(r.name)}"
+                  data-principal-name="${escapeHtml(p.name)}"
+                  onchange="handleMatrixAccessChange(${r.id}, ${p.id}, this.checked, this.dataset.roomName, this.dataset.principalName, this)"
                   class="rounded bg-slate-950 border-slate-700 text-indigo-600 focus:ring-0 cursor-pointer"
                   title="${hasAccess ? 'Revogar acesso' : 'Conceder acesso'}">
                 
                 ${hasAccess ? `
-                  <select onchange="handleMatrixRoleChange(${r.id}, ${p.id}, this.value, '${escapeJs(r.name)}', '${escapeJs(p.name)}')"
+                  <select data-room-name="${escapeHtml(r.name)}"
+                    data-principal-name="${escapeHtml(p.name)}"
+                    onchange="handleMatrixRoleChange(${r.id}, ${p.id}, this.value, this.dataset.roomName, this.dataset.principalName)"
                     class="bg-slate-950 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] text-slate-300 focus:outline-none focus:border-indigo-500 max-w-[100px] truncate"
                     title="Papel na sala">
                     <option value="">defeito: ${escapeHtml(defaultRoleLabel)}</option>
@@ -2872,7 +2876,9 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'} --ti
                   </select>
 
                   <button type="button"
-                    onclick="handleMatrixObserverToggle(${r.id}, ${p.id}, '${escapeJs(r.name)}', '${escapeJs(p.name)}')"
+                    data-room-name="${escapeHtml(r.name)}"
+                    data-principal-name="${escapeHtml(p.name)}"
+                    onclick="handleMatrixObserverToggle(${r.id}, ${p.id}, this.dataset.roomName, this.dataset.principalName)"
                     class="p-1 rounded transition ${canWrite ? 'text-slate-400 hover:text-slate-200 hover:bg-slate-800' : 'text-amber-400 bg-amber-500/10 border border-amber-500/30'}"
                     title="${canWrite ? 'Escrita ativa. Clique para modo observador.' : 'Observador (leitura apenas). Clique para permitir escrita.'}">
                     <i data-lucide="${canWrite ? 'pencil' : 'eye'}" class="w-3.5 h-3.5"></i>

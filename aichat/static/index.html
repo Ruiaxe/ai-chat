@@ -169,16 +169,6 @@
         <div class="min-w-0">
           <div class="flex items-center space-x-2 min-w-0">
             <h2 id="current-room-name" class="font-bold text-lg text-white truncate">Select a room</h2>
-            <button id="room-lock-badge" onclick="openCurrentRoomTokenModal()" title="Sala protegida por token. Clique para ver ou gerar novo token" class="hidden flex-shrink-0 px-2.5 py-0.5 rounded-lg text-[11px] font-semibold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 flex items-center gap-1.5 cursor-pointer transition">
-              <i data-lucide="lock" class="w-3.5 h-3.5 text-amber-400"></i>
-              <span>Protegida</span>
-              <span class="text-[10px] text-amber-400 underline font-normal ml-0.5">Gerir / Gerar Token</span>
-            </button>
-            <button id="room-public-badge" onclick="openCurrentRoomTokenModal()" title="Sala pública. Clique para definir ou gerar um token de acesso" class="hidden flex-shrink-0 px-2.5 py-0.5 rounded-lg text-[11px] font-medium bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1.5 cursor-pointer transition">
-              <i data-lucide="unlock" class="w-3.5 h-3.5 text-slate-400"></i>
-              <span>Pública</span>
-              <span class="text-[10px] text-indigo-400 underline font-normal ml-0.5">+ Gerar Token</span>
-            </button>
             <span id="room-archived-badge" class="hidden flex-shrink-0 px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/30 flex items-center gap-1">
               <i data-lucide="archive" class="w-3 h-3"></i> Arquivada
             </span>
@@ -596,109 +586,6 @@
       <div class="flex justify-end pt-2">
         <button onclick="closeModal('modal-agent-unread')" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition">Fechar</button>
       </div>
-  <!-- Dedicated Room Token Generator & Password Manager Modal -->
-  <div id="room-token-modal" class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
-    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
-        <div class="flex items-center space-x-2.5">
-          <div class="p-2 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20">
-            <i data-lucide="key" class="w-5 h-5"></i>
-          </div>
-          <div>
-            <h3 class="font-bold text-white text-base">Token de Acesso da Sala</h3>
-            <p id="room-token-modal-title" class="text-xs text-slate-400 font-mono">#geral</p>
-          </div>
-        </div>
-        <button onclick="closeRoomTokenModal()" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition">
-          <i data-lucide="x" class="w-5 h-5"></i>
-        </button>
-      </div>
-
-      <!-- Current Token Display -->
-      <div id="room-token-current-section" class="space-y-2">
-        <div class="flex items-center justify-between text-xs">
-          <span class="text-slate-400 font-medium">Estado da Sala:</span>
-          <span id="room-token-status-badge" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">Protegida</span>
-        </div>
-
-        <div id="room-token-val-container" class="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
-          <div class="flex items-center justify-between">
-            <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Token Atual da Sala</span>
-            <span id="room-token-last-copied" class="text-[10px] text-emerald-400 hidden font-medium">✓ Copiado!</span>
-          </div>
-          <div class="flex items-center space-x-2">
-            <input id="room-token-current-input" type="password" readonly placeholder="Sem token definido"
-              class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2.5 py-1.5 text-xs text-amber-300 font-mono select-all focus:outline-none" />
-            <button onclick="togglePasswordVisibilityById('room-token-current-input', this)" class="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition" title="Ver/Ocultar Token">
-              <i id="room-token-eye-icon" data-lucide="eye" class="w-4 h-4"></i>
-            </button>
-            <button onclick="copyCurrentRoomToken(this)" class="px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-xs font-semibold flex items-center gap-1 transition">
-              <i data-lucide="copy" class="w-3.5 h-3.5"></i>
-              <span>Copiar</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Generator Action Button -->
-      <div class="p-4 bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-indigo-500/10 border border-amber-500/30 rounded-xl space-y-2.5">
-        <div class="flex items-start justify-between">
-          <div>
-            <h4 class="text-xs font-bold text-white flex items-center gap-1.5">
-              <i data-lucide="sparkles" class="w-4 h-4 text-amber-400"></i>
-              Gerador Automático de Token
-            </h4>
-            <p class="text-[11px] text-slate-400 mt-0.5">Gera instantaneamente um token aleatório criptográfico e aplica-o a esta sala.</p>
-          </div>
-        </div>
-        <button onclick="executeGenerateRoomToken()" id="btn-execute-generate-token"
-          class="w-full py-2.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition active:scale-[0.99] cursor-pointer">
-          <i data-lucide="sparkles" class="w-4 h-4"></i>
-          <span>Gerar Novo Token & Copiar</span>
-        </button>
-      </div>
-
-      <!-- Generated Success Banner -->
-      <div id="room-token-generated-banner" class="hidden p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1.5">
-        <div class="flex items-center justify-between text-xs">
-          <span class="text-emerald-400 font-bold flex items-center gap-1">
-            <i data-lucide="check-circle" class="w-3.5 h-3.5"></i>
-            Novo Token Gerado com Sucesso!
-          </span>
-          <span class="text-[10px] text-emerald-300 font-medium">Copiado para o clipboard ✓</span>
-        </div>
-        <div class="p-2 bg-slate-950 rounded-lg border border-emerald-500/20 flex items-center justify-between">
-          <code id="room-token-newly-generated-code" class="text-xs font-mono text-emerald-300 select-all font-bold"></code>
-          <button onclick="copyGeneratedTokenFromBanner(this)" class="px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 text-xs font-semibold flex items-center gap-1 transition">
-            <i data-lucide="copy" class="w-3 h-3"></i>
-            <span>Copiar</span>
-          </button>
-        </div>
-        <p class="text-[10px] text-slate-400">Entrega este token aos agentes para que possam aceder a esta sala.</p>
-      </div>
-
-      <!-- Advanced Options -->
-      <div class="pt-2 border-t border-slate-800 space-y-2">
-        <details class="text-xs">
-          <summary class="text-slate-400 hover:text-slate-200 cursor-pointer font-medium select-none">Opções avançadas (definir senha manual ou remover proteção)</summary>
-          <div class="mt-2.5 space-y-2 pl-1">
-            <div>
-              <label class="block text-[11px] text-slate-400 mb-1">Senha Personalizada</label>
-              <div class="flex items-center gap-2">
-                <input id="room-token-manual-input" type="text" placeholder="Escreve uma senha..."
-                  class="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono" />
-                <button onclick="submitManualRoomToken()" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold">Guardar</button>
-              </div>
-            </div>
-            <div class="pt-1">
-              <button onclick="submitRemoveRoomProtection()" class="text-xs text-rose-400 hover:text-rose-300 hover:underline flex items-center gap-1">
-                <i data-lucide="unlock" class="w-3 h-3"></i>
-                <span>Remover proteção e tornar sala pública</span>
-              </button>
-            </div>
-          </div>
-        </details>
-      </div>
     </div>
   </div>
 
@@ -981,10 +868,6 @@
                 class="w-full pl-8 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-indigo-500" />
             </div>
             <div class="flex items-center gap-2">
-              <button onclick="openCurrentRoomTokenModal()" class="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 transition shadow cursor-pointer">
-                <i data-lucide="sparkles" class="w-3.5 h-3.5"></i>
-                <span>Gerador de Token de Sala</span>
-              </button>
               <button onclick="openCreateRoomModal()" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 transition shadow">
                 <i data-lucide="plus" class="w-3.5 h-3.5"></i>
                 <span>Criar Nova Sala</span>
@@ -1224,21 +1107,11 @@
       processTTSQueue();
     }
 
-    function getSavedPassword(roomName) {
-      return sessionStorage.getItem('room_pwd_' + roomName) || localStorage.getItem('room_pwd_' + roomName) || '';
-    }
-
-    function savePassword(roomName, pwd) {
-      if (pwd) {
-        sessionStorage.setItem('room_pwd_' + roomName, pwd);
-        localStorage.setItem('room_pwd_' + roomName, pwd);
-      }
-    }
-
-    function clearSavedPassword(roomName) {
-      sessionStorage.removeItem('room_pwd_' + roomName);
-      localStorage.removeItem('room_pwd_' + roomName);
-    }
+    // Wipe legacy plain-text credentials from localStorage
+    try {
+      localStorage.removeItem('ai_chat_human_token');
+      localStorage.removeItem('ai_chat_username');
+    } catch (_) {}
 
     function getMyUsername() {
       return document.getElementById('my-username').value.trim() || 'Human';
@@ -1262,39 +1135,12 @@
         if (res.ok) {
           const data = await res.json();
           isHumanAuthenticated = !!data.authenticated;
+          currentHumanUser = data.human_name || '';
           currentHumanRole = data.role || '';
-          if (!isHumanAuthenticated) {
-            // Check if we have a saved token in localStorage to auto-restore human session
-            const savedToken = localStorage.getItem('ai_chat_human_token');
-            const savedUser = localStorage.getItem('ai_chat_username') || '';
-            if (savedToken && savedUser) {
-              const loginRes = await fetch('/api/auth/login', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username: savedUser, token: savedToken })
-              });
-              if (loginRes.ok) {
-                const loginData = await loginRes.json();
-                isHumanAuthenticated = true;
-                currentHumanUser = loginData.human_name || savedUser;
-                currentHumanRole = loginData.role || '';
-                if (loginData.must_change_password) {
-                  updateAuthUI(true);
-                  openChangePasswordModal(true);
-                  return;
-                }
-              } else {
-                localStorage.removeItem('ai_chat_human_token');
-              }
-            }
-          } else {
-            currentHumanUser = data.human_name || '';
-            currentHumanRole = data.role || '';
-            if (data.must_change_password) {
-              updateAuthUI(true);
-              openChangePasswordModal(true);
-              return;
-            }
+          if (data.must_change_password) {
+            updateAuthUI(true);
+            openChangePasswordModal(true);
+            return;
           }
           updateAuthUI(isHumanAuthenticated);
         }
@@ -1365,8 +1211,7 @@
       if (isMandatoryPasswordChange) return;
       pendingActionCallback = callback;
       const userInput = document.getElementById('human-auth-username-input');
-      const savedUser = localStorage.getItem('ai_chat_username') || '';
-      if (userInput) userInput.value = savedUser;
+      if (userInput) userInput.value = '';
       const tokenInput = document.getElementById('human-auth-token-input');
       if (tokenInput) tokenInput.value = '';
       const errEl = document.getElementById('auth-error');
@@ -1478,9 +1323,6 @@
             succEl.textContent = 'Palavra-passe alterada com sucesso!';
             succEl.classList.remove('hidden');
           }
-          if (localStorage.getItem('ai_chat_human_token')) {
-            localStorage.setItem('ai_chat_human_token', newPwd);
-          }
           isMandatoryPasswordChange = false;
           setTimeout(async () => {
             const modal = document.getElementById('change-password-modal');
@@ -1540,12 +1382,6 @@
         if (res.ok) {
           isHumanAuthenticated = true;
           currentHumanUser = data.human_name || username;
-          if (remember) {
-            localStorage.setItem('ai_chat_human_token', token);
-            localStorage.setItem('ai_chat_username', username);
-          } else {
-            localStorage.removeItem('ai_chat_human_token');
-          }
           updateAuthUI(true);
           closeAuthModal();
 
@@ -1761,43 +1597,7 @@
     async function selectRoom(roomName) {
       const room = rooms.find(r => r.name === roomName);
       if (!room) return;
-
-      const savedPwd = getSavedPassword(roomName);
-
-      // If protected, no password saved, and not authenticated as human supervisor, prompt
-      if (room.is_protected && !savedPwd && !isHumanAuthenticated) {
-        promptPasswordModal(room, `Token ou Senha necessária para #${room.name}`);
-        return;
-      }
-
-      const success = await loadRoomMessages(room, savedPwd);
-      if (!success && room.is_protected && !isHumanAuthenticated) {
-        // Saved token/password was rejected (expired, rotated, or invalid)
-        clearSavedPassword(roomName);
-        promptPasswordModal(room, `Token de acesso alterado para #${room.name}. Introduza o novo token:`, 'Acesso recusado (403): O token anterior é inválido ou foi alterado.');
-      }
-    }
-
-    function promptPasswordModal(room, customTitle = null, errorMsg = null) {
-      pendingRoomToUnlock = room;
-      document.getElementById('pwd-modal-room-name').textContent = customTitle || `Token ou Senha para #${room.name}`;
-      const input = document.getElementById('room-password-input');
-      input.value = '';
-      const errEl = document.getElementById('pwd-error');
-      if (errorMsg) {
-        errEl.textContent = errorMsg;
-        errEl.classList.remove('hidden');
-      } else {
-        errEl.classList.add('hidden');
-      }
-      document.getElementById('password-modal').classList.remove('hidden');
-      lucide.createIcons();
-      setTimeout(() => input.focus(), 60);
-    }
-
-    function promptChangeRoomPassword() {
-      if (!currentRoom) return;
-      promptPasswordModal(currentRoom, `Alterar / introduzir novo token de acesso para #${currentRoom.name}:`);
+      await loadRoomMessages(room);
     }
 
     function togglePasswordVisibility(inputId, iconId) {
@@ -1812,52 +1612,6 @@
         if (icon) icon.setAttribute('data-lucide', 'eye');
       }
       lucide.createIcons();
-    }
-
-    async function submitPassword() {
-      if (!pendingRoomToUnlock) return;
-      const pwd = document.getElementById('room-password-input').value.trim();
-      const room = pendingRoomToUnlock;
-      const errEl = document.getElementById('pwd-error');
-
-      try {
-        // If not authenticated as human and a token was entered, check if it's the human master token/code
-        if (!isHumanAuthenticated && pwd) {
-          try {
-            const authRes = await fetch('/api/auth/login', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ token: pwd })
-            });
-            if (authRes.ok) {
-              isHumanAuthenticated = true;
-              localStorage.setItem('ai_chat_human_token', pwd);
-              updateAuthUI(true);
-              closePasswordModal();
-              await selectRoom(room.name);
-              return;
-            }
-          } catch(e) {}
-        }
-
-        const success = await loadRoomMessages(room, pwd);
-        if (success) {
-          savePassword(room.name, pwd);
-          closePasswordModal();
-          connectWebSocket(room.name);
-        } else {
-          errEl.textContent = 'Token ou senha incorreta (403). Verifique e tente novamente.';
-          errEl.classList.remove('hidden');
-        }
-      } catch (err) {
-        errEl.textContent = 'Erro ao contactar servidor: ' + err.message;
-        errEl.classList.remove('hidden');
-      }
-    }
-
-    function closePasswordModal() {
-      pendingRoomToUnlock = null;
-      document.getElementById('password-modal').classList.add('hidden');
     }
 
     async function loadOlderMessages() {
@@ -1879,8 +1633,7 @@
 
       try {
         const oldestId = messages[0].id;
-        const pwd = getSavedPassword(currentRoom.name);
-        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/messages?password=${encodeURIComponent(pwd)}&before_id=${oldestId}&limit=50`);
+        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/messages?before_id=${oldestId}&limit=50`);
         if (!res.ok) {
           throw new Error('Falha ao obter mensagens anteriores');
         }
@@ -1918,11 +1671,11 @@
       }
     }
 
-    async function loadRoomMessages(room, password = '') {
+    async function loadRoomMessages(room) {
       try {
         hasMoreOlder = true;
         isLoadingOlder = false;
-        const res = await fetch(`/api/rooms/${encodeURIComponent(room.name)}/messages?password=${encodeURIComponent(password)}&limit=50`);
+        const res = await fetch(`/api/rooms/${encodeURIComponent(room.name)}/messages?limit=50`);
         if (!res.ok) {
           if (res.status === 401) {
             isHumanAuthenticated = false;
@@ -1931,7 +1684,6 @@
             return false;
           }
           if (res.status === 403) {
-            clearSavedPassword(room.name);
             return false;
           }
           throw new Error('Failed to fetch messages');
@@ -1944,9 +1696,6 @@
         }
         lastSeenId = messages.length > 0 ? messages[messages.length - 1].id : 0;
         localStorage.setItem('active_room', room.name);
-        if (password) {
-          savePassword(room.name, password);
-        }
 
         if (lastSeenId > 0 && document.visibilityState === 'visible') {
           advanceReadCursor(room.name, lastSeenId);
@@ -1957,18 +1706,6 @@
         document.getElementById('current-room-name').textContent = '#' + room.name;
         document.getElementById('current-room-topic').textContent = room.topic || 'No topic set';
         document.getElementById('download-btn').classList.remove('hidden');
-        const roomTokenHeaderBtn = document.getElementById('room-token-header-btn');
-        if (roomTokenHeaderBtn) roomTokenHeaderBtn.classList.remove('hidden');
-        
-        const lockBadge = document.getElementById('room-lock-badge');
-        const publicBadge = document.getElementById('room-public-badge');
-        if (room.is_protected) {
-          if (lockBadge) lockBadge.classList.remove('hidden');
-          if (publicBadge) publicBadge.classList.add('hidden');
-        } else {
-          if (lockBadge) lockBadge.classList.add('hidden');
-          if (publicBadge) publicBadge.classList.remove('hidden');
-        }
 
         // Update Archive Badge & Actions
         const archiveBadge = document.getElementById('room-archived-badge');
@@ -2534,7 +2271,7 @@
           await fetchRooms();
           const updated = rooms.find(r => r.name.toLowerCase() === currentRoom.name.toLowerCase());
           if (updated) currentRoom = updated;
-          await loadRoomMessages(currentRoom, getSavedPassword(currentRoom.name));
+          await loadRoomMessages(currentRoom);
         } else {
           const err = await res.json();
           if (res.status === 403) {
@@ -2560,11 +2297,7 @@
       clearTimeout(reconnectTimer);
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const pwd = getSavedPassword(roomName);
       const params = new URLSearchParams();
-      if (pwd) params.set('password', pwd);
-      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
-      if (savedAuthToken) params.set('human_token', savedAuthToken);
       params.set('username', getMyUsername());
       const wsUrl = `${protocol}//${window.location.host}/ws/${encodeURIComponent(roomName)}?${params.toString()}`;
 
@@ -2580,8 +2313,7 @@
         // Catch up on any messages that arrived while reconnecting
         if (currentRoom && lastSeenId > 0) {
           try {
-            const pwd = getSavedPassword(currentRoom.name);
-            const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/messages?password=${encodeURIComponent(pwd)}&since_id=${lastSeenId}`);
+            const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/messages?since_id=${lastSeenId}`);
             if (res.ok) {
               const missed = await res.json();
               if (missed && missed.length > 0) {
@@ -2666,7 +2398,7 @@
           } else if (data.type === 'room_archived' || data.type === 'room_unarchived') {
             if (currentRoom && currentRoom.name.toLowerCase() === data.room_name.toLowerCase()) {
               currentRoom.is_archived = (data.type === 'room_archived');
-              loadRoomMessages(currentRoom, getSavedPassword(currentRoom.name));
+              loadRoomMessages(currentRoom);
             }
             fetchRooms();
           } else if (data.type === 'task_created' || data.type === 'task_updated' || data.type === 'task_deleted' || data.type === 'tasks_reordered') {
@@ -2702,14 +2434,10 @@
         }
 
         if (evt && (evt.code === 4403 || evt.code === 4003 || evt.code === 1008)) {
-          console.warn(`WebSocket fechado devido a erro de autenticação (${evt.code}): ${evt.reason}`);
-          document.getElementById('server-status').textContent = 'Autenticação necessária (403)';
+          console.warn(`WebSocket fechado devido a erro de autorização (${evt.code}): ${evt.reason}`);
+          document.getElementById('server-status').textContent = 'Acesso não autorizado (403)';
           document.getElementById('server-status').parentElement.querySelector('span').className = 'w-2 h-2 rounded-full bg-rose-500';
           clearTimeout(reconnectTimer);
-          clearSavedPassword(roomName);
-          if (currentRoom && currentRoom.name.toLowerCase() === roomName.toLowerCase()) {
-            promptPasswordModal(currentRoom, `O token da sala #${roomName} foi alterado ou revogado. Introduza o novo token:`, 'Sessão terminada pelo servidor (4403 - Token inválido)');
-          }
           return;
         }
 
@@ -2728,19 +2456,11 @@
     setInterval(async () => {
       if (!currentRoom || lastSeenId <= 0) return;
       try {
-        const pwd = getSavedPassword(currentRoom.name);
-        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/messages?password=${encodeURIComponent(pwd)}&since_id=${lastSeenId}`);
+        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/messages?since_id=${lastSeenId}`);
         if (!res.ok) {
           if (res.status === 401 && !isHumanAuthenticated) {
             openAuthModal();
             return;
-          }
-          if ((res.status === 403 || res.status === 401) && currentRoom.is_protected && !isHumanAuthenticated) {
-            clearSavedPassword(currentRoom.name);
-            const modal = document.getElementById('password-modal');
-            if (modal && modal.classList.contains('hidden')) {
-              promptPasswordModal(currentRoom, `O token da sala #${currentRoom.name} expirou ou foi alterado. Insira o novo token:`, 'Acesso recusado (403). Insira o novo token:');
-            }
           }
           return;
         }
@@ -2932,9 +2652,8 @@
 
     async function fetchTasks() {
       if (!currentRoom) return;
-      const pwd = getSavedPassword(currentRoom.name);
       try {
-        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/tasks?password=${encodeURIComponent(pwd)}&hide_completed=${hideCompletedTasks && activeTaskFilter !== 'done'}`);
+        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/tasks?hide_completed=${hideCompletedTasks && activeTaskFilter !== 'done'}`);
         if (!res.ok) return;
         const data = await res.json();
         roomTasks = data.tasks || [];
@@ -3223,9 +2942,8 @@
 
     async function handleQuickProgress(taskId, newProgress) {
       if (!currentRoom) return;
-      const pwd = getSavedPassword(currentRoom.name);
       try {
-        const body = { progress_percent: newProgress, password: pwd };
+        const body = { progress_percent: newProgress };
         if (newProgress >= 100) body.status = 'done';
         await fetch(`/api/tasks/${taskId}`, {
           method: 'PATCH',
@@ -3264,7 +2982,6 @@
       const depsRaw = depsInput ? depsInput.value.trim() : '';
       const dependencies = depsRaw ? depsRaw.split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n) && n > 0) : [];
 
-      const pwd = getSavedPassword(currentRoom.name);
       try {
         const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/tasks`, {
           method: 'POST',
@@ -3281,7 +2998,6 @@
             progress_percent: progressPercent,
             dependencies: dependencies.length > 0 ? dependencies : undefined,
             resource: resourceInput ? resourceInput.value.trim() : '',
-            password: pwd,
           })
         });
 
@@ -3330,10 +3046,9 @@
 
     async function fetchCalendarEvents() {
       if (!currentRoom) return;
-      const pwd = getSavedPassword(currentRoom.name);
       try {
         const scopeParam = activeCalendarScope ? `&scope=${encodeURIComponent(activeCalendarScope)}` : '';
-        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/calendar?password=${encodeURIComponent(pwd)}&include_completed=true${scopeParam}`);
+        const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/calendar?include_completed=true${scopeParam}`);
         if (!res.ok) return;
         const data = await res.json();
         roomCalendarEvents = data.events || [];
@@ -3561,15 +3276,10 @@
         return;
       }
 
-      const pwd = getSavedPassword(currentRoom.name);
-      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
-      const headers = { 'Content-Type': 'application/json' };
-      if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
-
       try {
         const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/calendar`, {
           method: 'POST',
-          headers,
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             title: title,
             start_at: startAt,
@@ -3580,7 +3290,6 @@
             is_personal: personalCheck ? personalCheck.checked : false,
             wake_on_start: wakeStartCheck ? wakeStartCheck.checked : true,
             force: force,
-            password: pwd,
           })
         });
 
@@ -3616,18 +3325,13 @@
 
     async function handleUpdateCalendarEventStatus(eventId, newStatus) {
       if (!currentRoom) return;
-      const pwd = getSavedPassword(currentRoom.name);
-      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
-      const headers = { 'Content-Type': 'application/json' };
-      if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
 
       try {
         const res = await fetch(`/api/calendar/events/${eventId}`, {
           method: 'PATCH',
-          headers,
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             status: newStatus,
-            password: pwd,
           })
         });
         if (!res.ok) {
@@ -3646,15 +3350,10 @@
     async function handleDeleteCalendarEvent(eventId) {
       if (!confirm('Deseja eliminar este agendamento?')) return;
       if (!currentRoom) return;
-      const pwd = getSavedPassword(currentRoom.name);
-      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
-      const headers = {};
-      if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
 
       try {
-        const res = await fetch(`/api/calendar/events/${eventId}?password=${encodeURIComponent(pwd)}`, {
+        const res = await fetch(`/api/calendar/events/${eventId}`, {
           method: 'DELETE',
-          headers,
         });
         if (!res.ok) {
           const err = await res.json();
@@ -3671,21 +3370,18 @@
 
     function downloadCalendarIcs() {
       if (!currentRoom) return;
-      const pwd = getSavedPassword(currentRoom.name);
-      const url = `/api/rooms/${encodeURIComponent(currentRoom.name)}/calendar.ics?password=${encodeURIComponent(pwd)}`;
+      const url = `/api/rooms/${encodeURIComponent(currentRoom.name)}/calendar.ics`;
       window.open(url, '_blank');
     }
 
     async function handleUpdateTaskStatus(taskId, newStatus) {
       if (!currentRoom) return;
-      const pwd = getSavedPassword(currentRoom.name);
       try {
         const res = await fetch(`/api/tasks/${taskId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             status: newStatus,
-            password: pwd,
           })
         });
         if (!res.ok) {
@@ -3702,9 +3398,8 @@
     async function handleDeleteTask(taskId) {
       if (!confirm('Deseja eliminar esta tarefa?')) return;
       if (!currentRoom) return;
-      const pwd = getSavedPassword(currentRoom.name);
       try {
-        const res = await fetch(`/api/tasks/${taskId}?password=${encodeURIComponent(pwd)}`, {
+        const res = await fetch(`/api/tasks/${taskId}`, {
           method: 'DELETE'
         });
         if (!res.ok) {
@@ -3731,14 +3426,12 @@
       newOrder[targetIdx] = temp;
 
       const taskIds = newOrder.map(t => t.id);
-      const pwd = getSavedPassword(currentRoom.name);
       try {
         const res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/tasks/reorder`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             task_ids: taskIds,
-            password: pwd,
           })
         });
         if (res.ok) {
@@ -3807,7 +3500,6 @@
 
     async function fetchPresence() {
       if (!currentRoom) return;
-      const pwd = getSavedPassword(currentRoom.name);
       try {
         let res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/team-status`);
         if (res.ok) {
@@ -3816,7 +3508,7 @@
           renderPresence(data);
           return;
         }
-        res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/presence?password=${encodeURIComponent(pwd)}`);
+        res = await fetch(`/api/rooms/${encodeURIComponent(currentRoom.name)}/presence`);
         if (!res.ok) return;
         const data = await res.json();
         currentPresence = data;
@@ -3938,7 +3630,7 @@
 
             const unreadCount = (liv && liv.unread_count) || m.unread_directed_count || (m.unread_messages ? m.unread_messages.length : 0);
             const unreadBadge = unreadCount > 0
-              ? `<button type="button" onclick="openAgentUnreadModal('${escapeJs(m.name)}', ${m.principal_id})" class="text-[9px] px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-300 border border-red-500/40 font-semibold hover:bg-red-500/30 transition cursor-pointer" title="Clique para ver ${unreadCount} mensagens por ler">🔴 ${unreadCount} por ler</button>`
+              ? `<button type="button" data-agent-name="${escapeHtml(m.name)}" data-principal-id="${m.principal_id}" onclick="openAgentUnreadModal(this.dataset.agentName, Number(this.dataset.principalId))" class="text-[9px] px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-300 border border-red-500/40 font-semibold hover:bg-red-500/30 transition cursor-pointer" title="Clique para ver ${unreadCount} mensagens por ler">🔴 ${unreadCount} por ler</button>`
               : '';
 
             const roleName = m.role_display_name || m.role || (isHuman ? 'Humano' : 'Agente');
@@ -4111,7 +3803,6 @@
         return;
       }
 
-      const password = getSavedPassword(currentRoom.name);
       const toVal = (document.getElementById('message-to')?.value?.trim()) || 'all';
 
       try {
@@ -4124,7 +3815,6 @@
             sender: sender,
             content: content,
             role: 'human',
-            password: password,
             to: toVal
           })
         });
@@ -4135,11 +3825,6 @@
             isHumanAuthenticated = false;
             updateAuthUI(false);
             openAuthModal(() => handleSendMessage());
-            return;
-          }
-          if (res.status === 403 && currentRoom.is_protected && !isHumanAuthenticated && (err.error || '').toLowerCase().includes('password')) {
-            clearSavedPassword(currentRoom.name);
-            promptPasswordModal(currentRoom, `Token ou senha necessária para enviar mensagens em #${currentRoom.name}:`, 'Token inválido ou alterado');
             return;
           }
           alert('Error sending message: ' + (err.error || 'Access denied'));
@@ -4209,13 +3894,6 @@
     function openCreateRoomModal() {
       document.getElementById('new-room-name').value = '';
       document.getElementById('new-room-topic').value = '';
-      const pwdInput = document.getElementById('new-room-password');
-      if (pwdInput) {
-        pwdInput.value = '';
-        pwdInput.type = 'password';
-      }
-      const preview = document.getElementById('new-room-token-preview');
-      if (preview) preview.classList.add('hidden');
       document.getElementById('create-room-modal').classList.remove('hidden');
       document.getElementById('new-room-name').focus();
       if (window.lucide) lucide.createIcons();
@@ -4228,7 +3906,6 @@
     async function submitCreateRoom() {
       const name = document.getElementById('new-room-name').value.trim();
       const topic = document.getElementById('new-room-topic').value.trim();
-      const password = document.getElementById('new-room-password').value;
 
       if (!name) {
         alert('Room name cannot be empty');
@@ -4239,7 +3916,7 @@
         const res = await fetch('/api/rooms', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, topic, password })
+          body: JSON.stringify({ name, topic })
         });
 
         const data = await res.json();
@@ -4248,12 +3925,6 @@
           return;
         }
 
-        const effectivePassword = data.password || password;
-        if (effectivePassword) {
-          savePassword(name, effectivePassword);
-          try { await navigator.clipboard.writeText(effectivePassword); } catch (_) {}
-          alert(`Sala #${name} criada com sucesso!\n\nToken de Acesso: ${effectivePassword}\n\n(Copiado automaticamente para a área de transferência para poderes fornecer aos agentes!)`);
-        }
         closeCreateRoomModal();
         await fetchRooms();
         selectRoom(name);
@@ -4264,13 +3935,12 @@
 
     function downloadTranscript() {
       if (!currentRoom) return;
-      const pwd = getSavedPassword(currentRoom.name);
-      window.open(`/api/rooms/${encodeURIComponent(currentRoom.name)}/log?password=${encodeURIComponent(pwd)}`, '_blank');
+      window.open(`/api/rooms/${encodeURIComponent(currentRoom.name)}/log`, '_blank');
     }
 
     function refreshMessages() {
       if (currentRoom) {
-        loadRoomMessages(currentRoom, getSavedPassword(currentRoom.name));
+        loadRoomMessages(currentRoom);
       }
       fetchRooms();
     }
@@ -4354,11 +4024,8 @@
 
     // --- Agents Management ---
     async function fetchAdminAgents() {
-      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
       try {
-        const headers = {};
-        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
-        const res = await fetch('/api/agents', { headers });
+        const res = await fetch('/api/agents');
         if (!res.ok) {
           if (res.status === 403) {
             isHumanAuthenticated = false;
@@ -4476,13 +4143,9 @@
 
     async function handleRotateAgentToken(callsign) {
       if (!confirm(`Tens a certeza que desejas rodar o token de @${callsign}? O token atual deixará de funcionar imediatamente.`)) return;
-      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
       try {
-        const headers = { 'Content-Type': 'application/json' };
-        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
         const res = await fetch(`/api/agents/${encodeURIComponent(callsign)}/rotate`, {
           method: 'POST',
-          headers,
         });
         const data = await res.json();
         if (!res.ok) {
@@ -4498,13 +4161,9 @@
 
     async function handleDeleteAgent(callsign) {
       if (!confirm(`Desejas eliminar permanentemente o agente @${callsign} do registo?`)) return;
-      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
       try {
-        const headers = {};
-        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
         const res = await fetch(`/api/agents/${encodeURIComponent(callsign)}`, {
           method: 'DELETE',
-          headers,
         });
         const data = await res.json();
         if (!res.ok) {
@@ -4520,13 +4179,10 @@
     async function handleToggleAgentStatus(callsign, targetStatus) {
       const actionDesc = targetStatus === 'inactive' ? 'desativar' : 'reativar';
       if (!confirm(`Tens a certeza que desejas ${actionDesc} o agente @${callsign}?`)) return;
-      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
       try {
-        const headers = { 'Content-Type': 'application/json' };
-        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
         const res = await fetch(`/api/agents/${encodeURIComponent(callsign)}/status`, {
           method: 'POST',
-          headers,
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: targetStatus }),
         });
         const data = await res.json();
@@ -4552,13 +4208,10 @@
         return;
       }
 
-      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
       try {
-        const headers = { 'Content-Type': 'application/json' };
-        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
         const res = await fetch('/api/agents', {
           method: 'POST',
-          headers,
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             callsign: callsign,
             role: roleInput.value.trim() || 'agent',
@@ -4582,11 +4235,8 @@
 
     // --- Rooms & Passwords Management ---
     async function fetchAdminRooms() {
-      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
       try {
-        const headers = {};
-        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
-        const res = await fetch('/api/admin/rooms', { headers });
+        const res = await fetch('/api/admin/rooms');
         if (!res.ok) {
           if (res.status === 403) {
             isHumanAuthenticated = false;
@@ -4625,11 +4275,7 @@
         return;
       }
 
-      container.innerHTML = list.map((r, idx) => {
-        const isProtected = Boolean(r.is_protected);
-        const pwdVal = r.password || '';
-        const pwdInputId = `room-pwd-input-${idx}`;
-
+      container.innerHTML = list.map(r => {
         return `
           <div class="p-3 bg-slate-950/70 border border-slate-800 rounded-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
             <div class="flex items-center space-x-2.5 min-w-0 flex-1">
@@ -4639,13 +4285,6 @@
               <div class="min-w-0">
                 <div class="flex items-center space-x-2">
                   <span class="font-bold text-slate-200 text-sm">#${escapeHtml(r.name)}</span>
-                  ${isProtected ? `
-                    <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center gap-1">
-                      <i data-lucide="lock" class="w-3 h-3"></i> Protegida
-                    </span>
-                  ` : `
-                    <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-400 border border-slate-700">Pública</span>
-                  `}
                   ${r.is_archived ? `
                     <span class="px-1.5 py-0.2 rounded text-[10px] bg-rose-500/10 text-rose-400 border border-rose-500/30">Arquivada</span>
                   ` : ''}
@@ -4654,426 +4293,10 @@
                 <div class="text-[10px] text-slate-500 mt-0.5">Mensagens: ${r.message_count || 0} • Membros: ${r.member_count || 0}</div>
               </div>
             </div>
-
-            <!-- Password Box -->
-            <div class="flex items-center space-x-1.5 w-full md:w-auto bg-slate-900 px-2 py-1 rounded-lg border border-slate-800">
-              <span class="text-[10px] uppercase font-bold text-slate-500 mr-1">Senha:</span>
-              ${isProtected ? `
-                <input id="${pwdInputId}" type="password" readonly value="${escapeHtml(pwdVal)}" placeholder="••••••••"
-                  class="bg-transparent text-[11px] font-mono text-amber-300 w-28 sm:w-36 focus:outline-none select-all" />
-                <button onclick="togglePasswordVisibilityById('${pwdInputId}', this)" title="Ver/Ocultar Senha"
-                  class="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 transition">
-                  <i data-lucide="eye" class="w-3.5 h-3.5"></i>
-                </button>
-                <button onclick="copyToClipboard('${escapeHtml(pwdVal)}', this)" title="Copiar Senha para fornecer aos agentes"
-                  class="px-2 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/40 text-amber-300 text-[11px] font-medium border border-amber-500/30 flex items-center gap-1 transition">
-                  <i data-lucide="copy" class="w-3 h-3"></i>
-                  <span>Copiar</span>
-                </button>
-              ` : `
-                <span class="text-slate-500 text-[11px] italic px-2">Sem senha</span>
-              `}
-            </div>
-
-            <!-- Actions -->
-            <div class="flex items-center space-x-1.5 flex-shrink-0 self-end md:self-center">
-              <button onclick="openCurrentRoomTokenModal('${escapeHtml(r.name)}')" title="Abrir Gerador e Gestor de Token para esta sala"
-                class="px-2.5 py-1 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-[11px] font-semibold flex items-center gap-1 transition">
-                <i data-lucide="sparkles" class="w-3 h-3 text-amber-400"></i>
-                <span>Gerar / Ver Token</span>
-              </button>
-              <button onclick="handleAdminSetRoomPassword('${escapeHtml(r.name)}', ${isProtected})" title="Definir ou Alterar Senha Manual"
-                class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-medium border border-slate-700 flex items-center gap-1 transition">
-                <i data-lucide="edit-3" class="w-3 h-3"></i>
-                <span>Manual</span>
-              </button>
-            </div>
           </div>
         `;
       }).join('');
       lucide.createIcons();
-    }
-
-    async function handleAdminQuickGenerateToken(roomName) {
-      if (!confirm(`Gerar automaticamente um novo token para a sala #${roomName}?\n(O token anterior deixará de funcionar imediatamente).`)) return;
-      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
-      try {
-        const headers = { 'Content-Type': 'application/json' };
-        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
-        const res = await fetch(`/api/admin/rooms/${encodeURIComponent(roomName)}/password`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ auto_generate: true }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          alert('Erro ao gerar token: ' + (data.error || 'Erro'));
-          return;
-        }
-        const newTok = data.password;
-        savePassword(roomName, newTok);
-        try { await navigator.clipboard.writeText(newTok); } catch (_) {}
-        alert(`Novo token gerado para a sala #${roomName}!\n\nToken: ${newTok}\n\n(Copiado automaticamente para a área de transferência para poderes fornecer aos agentes!)`);
-        await fetchAdminRooms();
-        await fetchRooms();
-      } catch (err) {
-        alert('Erro de rede: ' + err.message);
-      }
-    }
-
-    async function handleAdminSetRoomPassword(roomName, currentlyProtected) {
-      const promptMsg = currentlyProtected 
-        ? `Definir senha/token para #${roomName}:\n- Escreve a nova senha desejada\n- OU escreve 'GERAR' para criar um token aleatório seguro\n- OU deixa vazio para REMOVER a proteção e tornar a sala pública:`
-        : `Proteger a sala #${roomName}:\n- Escreve a senha/token de acesso pretendido\n- OU escreve 'GERAR' para criar um token automático seguro:`;
-      const choice = prompt(promptMsg);
-      if (choice === null) return; // Cancelled
-
-      const isAuto = choice.trim().toUpperCase() === 'GERAR';
-      const cleanVal = choice.trim();
-
-      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
-      try {
-        const headers = { 'Content-Type': 'application/json' };
-        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
-        const body = isAuto ? { auto_generate: true } : { password: cleanVal };
-        const res = await fetch(`/api/admin/rooms/${encodeURIComponent(roomName)}/password`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(body),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          alert('Erro ao definir senha: ' + (data.error || 'Erro'));
-          return;
-        }
-        const finalToken = data.password || cleanVal;
-        if (finalToken) {
-          savePassword(roomName, finalToken);
-          try { await navigator.clipboard.writeText(finalToken); } catch (_) {}
-          alert(`Senha/Token da sala #${roomName} configurada com sucesso!\n\nToken: ${finalToken}\n\n(Copiado automaticamente para a área de transferência para poderes fornecer aos agentes!)`);
-        } else {
-          clearSavedPassword(roomName);
-          alert(`Proteção removida da sala #${roomName}. A sala é agora pública.`);
-        }
-        await fetchAdminRooms();
-        await fetchRooms();
-      } catch (err) {
-        alert('Erro de rede: ' + err.message);
-      }
-    }
-
-    // =============================================================
-    // Dedicated Room Token Generator & Password Manager (v2.8.1)
-    // =============================================================
-    let activeTokenModalRoomName = null;
-
-    async function openCurrentRoomTokenModal(targetRoomName = null) {
-      const roomName = targetRoomName || (currentRoom ? currentRoom.name : null);
-      if (!roomName) {
-        if (rooms && rooms.length > 0) {
-          return openCurrentRoomTokenModal(rooms[0].name);
-        }
-        alert('Nenhuma sala disponível para gerir tokens.');
-        return;
-      }
-
-      if (!isHumanAuthenticated) {
-        openAuthModal(() => openCurrentRoomTokenModal(roomName));
-        return;
-      }
-
-      activeTokenModalRoomName = roomName;
-
-      const titleEl = document.getElementById('room-token-modal-title');
-      if (titleEl) titleEl.textContent = '#' + roomName;
-
-      const banner = document.getElementById('room-token-generated-banner');
-      if (banner) banner.classList.add('hidden');
-
-      const manualInput = document.getElementById('room-token-manual-input');
-      if (manualInput) manualInput.value = '';
-
-      const currentInput = document.getElementById('room-token-current-input');
-      if (currentInput) {
-        currentInput.type = 'password';
-        currentInput.value = '';
-      }
-
-      const eyeIcon = document.getElementById('room-token-eye-icon');
-      if (eyeIcon) eyeIcon.setAttribute('data-lucide', 'eye');
-
-      const statusBadge = document.getElementById('room-token-status-badge');
-
-      const roomObj = rooms.find(r => r.name.toLowerCase() === roomName.toLowerCase()) || 
-                      (currentRoom && currentRoom.name.toLowerCase() === roomName.toLowerCase() ? currentRoom : null);
-      let isProtected = roomObj ? Boolean(roomObj.is_protected) : false;
-
-      let knownPassword = getSavedPassword(roomName) || '';
-      if (currentHumanRole === 'admin') {
-        try {
-          const savedAuthToken = localStorage.getItem('ai_chat_human_token');
-          const headers = {};
-          if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
-          const res = await fetch('/api/admin/rooms', { headers });
-          if (res.ok) {
-            const data = await res.json();
-            adminRooms = data.rooms || [];
-            const found = adminRooms.find(r => r.name.toLowerCase() === roomName.toLowerCase());
-            if (found) {
-              isProtected = Boolean(found.is_protected);
-              if (found.password) {
-                knownPassword = found.password;
-                savePassword(roomName, knownPassword);
-              }
-            }
-          }
-        } catch (e) {
-          console.warn('Could not refresh admin rooms:', e);
-        }
-      }
-
-      if (statusBadge) {
-        if (isProtected) {
-          statusBadge.className = 'px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20';
-          statusBadge.textContent = 'Protegida por Token';
-        } else {
-          statusBadge.className = 'px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-400 border border-slate-700';
-          statusBadge.textContent = 'Pública (Sem Proteção)';
-        }
-      }
-
-      if (currentInput) {
-        currentInput.value = knownPassword;
-        currentInput.placeholder = isProtected ? (knownPassword ? '••••••••' : 'Token configurado') : 'Sem token definido (sala pública)';
-      }
-
-      document.getElementById('room-token-modal').classList.remove('hidden');
-      lucide.createIcons();
-    }
-
-    function closeRoomTokenModal() {
-      const modal = document.getElementById('room-token-modal');
-      if (modal) modal.classList.add('hidden');
-      activeTokenModalRoomName = null;
-    }
-
-    async function executeGenerateRoomToken() {
-      if (!activeTokenModalRoomName) {
-        alert('Nenhuma sala selecionada.');
-        return;
-      }
-
-      const roomName = activeTokenModalRoomName;
-      const btn = document.getElementById('btn-execute-generate-token');
-      const originalText = btn ? btn.innerHTML : '';
-      if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i><span>A gerar novo token criptográfico...</span>';
-        lucide.createIcons();
-      }
-
-      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
-      try {
-        const headers = { 'Content-Type': 'application/json' };
-        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
-        const res = await fetch(`/api/admin/rooms/${encodeURIComponent(roomName)}/password`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ auto_generate: true }),
-        });
-
-        const data = await res.json();
-        if (!res.ok) {
-          alert('Erro ao gerar token: ' + (data.error || 'Erro desconhecido'));
-          return;
-        }
-
-        const newTok = data.password;
-        savePassword(roomName, newTok);
-
-        try {
-          await navigator.clipboard.writeText(newTok);
-        } catch (e) {
-          console.warn('Clipboard write error:', e);
-        }
-
-        const currentInput = document.getElementById('room-token-current-input');
-        if (currentInput) {
-          currentInput.value = newTok;
-          currentInput.type = 'text';
-          const eyeIcon = document.getElementById('room-token-eye-icon');
-          if (eyeIcon) eyeIcon.setAttribute('data-lucide', 'eye-off');
-        }
-
-        const codeEl = document.getElementById('room-token-newly-generated-code');
-        if (codeEl) codeEl.textContent = newTok;
-
-        const banner = document.getElementById('room-token-generated-banner');
-        if (banner) banner.classList.remove('hidden');
-
-        const statusBadge = document.getElementById('room-token-status-badge');
-        if (statusBadge) {
-          statusBadge.className = 'px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
-          statusBadge.textContent = 'Token Ativo & Protegido';
-        }
-
-        await fetchRooms();
-        if (currentRoom && currentRoom.name.toLowerCase() === roomName.toLowerCase()) {
-          currentRoom.is_protected = true;
-          const lockBadge = document.getElementById('room-lock-badge');
-          const publicBadge = document.getElementById('room-public-badge');
-          if (lockBadge) lockBadge.classList.remove('hidden');
-          if (publicBadge) publicBadge.classList.add('hidden');
-        }
-      } catch (err) {
-        alert('Erro de rede: ' + err.message);
-      } finally {
-        if (btn) {
-          btn.disabled = false;
-          btn.innerHTML = originalText;
-          lucide.createIcons();
-        }
-      }
-    }
-
-    async function submitManualRoomToken() {
-      if (!activeTokenModalRoomName) return;
-      const roomName = activeTokenModalRoomName;
-      const input = document.getElementById('room-token-manual-input');
-      const val = (input ? input.value : '').trim();
-
-      if (!val) {
-        alert('Por favor introduz uma senha válida, ou clica em "Remover proteção" se pretendes tornar a sala pública.');
-        if (input) input.focus();
-        return;
-      }
-
-      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
-      try {
-        const headers = { 'Content-Type': 'application/json' };
-        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
-        const res = await fetch(`/api/admin/rooms/${encodeURIComponent(roomName)}/password`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ password: val }),
-        });
-
-        const data = await res.json();
-        if (!res.ok) {
-          alert('Erro ao guardar senha: ' + (data.error || 'Erro desconhecido'));
-          return;
-        }
-
-        const finalTok = data.password || val;
-        savePassword(roomName, finalTok);
-        try { await navigator.clipboard.writeText(finalTok); } catch (_) {}
-
-        const currentInput = document.getElementById('room-token-current-input');
-        if (currentInput) {
-          currentInput.value = finalTok;
-          currentInput.type = 'text';
-          const eyeIcon = document.getElementById('room-token-eye-icon');
-          if (eyeIcon) eyeIcon.setAttribute('data-lucide', 'eye-off');
-        }
-
-        const codeEl = document.getElementById('room-token-newly-generated-code');
-        if (codeEl) codeEl.textContent = finalTok;
-
-        const banner = document.getElementById('room-token-generated-banner');
-        if (banner) banner.classList.remove('hidden');
-
-        const statusBadge = document.getElementById('room-token-status-badge');
-        if (statusBadge) {
-          statusBadge.className = 'px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
-          statusBadge.textContent = 'Token Ativo & Protegido';
-        }
-
-        await fetchRooms();
-        if (currentRoom && currentRoom.name.toLowerCase() === roomName.toLowerCase()) {
-          currentRoom.is_protected = true;
-          const lockBadge = document.getElementById('room-lock-badge');
-          const publicBadge = document.getElementById('room-public-badge');
-          if (lockBadge) lockBadge.classList.remove('hidden');
-          if (publicBadge) publicBadge.classList.add('hidden');
-        }
-      } catch (err) {
-        alert('Erro de rede: ' + err.message);
-      }
-    }
-
-    async function submitRemoveRoomProtection() {
-      if (!activeTokenModalRoomName) return;
-      const roomName = activeTokenModalRoomName;
-      if (!confirm(`Tens a certeza que desejas remover o token de acesso de #${roomName}?\nA sala passará a ser pública para qualquer utilizador ou agente.`)) return;
-
-      const savedAuthToken = localStorage.getItem('ai_chat_human_token');
-      try {
-        const headers = { 'Content-Type': 'application/json' };
-        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
-        const res = await fetch(`/api/admin/rooms/${encodeURIComponent(roomName)}/password`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ password: '' }),
-        });
-
-        const data = await res.json();
-        if (!res.ok) {
-          alert('Erro ao remover proteção: ' + (data.error || 'Erro desconhecido'));
-          return;
-        }
-
-        clearSavedPassword(roomName);
-
-        const currentInput = document.getElementById('room-token-current-input');
-        if (currentInput) {
-          currentInput.value = '';
-          currentInput.placeholder = 'Sem token definido (sala pública)';
-        }
-
-        const banner = document.getElementById('room-token-generated-banner');
-        if (banner) banner.classList.add('hidden');
-
-        const statusBadge = document.getElementById('room-token-status-badge');
-        if (statusBadge) {
-          statusBadge.className = 'px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-400 border border-slate-700';
-          statusBadge.textContent = 'Pública (Sem Proteção)';
-        }
-
-        alert(`Proteção removida da sala #${roomName}. A sala é agora pública.`);
-
-        await fetchRooms();
-        if (currentRoom && currentRoom.name.toLowerCase() === roomName.toLowerCase()) {
-          currentRoom.is_protected = false;
-          const lockBadge = document.getElementById('room-lock-badge');
-          const publicBadge = document.getElementById('room-public-badge');
-          if (lockBadge) lockBadge.classList.add('hidden');
-          if (publicBadge) publicBadge.classList.remove('hidden');
-        }
-      } catch (err) {
-        alert('Erro de rede: ' + err.message);
-      }
-    }
-
-    function copyCurrentRoomToken(btn) {
-      const input = document.getElementById('room-token-current-input');
-      const val = (input ? input.value : '').trim();
-      if (!val) {
-        alert('Esta sala não possui token configurado ou ainda não foi gerado nenhum token.');
-        return;
-      }
-      copyToClipboard(val, btn);
-      const copiedNotice = document.getElementById('room-token-last-copied');
-      if (copiedNotice) {
-        copiedNotice.classList.remove('hidden');
-        setTimeout(() => copiedNotice.classList.add('hidden'), 2500);
-      }
-    }
-
-    function copyGeneratedTokenFromBanner(btn) {
-      const codeEl = document.getElementById('room-token-newly-generated-code');
-      const val = (codeEl ? codeEl.textContent : '').trim();
-      if (!val) return;
-      copyToClipboard(val, btn);
     }
   </script>
 </body>

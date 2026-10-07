@@ -317,7 +317,7 @@ class V3AuthenticationMiddleware:
                         "/api/status",
                         "/static",
                     )
-                    is_allowed = (path == "/" or any(path.startswith(p) for p in allowed_prefixes))
+                    is_allowed = (path in ("/", "/favicon.ico") or any(path.startswith(p) for p in allowed_prefixes))
                     if not is_allowed:
                         response = JSONResponse(
                             {
@@ -3492,12 +3492,17 @@ async def app_lifespan(app: Starlette):
             await asyncio.gather(cal_task, live_task, return_exceptions=True)
         except Exception:
             pass
+        # FastMCP's StreamableHTTPSessionManager cannot be reused once started; re-entering
+        # its run() context manager raises RuntimeError("Session manager has already started").
+        # In test environments with multiple server lifecycles, resetting _session_manager forces
+        # FastMCP to instantiate a fresh session manager on subsequent runs.
         if getattr(mcp, "_session_manager", None) is not None:
             mcp._session_manager = None
 
 
 def create_app(allowed_hosts: list[str] | None = None) -> Any:
     """Builds and returns the combined Starlette ASGI application with security middleware."""
+    # Ensure fresh FastMCP session manager if a previous test or server run already started it.
     if getattr(mcp, "_session_manager", None) is not None and getattr(mcp._session_manager, "_has_started", False):
         mcp._session_manager = None
 
