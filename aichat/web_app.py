@@ -3492,10 +3492,15 @@ async def app_lifespan(app: Starlette):
             await asyncio.gather(cal_task, live_task, return_exceptions=True)
         except Exception:
             pass
+        if getattr(mcp, "_session_manager", None) is not None:
+            mcp._session_manager = None
 
 
 def create_app(allowed_hosts: list[str] | None = None) -> Any:
     """Builds and returns the combined Starlette ASGI application with security middleware."""
+    if getattr(mcp, "_session_manager", None) is not None and getattr(mcp._session_manager, "_has_started", False):
+        mcp._session_manager = None
+
     if allowed_hosts is None:
         env_allowed = os.environ.get("AICHAT_ALLOWED_HOSTS", "").strip()
         if env_allowed:
@@ -3535,6 +3540,7 @@ def create_app(allowed_hosts: list[str] | None = None) -> Any:
 
     routes = [
         Route("/", endpoint=endpoint_index, methods=["GET"]),
+        Route("/favicon.ico", endpoint=lambda req: Response(status_code=204), methods=["GET"]),
         Route("/tools/aichat-wait.py", endpoint=endpoint_serve_aichat_wait, methods=["GET"]),
         Route("/api/status", endpoint=endpoint_status, methods=["GET"]),
         Route("/api/wake", endpoint=endpoint_wake, methods=["GET"]),

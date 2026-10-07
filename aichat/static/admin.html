@@ -6,6 +6,8 @@
   <title>ai-chat v3 — Consola de Administração</title>
   <!-- Tailwind CSS (Served locally) -->
   <link rel="stylesheet" href="/static/tailwind.min.css">
+  <!-- Common utilities -->
+  <script src="/static/common.js"></script>
   <!-- Lucide Icons -->
   <script src="https://unpkg.com/lucide@0.378.0/dist/umd/lucide.min.js" integrity="sha384-qhUDVxItfTfdldcM+OXATzmed102bu7gbQzEzi7677Xh/Swfmh1R3gajkj18PhRK" crossorigin="anonymous"></script>
   <style>
@@ -1142,25 +1144,6 @@
       if (tabId === 'settings') loadSettings();
       if (tabId === 'system') loadSystemInfo();
       if (tabId === 'matrix') loadAccessMatrix();
-    }
-
-    function formatRelativeTime(isoStr) {
-      if (!isoStr) return 'nunca';
-      try {
-        const d = new Date(isoStr.replace(' ', 'T'));
-        const now = new Date();
-        const diffSec = Math.floor((now - d) / 1000);
-        if (isNaN(diffSec) || diffSec < 0) return 'agora';
-        if (diffSec < 60) return `há ${diffSec}s`;
-        const diffMin = Math.floor(diffSec / 60);
-        if (diffMin < 60) return `há ${diffMin}m`;
-        const diffHours = Math.floor(diffMin / 60);
-        if (diffHours < 24) return `há ${diffHours}h`;
-        const diffDays = Math.floor(diffHours / 24);
-        return `há ${diffDays}d`;
-      } catch (e) {
-        return 'nunca';
-      }
     }
 
     // --- Alerts ---
@@ -2910,11 +2893,6 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'} --ti
       lucide.createIcons();
     }
 
-    function escapeJs(str) {
-      if (!str) return '';
-      return String(str).replace(/'/g, "\\'").replace(/"/g, '&quot;');
-    }
-
     async function handleMatrixAccessChange(roomId, principalId, grant, roomName, principalName, checkboxEl) {
       if (grant) {
         try {
@@ -3289,48 +3267,6 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'} --ti
     function nextAuditPage() {
       auditOffset += auditLimit;
       loadAuditLog();
-    }
-
-    // --- Utility Functions ---
-    function copyTextToClipboard(text, onSuccess) {
-      if (!text) return;
-      if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(text).then(() => {
-          if (onSuccess) onSuccess();
-        }).catch(() => {
-          fallbackCopyText(text, onSuccess);
-        });
-      } else {
-        fallbackCopyText(text, onSuccess);
-      }
-    }
-
-    function fallbackCopyText(text, onSuccess) {
-      try {
-        const textArea = document.createElement("textarea");
-        textArea.value = text;
-        textArea.style.position = "fixed";
-        textArea.style.left = "-999999px";
-        textArea.style.top = "-999999px";
-        document.body.appendChild(textArea);
-        textArea.focus();
-        textArea.select();
-        const successful = document.execCommand('copy');
-        document.body.removeChild(textArea);
-        if (successful && onSuccess) onSuccess();
-      } catch (err) {
-        console.warn('Fallback copy failed:', err);
-      }
-    }
-
-    function escapeHtml(str) {
-      if (!str) return '';
-      return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
     }
 
     window.addEventListener('DOMContentLoaded', initAdmin);

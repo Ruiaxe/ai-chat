@@ -6,6 +6,8 @@
   <title>AI Agent Chat Hub</title>
   <!-- Tailwind CSS (Served locally) -->
   <link rel="stylesheet" href="/static/tailwind.min.css">
+  <!-- Common utilities -->
+  <script src="/static/common.js"></script>
   <!-- Marked for Markdown rendering (pinned version with SRI) -->
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous"></script>
   <!-- DOMPurify for HTML sanitization (pinned version with SRI) -->
@@ -593,6 +595,109 @@
       <div id="agent-unread-modal-list" class="space-y-2 max-h-80 overflow-y-auto pr-1"></div>
       <div class="flex justify-end pt-2">
         <button onclick="closeModal('modal-agent-unread')" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition">Fechar</button>
+      </div>
+  <!-- Dedicated Room Token Generator & Password Manager Modal -->
+  <div id="room-token-modal" class="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div class="flex items-center space-x-2.5">
+          <div class="p-2 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20">
+            <i data-lucide="key" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <h3 class="font-bold text-white text-base">Token de Acesso da Sala</h3>
+            <p id="room-token-modal-title" class="text-xs text-slate-400 font-mono">#geral</p>
+          </div>
+        </div>
+        <button onclick="closeRoomTokenModal()" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <!-- Current Token Display -->
+      <div id="room-token-current-section" class="space-y-2">
+        <div class="flex items-center justify-between text-xs">
+          <span class="text-slate-400 font-medium">Estado da Sala:</span>
+          <span id="room-token-status-badge" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">Protegida</span>
+        </div>
+
+        <div id="room-token-val-container" class="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Token Atual da Sala</span>
+            <span id="room-token-last-copied" class="text-[10px] text-emerald-400 hidden font-medium">✓ Copiado!</span>
+          </div>
+          <div class="flex items-center space-x-2">
+            <input id="room-token-current-input" type="password" readonly placeholder="Sem token definido"
+              class="w-full bg-slate-900 border border-slate-700/80 rounded-lg px-2.5 py-1.5 text-xs text-amber-300 font-mono select-all focus:outline-none" />
+            <button onclick="togglePasswordVisibilityById('room-token-current-input', this)" class="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition" title="Ver/Ocultar Token">
+              <i id="room-token-eye-icon" data-lucide="eye" class="w-4 h-4"></i>
+            </button>
+            <button onclick="copyCurrentRoomToken(this)" class="px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-xs font-semibold flex items-center gap-1 transition">
+              <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+              <span>Copiar</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Generator Action Button -->
+      <div class="p-4 bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-indigo-500/10 border border-amber-500/30 rounded-xl space-y-2.5">
+        <div class="flex items-start justify-between">
+          <div>
+            <h4 class="text-xs font-bold text-white flex items-center gap-1.5">
+              <i data-lucide="sparkles" class="w-4 h-4 text-amber-400"></i>
+              Gerador Automático de Token
+            </h4>
+            <p class="text-[11px] text-slate-400 mt-0.5">Gera instantaneamente um token aleatório criptográfico e aplica-o a esta sala.</p>
+          </div>
+        </div>
+        <button onclick="executeGenerateRoomToken()" id="btn-execute-generate-token"
+          class="w-full py-2.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition active:scale-[0.99] cursor-pointer">
+          <i data-lucide="sparkles" class="w-4 h-4"></i>
+          <span>Gerar Novo Token & Copiar</span>
+        </button>
+      </div>
+
+      <!-- Generated Success Banner -->
+      <div id="room-token-generated-banner" class="hidden p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1.5">
+        <div class="flex items-center justify-between text-xs">
+          <span class="text-emerald-400 font-bold flex items-center gap-1">
+            <i data-lucide="check-circle" class="w-3.5 h-3.5"></i>
+            Novo Token Gerado com Sucesso!
+          </span>
+          <span class="text-[10px] text-emerald-300 font-medium">Copiado para o clipboard ✓</span>
+        </div>
+        <div class="p-2 bg-slate-950 rounded-lg border border-emerald-500/20 flex items-center justify-between">
+          <code id="room-token-newly-generated-code" class="text-xs font-mono text-emerald-300 select-all font-bold"></code>
+          <button onclick="copyGeneratedTokenFromBanner(this)" class="px-2 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 text-xs font-semibold flex items-center gap-1 transition">
+            <i data-lucide="copy" class="w-3 h-3"></i>
+            <span>Copiar</span>
+          </button>
+        </div>
+        <p class="text-[10px] text-slate-400">Entrega este token aos agentes para que possam aceder a esta sala.</p>
+      </div>
+
+      <!-- Advanced Options -->
+      <div class="pt-2 border-t border-slate-800 space-y-2">
+        <details class="text-xs">
+          <summary class="text-slate-400 hover:text-slate-200 cursor-pointer font-medium select-none">Opções avançadas (definir senha manual ou remover proteção)</summary>
+          <div class="mt-2.5 space-y-2 pl-1">
+            <div>
+              <label class="block text-[11px] text-slate-400 mb-1">Senha Personalizada</label>
+              <div class="flex items-center gap-2">
+                <input id="room-token-manual-input" type="text" placeholder="Escreve uma senha..."
+                  class="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-mono" />
+                <button onclick="submitManualRoomToken()" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold">Guardar</button>
+              </div>
+            </div>
+            <div class="pt-1">
+              <button onclick="submitRemoveRoomProtection()" class="text-xs text-rose-400 hover:text-rose-300 hover:underline flex items-center gap-1">
+                <i data-lucide="unlock" class="w-3 h-3"></i>
+                <span>Remover proteção e tornar sala pública</span>
+              </button>
+            </div>
+          </div>
+        </details>
       </div>
     </div>
   </div>
@@ -4223,18 +4328,15 @@
       }
     }
 
-    async function copyToClipboard(text, btnEl) {
+    function copyToClipboard(text, btnEl) {
       if (!text) return;
-      try {
-        await navigator.clipboard.writeText(text);
+      copyTextToClipboard(text, () => {
         if (btnEl) {
           const original = btnEl.innerHTML;
           btnEl.innerHTML = '<span class="text-emerald-400 font-semibold text-[10px]">✓ Copiado!</span>';
-          setTimeout(() => { btnEl.innerHTML = original; lucide.createIcons(); }, 2000);
+          setTimeout(() => { btnEl.innerHTML = original; if (window.lucide) lucide.createIcons(); }, 2000);
         }
-      } catch (err) {
-        prompt('Copia o valor:', text);
-      }
+      });
     }
 
     function togglePasswordVisibilityById(inputId, btnEl) {
@@ -4707,25 +4809,27 @@
       let isProtected = roomObj ? Boolean(roomObj.is_protected) : false;
 
       let knownPassword = getSavedPassword(roomName) || '';
-      try {
-        const savedAuthToken = localStorage.getItem('ai_chat_human_token');
-        const headers = {};
-        if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
-        const res = await fetch('/api/admin/rooms', { headers });
-        if (res.ok) {
-          const data = await res.json();
-          adminRooms = data.rooms || [];
-          const found = adminRooms.find(r => r.name.toLowerCase() === roomName.toLowerCase());
-          if (found) {
-            isProtected = Boolean(found.is_protected);
-            if (found.password) {
-              knownPassword = found.password;
-              savePassword(roomName, knownPassword);
+      if (currentHumanRole === 'admin') {
+        try {
+          const savedAuthToken = localStorage.getItem('ai_chat_human_token');
+          const headers = {};
+          if (savedAuthToken) headers['x-human-token'] = savedAuthToken;
+          const res = await fetch('/api/admin/rooms', { headers });
+          if (res.ok) {
+            const data = await res.json();
+            adminRooms = data.rooms || [];
+            const found = adminRooms.find(r => r.name.toLowerCase() === roomName.toLowerCase());
+            if (found) {
+              isProtected = Boolean(found.is_protected);
+              if (found.password) {
+                knownPassword = found.password;
+                savePassword(roomName, knownPassword);
+              }
             }
           }
+        } catch (e) {
+          console.warn('Could not refresh admin rooms:', e);
         }
-      } catch (e) {
-        console.warn('Could not refresh admin rooms:', e);
       }
 
       if (statusBadge) {
@@ -4970,11 +5074,6 @@
       const val = (codeEl ? codeEl.textContent : '').trim();
       if (!val) return;
       copyToClipboard(val, btn);
-    }
-
-    function escapeHtml(text) {
-      if (!text) return '';
-      return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
     }
   </script>
 </body>
