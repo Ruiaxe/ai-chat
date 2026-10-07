@@ -1113,6 +1113,7 @@
     let currentAdmin = null;
     let rolesCache = [];
     let roomsCache = [];
+    let agentsCache = [];
     let principalsCache = [];
     let currentRoomMembers = [];
     let selectedRoomId = null;
@@ -1396,16 +1397,12 @@
     function copyResetPassword() {
       const pwdInput = document.getElementById('rp-result-password');
       if (!pwdInput || !pwdInput.value) return;
-      navigator.clipboard.writeText(pwdInput.value).then(() => {
-        document.getElementById('rp-btn-copy-text').textContent = '✓ Copiado!';
+      copyTextToClipboard(pwdInput.value, () => {
+        const t = document.getElementById('rp-btn-copy-text');
+        if (t) t.textContent = '✓ Copiado!';
         setTimeout(() => {
-          const t = document.getElementById('rp-btn-copy-text');
           if (t) t.textContent = 'Copiar';
         }, 3000);
-      }).catch(() => {
-        pwdInput.select();
-        document.execCommand('copy');
-        document.getElementById('rp-btn-copy-text').textContent = '✓ Copiado!';
       });
     }
 
@@ -1435,6 +1432,7 @@
         const res = await fetch('/api/admin/agents');
         if (!res.ok) throw new Error('Falha ao carregar agentes');
         const data = await res.json();
+        agentsCache = data.agents || [];
         const tbody = document.getElementById('agents-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
@@ -1467,7 +1465,7 @@
           const isPending = a.status === 'pending';
           const creds = a.credentials || [];
           const activeCreds = creds.filter(c => !c.revoked_at);
-          const hintsHtml = activeCreds.map(c => `<span class="font-mono bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800 text-[10px]">...${escapeHtml(c.token_hint)}</span>`).join(' ');
+          const hintsHtml = activeCreds.map(c => `<span class="font-mono bg-slate-950 px-1.5 py-0.5 rounded border border-slate-800 text-[10px]" title="Identificador do token (SHA-256). Por segurança, o token completo só é visível ao emitir ou rodar.">...${escapeHtml(c.token_hint)}</span>`).join(' ');
 
           const statusBadge = isPending
             ? '<span class="px-2 py-0.5 rounded text-[10px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">Pendente</span>'
@@ -1580,8 +1578,8 @@
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro ao aprovar agente');
         showAlert(`Agente '${name}' aprovado com sucesso!`);
-        const ag = (agentsCache || []).find(a => a.id === agentId);
-        showGeneratedToken(data.token, data.token_hint, name, ag ? ag.harness : 'claude-code', ag ? ag.wake_mode : 'background');
+        const ag = (Array.isArray(agentsCache) ? agentsCache : []).find(a => a.id === agentId);
+        showGeneratedToken(data.token, data.token_hint, name, ag ? ag.harness : 'claude-code', ag ? ag.wake_mode : 'background', ag ? ag.hook_timeout : 1800);
         loadAgents();
       } catch (err) {
         showAlert(err.message, true);
@@ -1734,8 +1732,8 @@
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Erro ao rodar token');
-        const ag = (agentsCache || []).find(a => a.id === agentId);
-        showGeneratedToken(data.token, data.token_hint, agentName, ag ? ag.harness : 'claude-code', ag ? ag.wake_mode : 'background');
+        const ag = (Array.isArray(agentsCache) ? agentsCache : []).find(a => a.id === agentId);
+        showGeneratedToken(data.token, data.token_hint, agentName, ag ? ag.harness : 'claude-code', ag ? ag.wake_mode : 'background', ag ? ag.hook_timeout : 1800);
         loadAgents();
       } catch (err) {
         showAlert(err.message, true);
@@ -1968,7 +1966,7 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'} --ti
     function copyGeneratedToken() {
       const val = document.getElementById('td-token-value').textContent;
       if (!val) return;
-      navigator.clipboard.writeText(val).then(() => {
+      copyTextToClipboard(val, () => {
         const copyBtn = document.getElementById('td-copy-btn-text');
         if (copyBtn) {
           copyBtn.textContent = 'Copiado!';
@@ -2012,7 +2010,7 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'} --ti
     function copySnippetText(elId, btnEl) {
       const el = document.getElementById(elId);
       if (!el) return;
-      navigator.clipboard.writeText(el.textContent).then(() => {
+      copyTextToClipboard(el.textContent, () => {
         const origText = btnEl ? btnEl.textContent : 'Copiar';
         if (btnEl) btnEl.textContent = 'Copiado!';
         setTimeout(() => { if (btnEl) btnEl.textContent = origText; }, 2500);
@@ -3290,6 +3288,37 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'} --ti
     }
 
     // --- Utility Functions ---
+    function copyTextToClipboard(text, onSuccess) {
+      if (!text) return;
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(() => {
+          if (onSuccess) onSuccess();
+        }).catch(() => {
+          fallbackCopyText(text, onSuccess);
+        });
+      } else {
+        fallbackCopyText(text, onSuccess);
+      }
+    }
+
+    function fallbackCopyText(text, onSuccess) {
+      try {
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-999999px";
+        textArea.style.top = "-999999px";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        const successful = document.execCommand('copy');
+        document.body.removeChild(textArea);
+        if (successful && onSuccess) onSuccess();
+      } catch (err) {
+        console.warn('Fallback copy failed:', err);
+      }
+    }
+
     function escapeHtml(str) {
       if (!str) return '';
       return String(str)
