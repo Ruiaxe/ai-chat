@@ -431,7 +431,7 @@
                 T_idle — Limite de Inatividade (minutos)
               </label>
               <input type="number" id="setting-t-idle" min="1" max="240" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono focus:outline-none focus:border-indigo-500">
-              <p class="text-[11px] text-slate-500 mt-1">Tempo máximo sem chamadas autenticadas antes de considerar o agente parado (se tiver mensagens por ler). Padrão: 3 min (180s). Mín: 1 min, Máx: 240 min (4h).</p>
+              <p class="text-[11px] text-slate-500 mt-1">Tempo máximo sem chamadas autenticadas antes de considerar o agente parado (se tiver mensagens por ler). Padrão: 30 min (1800s). Mín: 1 min, Máx: 240 min (4h).</p>
             </div>
 
             <div>
@@ -1627,7 +1627,7 @@
         const tIdle = document.getElementById('setting-t-idle');
         const tUnread = document.getElementById('setting-t-unread');
         const maxTimeout = document.getElementById('setting-max-timeout');
-        if (tIdle) tIdle.value = s.t_idle_minutes ?? Math.max(1, Math.round((s.t_idle_seconds ?? 180) / 60));
+        if (tIdle) tIdle.value = s.t_idle_minutes ?? Math.max(1, Math.round((s.t_idle_seconds ?? 1800) / 60));
         if (tUnread) tUnread.value = s.t_unread_minutes ?? Math.max(1, Math.round((s.t_unread_seconds ?? 120) / 60));
         if (maxTimeout) maxTimeout.value = s.max_wake_timeout ?? 600;
       } catch (err) {
@@ -2301,12 +2301,15 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'} --ti
         btn.className = `w-full text-left px-3 py-2 rounded-lg text-xs transition flex items-center justify-between ${selectedRoomId === r.id ? 'bg-indigo-600/20 text-indigo-300 border border-indigo-500/30' : 'hover:bg-slate-800/60 text-slate-300'}`;
         btn.onclick = () => selectRoom(r.id);
         btn.innerHTML = `
-          <div class="truncate">
+          <div class="truncate mr-2">
             <span class="font-bold">${escapeHtml(r.name)}</span>
             ${r.is_archived ? '<span class="ml-1 text-[10px] text-amber-400 font-normal">(arquivada)</span>' : ''}
             <div class="text-[10px] text-slate-500 truncate">${escapeHtml(r.topic || 'Sem tópico')}</div>
           </div>
-          <span class="text-[10px] bg-slate-800 px-1.5 py-0.5 rounded text-slate-400 font-mono">${r.member_count || 0}</span>
+          <div class="flex items-center gap-1.5 flex-shrink-0">
+            <span title="Membros" class="text-[10px] bg-slate-800 px-1.5 py-0.5 rounded text-slate-400 font-mono">${r.member_count || 0} memb</span>
+            <span title="Mensagens" class="text-[10px] bg-slate-800 px-1.5 py-0.5 rounded text-indigo-300 font-mono">${r.message_count || 0} msg</span>
+          </div>
         `;
         container.appendChild(btn);
       });
@@ -2340,7 +2343,9 @@ python aichat-wait.py --agent ${nameVal} --hook ${harness || 'claude-code'} --ti
       if (!room) return;
 
       document.getElementById('selected-room-title').textContent = room.name;
-      document.getElementById('selected-room-topic').textContent = room.topic || 'Sem tópico configurado.';
+      const topicText = room.topic || 'Sem tópico configurado.';
+      const statsText = `${room.message_count || 0} mensagens • ${room.member_count || 0} membros`;
+      document.getElementById('selected-room-topic').textContent = `${topicText} (${statsText})`;
       document.getElementById('room-header-actions').classList.remove('hidden');
       
       const archBtn = document.getElementById('archive-room-btn');

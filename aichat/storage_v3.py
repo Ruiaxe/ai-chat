@@ -177,7 +177,7 @@ class StorageV3:
                 );
                 """
             )
-            for k, v in [("t_idle_seconds", "180"), ("t_unread_seconds", "120"), ("max_wake_timeout", "600")]:
+            for k, v in [("t_idle_seconds", "1800"), ("t_unread_seconds", "120"), ("max_wake_timeout", "600")]:
                 conn.execute(
                     "INSERT OR IGNORE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?);",
                     (k, v, utc_now()),
@@ -941,9 +941,9 @@ class StorageV3:
     def get_system_thresholds(self) -> dict[str, int]:
         """Returns configured system thresholds for liveliness and wake-up."""
         try:
-            t_idle = int(self.get_setting("t_idle_seconds", "180"))
+            t_idle = int(self.get_setting("t_idle_seconds", "1800"))
         except (ValueError, TypeError):
-            t_idle = 180
+            t_idle = 1800
         try:
             t_unread = int(self.get_setting("t_unread_seconds", "120"))
         except (ValueError, TypeError):
@@ -2527,7 +2527,8 @@ class StorageV3:
         if is_admin:
             query = """
                 SELECT r.*, 1 as can_write, NULL as role_id, NULL as role_key, NULL as role_display_name,
-                       (SELECT COUNT(*) FROM room_access ra WHERE ra.room_id = r.id) as member_count
+                       (SELECT COUNT(*) FROM room_access ra WHERE ra.room_id = r.id) as member_count,
+                       (SELECT COUNT(*) FROM messages m WHERE m.room_id = r.id) as message_count
                 FROM rooms r
                 WHERE 1=1
             """
@@ -2544,7 +2545,8 @@ class StorageV3:
             # Regular user or agent
             query = """
                 SELECT r.*, ra.can_write, ra.role_id, ar.role_key, ar.display_name as role_display_name,
-                       (SELECT COUNT(*) FROM room_access ra2 WHERE ra2.room_id = r.id) as member_count
+                       (SELECT COUNT(*) FROM room_access ra2 WHERE ra2.room_id = r.id) as member_count,
+                       (SELECT COUNT(*) FROM messages m WHERE m.room_id = r.id) as message_count
                 FROM rooms r
                 JOIN room_access ra ON r.id = ra.room_id
                 LEFT JOIN agent_roles ar ON ra.role_id = ar.id

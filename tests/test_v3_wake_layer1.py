@@ -216,9 +216,9 @@ class TestV3WakeLayer1(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(liv["state"], "working")
         self.assertEqual(liv["state_badge"], "🔵 a trabalhar")
 
-        # 3. Idle transition: simulate past activity > T_idle (180s)
+        # 3. Idle transition: simulate past activity > T_idle (1800s)
         conn = hub.storage.v3._get_connection()
-        past_dt = (datetime.now(timezone.utc) - timedelta(seconds=250)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        past_dt = (datetime.now(timezone.utc) - timedelta(seconds=1900)).strftime("%Y-%m-%dT%H:%M:%SZ")
         with conn:
             conn.execute("UPDATE agents SET last_activity_at = ? WHERE principal_id = ?;", (past_dt, self.carlos_id))
 
@@ -246,7 +246,7 @@ class TestV3WakeLayer1(unittest.IsolatedAsyncioTestCase):
         """Tests stalled alert emission to room humans only, with backoff delays."""
         # Ensure carlos is stalled with old activity and old directed message
         conn = hub.storage.v3._get_connection()
-        past_act = (datetime.now(timezone.utc) - timedelta(seconds=250)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        past_act = (datetime.now(timezone.utc) - timedelta(seconds=1900)).strftime("%Y-%m-%dT%H:%M:%SZ")
         with conn:
             conn.execute("UPDATE agents SET last_activity_at = ?, listening_now = 0, stalled_alert_count = 0, last_stalled_alert_at = NULL WHERE principal_id = ?;", (past_act, self.carlos_id))
 
@@ -262,7 +262,7 @@ class TestV3WakeLayer1(unittest.IsolatedAsyncioTestCase):
             conn.execute("UPDATE messages SET created_at = ? WHERE id = ?;", (msg_past, msg["id"]))
 
         # Check stalled candidates
-        candidates = hub.storage.v3.list_stalled_agents_to_alert(t_idle=180, t_unread=120)
+        candidates = hub.storage.v3.list_stalled_agents_to_alert(t_idle=1800, t_unread=120)
         stalled_carlos = [c for c in candidates if c["principal_id"] == self.carlos_id]
         self.assertTrue(len(stalled_carlos) > 0)
 

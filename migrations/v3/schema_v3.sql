@@ -302,6 +302,6 @@ CREATE TABLE system_settings (
 );
 
 INSERT INTO system_settings (key, value, updated_at) VALUES
- ('t_idle_seconds', '180', strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+ ('t_idle_seconds', '1800', strftime('%Y-%m-%dT%H:%M:%SZ','now')),
  ('t_unread_seconds', '120', strftime('%Y-%m-%dT%H:%M:%SZ','now')),
  ('max_wake_timeout', '600', strftime('%Y-%m-%dT%H:%M:%SZ','now'));

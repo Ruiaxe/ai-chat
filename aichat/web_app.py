@@ -791,9 +791,9 @@ async def endpoint_post_message(request: Request) -> Response:
         clean_sender = p.get("display_name") or p.get("username") or p.get("name") or "Agent"
 
         if role == "agent":
-            max_cycles = int(os.environ.get("AICHAT_MAX_AGENT_CYCLES", "10"))
-            consecutive = hub.storage.v3.count_consecutive_agent_messages(room["id"])
-            if consecutive >= max_cycles:
+            max_cycles = int(os.environ.get("AICHAT_MAX_AGENT_CYCLES", "0"))
+            consecutive = hub.storage.v3.count_consecutive_agent_messages(room["id"]) if max_cycles > 0 else 0
+            if max_cycles > 0 and consecutive >= max_cycles:
                 recent_msgs = hub.storage.v3.get_messages(room["id"], limit=1)
                 already_warned = (
                     recent_msgs and

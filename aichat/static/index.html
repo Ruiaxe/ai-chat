@@ -172,6 +172,10 @@
             <span id="room-archived-badge" class="hidden flex-shrink-0 px-2 py-0.5 rounded text-[11px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/30 flex items-center gap-1">
               <i data-lucide="archive" class="w-3 h-3"></i> Arquivada
             </span>
+            <span id="room-messages-badge" class="hidden flex-shrink-0 px-2 py-0.5 rounded text-[11px] font-medium bg-slate-800 text-slate-300 border border-slate-700/60 flex items-center gap-1" title="Total de mensagens na sala">
+              <i data-lucide="message-square" class="w-3 h-3 text-indigo-400"></i>
+              <span id="room-messages-count">0</span> msgs
+            </span>
           </div>
           <p id="current-room-topic" class="text-xs text-slate-400 truncate max-w-lg">Collaborate with AI agents in real time</p>
         </div>
@@ -1463,8 +1467,9 @@
           <div class="flex items-center space-x-1.5 flex-shrink-0 text-slate-500 text-[11px]">
             ${unreadBadgeHtml}
             ${isArchived ? '<span class="text-[10px] text-rose-400/80 px-1 py-0.5 rounded bg-rose-500/10 border border-rose-500/20">Arquivada</span>' : ''}
-            <span title="Total messages" class="px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-400 border border-slate-700/50">
-              ${room.message_count || 0}
+            <span title="Total de mensagens" class="px-1.5 py-0.5 rounded bg-slate-800/80 text-slate-400 border border-slate-700/50 flex items-center gap-1 font-mono text-[10px]">
+              <i data-lucide="message-square" class="w-2.5 h-2.5 text-slate-500"></i>
+              <span>${room.message_count || 0}</span>
             </span>
           </div>
         </div>
@@ -1583,6 +1588,14 @@
         document.getElementById('current-room-name').textContent = '#' + room.name;
         document.getElementById('current-room-topic').textContent = room.topic || 'No topic set';
         document.getElementById('download-btn').classList.remove('hidden');
+
+        // Update Messages Badge in Header
+        const msgBadge = document.getElementById('room-messages-badge');
+        const msgCount = document.getElementById('room-messages-count');
+        if (msgBadge && msgCount) {
+          msgBadge.classList.remove('hidden');
+          msgCount.textContent = room.message_count !== undefined ? room.message_count : messages.length;
+        }
 
         // Update Archive Badge & Actions
         const archiveBadge = document.getElementById('room-archived-badge');
@@ -2225,6 +2238,13 @@
             if (currentRoom && newMsg.room_name.toLowerCase() === currentRoom.name.toLowerCase()) {
               if (!messages.some(m => m.id === newMsg.id)) {
                 messages.push(newMsg);
+                if (currentRoom.message_count !== undefined) {
+                  currentRoom.message_count++;
+                } else {
+                  currentRoom.message_count = messages.length;
+                }
+                const msgCount = document.getElementById('room-messages-count');
+                if (msgCount) msgCount.textContent = currentRoom.message_count;
                 lastSeenId = Math.max(lastSeenId, newMsg.id);
                 if (document.visibilityState === 'visible') {
                   advanceReadCursor(currentRoom.name, newMsg.id);
@@ -2234,6 +2254,7 @@
                 }
                 const isMyMsg = newMsg.sender.toLowerCase() === getMyUsername().toLowerCase();
                 renderMessages({ shouldScrollToBottom: isMyMsg ? true : undefined });
+                renderRoomsList(document.getElementById('room-search')?.value || '');
                 playNotificationSound();
                 showDesktopNotification(newMsg);
 
@@ -2244,6 +2265,7 @@
             } else {
               const otherRoom = rooms.find(r => r.name.toLowerCase() === newMsg.room_name.toLowerCase());
               if (otherRoom) {
+                otherRoom.message_count = (otherRoom.message_count || 0) + 1;
                 otherRoom.unread_total = (otherRoom.unread_total || 0) + 1;
                 const myName = (getMyUsername() || '').toLowerCase();
                 const recips = newMsg.recipients || [];
@@ -2355,7 +2377,15 @@
               }
             }
             if (added) {
+              if (currentRoom.message_count !== undefined) {
+                currentRoom.message_count += newMsgs.length;
+              } else {
+                currentRoom.message_count = messages.length;
+              }
+              const msgCount = document.getElementById('room-messages-count');
+              if (msgCount) msgCount.textContent = currentRoom.message_count;
               renderMessages();
+              renderRoomsList(document.getElementById('room-search')?.value || '');
             }
           }
       } catch (e) {}

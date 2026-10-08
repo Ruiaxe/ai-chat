@@ -712,11 +712,11 @@ class ChatHub:
 
         # Agent Cycle Protection:
         if role == "agent" and hasattr(self.storage, "is_v3") and self.storage.is_v3():
-            max_cycles = int(os.environ.get("AICHAT_MAX_AGENT_CYCLES", "10"))
-            r_obj = self.storage.v3.get_room_by_name(canonical_name)
+            max_cycles = int(os.environ.get("AICHAT_MAX_AGENT_CYCLES", "0"))
+            r_obj = self.storage.v3.get_room_by_name(canonical_name) if max_cycles > 0 else None
             if r_obj:
                 consecutive = self.storage.v3.count_consecutive_agent_messages(r_obj["id"])
-                if consecutive >= max_cycles:
+                if max_cycles > 0 and consecutive >= max_cycles:
                     recent_msgs = self.storage.v3.get_messages(r_obj["id"], limit=1)
                     already_warned = (
                         recent_msgs and
